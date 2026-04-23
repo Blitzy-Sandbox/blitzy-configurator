@@ -647,26 +647,36 @@
             <!-- ================================================================
                  SLIDE 3 — ARCHITECTURE OVERVIEW
                  Mermaid diagram depicting the three-column UI flowing into
-                 services and persistence. Tool-name-free abstract labels.
+                 services and persistence, surrounded by the three cross-cutting
+                 backlog layers (ci-cd, testing, observability). Subgraph labels
+                 name all six backlog layer tokens (frontend, backend, database,
+                 ci-cd, testing, observability) so that the diagram mirrors the
+                 layer taxonomy that drives the per-layer story tally on slide 5.
+                 Tool-name-free abstract labels throughout.
                  ================================================================ -->
             <section>
                 <div class="slide-kicker">How it fits together</div>
                 <h2>Architecture Overview</h2>
-                <pre class="mermaid" aria-label="Architecture overview diagram showing sidebar, canvas, and summary panel flowing through the navbar into an API gateway, services, and data store">
+                <pre class="mermaid" aria-label="Architecture overview diagram showing the three product layers (frontend, backend, database) surrounded by the three cross-cutting layers (ci-cd, testing, observability)">
 graph LR
-    subgraph UI["User Interface"]
+    subgraph UI["Frontend Layer"]
         SB["Sidebar Controls"]
         CV["3D Preview Canvas"]
         SM["Design Summary"]
         NB["Top Navbar"]
     end
-    subgraph APP["Application Layer"]
+    subgraph APP["Backend Layer"]
         API["API Gateway"]
         SV["Services"]
     end
-    subgraph DATA["Data Layer"]
+    subgraph DATA["Database Layer"]
         DS["Data Store"]
         OB["Object Storage"]
+    end
+    subgraph CROSS["Cross-Cutting Layers"]
+        CI["CI-CD Pipeline"]
+        TEST["Testing Gates"]
+        OBS["Observability"]
     end
     SB --> CV
     CV --> SM
@@ -675,12 +685,17 @@ graph LR
     API --> SV
     SV --> DS
     SV --> OB
+    CI -.promotes.-> APP
+    TEST -.validates.-> APP
+    OBS -.monitors.-> APP
     classDef uiBox fill:#F2F0FE,stroke:#5B39F3,stroke-width:1.5px,color:#333333
     classDef appBox fill:#F4EFF6,stroke:#5B39F3,stroke-width:1.5px,color:#333333
     classDef dataBox fill:#F5F5F5,stroke:#2D1C77,stroke-width:1.5px,color:#333333
+    classDef crossBox fill:#F4EFF6,stroke:#7A6DEC,stroke-width:1.5px,color:#333333
     class SB,CV,SM,NB uiBox
     class API,SV appBox
     class DS,OB dataBox
+    class CI,TEST,OBS crossBox
                 </pre>
             </section>
 
