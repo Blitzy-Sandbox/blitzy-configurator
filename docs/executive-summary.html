@@ -1115,11 +1115,12 @@ graph LR
             /* Unique counter for deterministic Mermaid element IDs. */
             var mermaidRenderCounter = 0;
 
-            /* Capture Mermaid source text immediately on load so we can
-               re-render reliably. mermaid.run() was observed in 11.4.0 to
-               emit empty 16x16 error SVGs for some diagrams while rendering
-               multiple nodes in a single call — rendering them one at a time
-               via mermaid.render() with explicit source capture is reliable. */
+            /* Mermaid rendering uses mermaid.render() per diagram rather than
+               mermaid.run(). See docs/decisions/README.md — the row titled
+               "Mermaid rendering in /docs/executive-summary.html invokes
+               mermaid.render() per diagram …" — for the canonical rationale,
+               alternatives, and risks. This comment intentionally carries no
+               rationale; the decision log is the single source of truth. */
             function captureMermaidSources() {
                 var pres = document.querySelectorAll('pre.mermaid');
                 for (var i = 0; i < pres.length; i++) {
