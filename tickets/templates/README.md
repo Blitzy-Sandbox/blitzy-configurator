@@ -7,7 +7,7 @@ This folder contains empty ticket scaffolds. Use them to author new epics and st
 - `epic-template.md` — scaffold for a new epic (destination: `/tickets/epics/EP-00N-[slug].md`)
 - `story-template.md` — scaffold for a new story (destination: `/tickets/stories/ST-00N-[slug].md`)
 
-## How to Create a New Ticket
+## How to Create
 
 1. Copy the appropriate template file (`epic-template.md` for an epic, `story-template.md` for a story).
 2. Rename the copy to the next sequential ID with a kebab-case slug — for example `EP-012-new-epic-slug.md` or `ST-050-new-story-slug.md`. IDs are zero-padded to three digits.
@@ -16,7 +16,7 @@ This folder contains empty ticket scaffolds. Use them to author new epics and st
 5. For story files only: if the story requires a `test-type` or `depends-on` field, remove the leading `# ` comment prefix to activate that line; otherwise delete the commented line entirely.
 6. Validate the frontmatter against the schema below and confirm the body meets the authoring rules.
 
-## Frontmatter Field Reference
+## Frontmatter Reference
 
 ### Epic frontmatter fields
 
@@ -36,7 +36,7 @@ This folder contains empty ticket scaffolds. Use them to author new epics and st
 - `test-type` — EP-010 children only: `unit`, `integration`, `e2e`, or `visual-regression`. Omit on all other stories.
 - `depends-on` — optional list of prerequisite story IDs. Omit the field when the list is empty.
 
-## Authoring Rules Quick Reference
+## Authoring Rules
 
 - Technology-neutral vocabulary only — no library, framework, cloud, platform, or product proper nouns anywhere in field values or body.
 - Every story body MUST contain at least three observable acceptance criteria rendered as Markdown checklist items (`- [ ]`).
@@ -44,7 +44,7 @@ This folder contains empty ticket scaffolds. Use them to author new epics and st
 - Every story body opens with the persona narrative `As a <persona>, I want <capability>, so that <value>.` using a persona drawn from the fixed vocabulary: `end user`, `authenticated user`, `developer`, `QA engineer`, `DevOps engineer`.
 - Every epic body lists at least one child story ID in its frontmatter `stories` array.
 
-## Validation Before Submitting a New Ticket
+## Validation
 
 - Frontmatter parses as valid YAML and contains every required field.
 - Story file contains a Narrative section with the persona sentence and an Acceptance Criteria section with three or more checklist items.
