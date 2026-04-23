@@ -14,7 +14,7 @@ As a DevOps engineer, I want every service to emit structured log records carryi
 
 ## Acceptance Criteria
 
-- [ ] Every emitted log record is a structured record containing at least a timestamp, severity, event name, service identifier, and correlation identifier, rendered in a machine-parseable format.
+- [ ] Every emitted log record is a structured record containing at least a timestamp, a severity whose value is one of the enumerated tokens debug, info, warn, error, or fatal, an event name, a service identifier, and a correlation identifier, rendered in a machine-parseable format.
 - [ ] A correlation identifier is generated at the request boundary when absent, is preserved when present, and is forwarded to every downstream service call so that all log records produced in response to a single inbound request share the same identifier.
 - [ ] Authenticated request flows (registration, login, session validation) emit log records that carry both the correlation identifier and the authenticated user identifier (never credential material) so that the full lifecycle of a session is traceable.
 - [ ] The structured logging behavior can be exercised end-to-end in the local development environment by following a documented sequence that produces and surfaces correlated log records for a sample request.

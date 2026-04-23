@@ -6,6 +6,7 @@ layer: testing
 points: 5
 priority: medium
 test-type: visual-regression
+depends-on: [ST-039]
 ---
 
 ## Narrative
