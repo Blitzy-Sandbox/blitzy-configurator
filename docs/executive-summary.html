@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="StrikeForge Backlog — Executive Summary. Cross-layer agile backlog for the soccer ball configurator, prepared for executive leadership.">
+    <title>StrikeForge Backlog — Executive Summary</title>
+
+    <!--
+      ========================================================================
+      External runtime dependencies (CDN-pinned, loaded by browser at runtime)
+      ========================================================================
+      - reveal.js 5.1.0  — slide framework
+      - mermaid   11.4.0 — diagram renderer
+      - lucide    0.460.0 — SVG icon library
+      Google Fonts CSS2  — Inter / Space Grotesk / Fira Code
+      No local file dependencies. No build step.
+    -->
+
+    <!-- reveal.js core CSS (pinned 5.1.0) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+    <!-- reveal.js base white theme (pinned 5.1.0) — overridden by Blitzy inline theme below -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/white.css" id="theme">
+
+    <!-- Google Fonts — single request loading all three Blitzy families with their required weights -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap">
+
+    <!--
+      ========================================================================
+      Blitzy Reveal Theme — embedded inline per user rule (AAP §0.5.3)
+      ========================================================================
+      All color / gradient / typography values are defined ONCE as CSS custom
+      properties on :root and consumed via var(--*) everywhere else. The only
+      permitted literal-value exceptions outside :root are the keywords:
+      0, none, auto, inherit, currentColor, transparent.
+    -->
+    <style>
+        /* =====================================================================
+           Design tokens — :root custom properties (Blitzy Reveal Theme)
+           ===================================================================== */
+        :root {
+            /* Color tokens (AAP §0.5.3.1) */
+            --blitzy-primary: #5B39F3;
+            --blitzy-primary-dark: #2D1C77;
+            --blitzy-primary-navy: #1A105F;
+            --blitzy-primary-light: #7A6DEC;
+            --blitzy-primary-deep: #4101DB;
+            --blitzy-accent-teal: #94FAD5;
+            --blitzy-surface-0: #FFFFFF;
+            --blitzy-surface-1: #F4EFF6;
+            --blitzy-surface-2: #F2F0FE;
+            --blitzy-surface-3: #F5F5F5;
+            --blitzy-border: #D9D9D9;
+            --blitzy-border-soft: rgba(91, 57, 243, 0.18);
+            --blitzy-text: #333333;
+            --blitzy-text-muted: #999999;
+            --blitzy-text-invert: #FFFFFF;
+
+            /* Gradient tokens (AAP §0.5.3.2) */
+            --gradient-hero: linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%);
+            --gradient-divider: linear-gradient(135deg, #2D1C77 0%, #5B39F3 100%);
+            --gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #94FAD5 100%);
+
+            /* Typography tokens (AAP §0.5.2.3) */
+            --ff-body: 'Inter', system-ui, sans-serif;
+            --ff-display: 'Space Grotesk', 'Inter', sans-serif;
+            --ff-mono: 'Fira Code', 'Courier New', monospace;
+        }
+
+        /* =====================================================================
+           Global reveal.js overrides — Blitzy typography and palette
+           ===================================================================== */
+        .reveal {
+            font-family: var(--ff-body);
+            color: var(--blitzy-text);
+            font-weight: 400;
+            font-size: 28px;
+        }
+        .reveal .slides {
+            text-align: left;
+        }
+        .reveal h1,
+        .reveal h2,
+        .reveal h3,
+        .reveal h4 {
+            font-family: var(--ff-display);
+            color: var(--blitzy-text);
+            text-transform: none;
+            letter-spacing: -0.01em;
+            line-height: 1.15;
+            margin-bottom: 0.4em;
+        }
+        .reveal h1 { font-size: 2.6em; font-weight: 700; }
+        .reveal h2 { font-size: 2em;   font-weight: 700; }
+        .reveal h3 { font-size: 1.4em; font-weight: 600; }
+        .reveal p,
+        .reveal li {
+            line-height: 1.5;
+            color: var(--blitzy-text);
+        }
+        .reveal ul {
+            display: block;
+            margin-left: 1.2em;
+        }
+        .reveal ul li {
+            margin: 0.5em 0;
+        }
+        .reveal a {
+            color: var(--blitzy-primary);
+            text-decoration: none;
+        }
+        .reveal strong {
+            color: var(--blitzy-primary-dark);
+            font-weight: 700;
+        }
+        .reveal code,
+        .reveal .mono {
+            font-family: var(--ff-mono);
+            color: var(--blitzy-primary-dark);
+            background: var(--blitzy-surface-2);
+            padding: 0.1em 0.4em;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        /* reveal.js progress bar and controls — themed to Blitzy primary */
+        .reveal .progress { color: var(--blitzy-primary); }
+        .reveal .controls { color: var(--blitzy-primary); }
+
+        /* =====================================================================
+           Slide type: TITLE
+           The `!important` on display/flex is required to override reveal.js's
+           own `.slides > section` rules which force display:block on the
+           active slide, otherwise our vertical centering is discarded.
+           ===================================================================== */
+        .reveal .slides > section.slide-title,
+        .reveal .slide-title {
+            background: var(--gradient-hero);
+            color: var(--blitzy-text-invert);
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: center !important;
+            align-items: center !important;
+            text-align: center;
+            padding: 4% 8%;
+            height: 100% !important;
+            top: 0 !important;
+            transform: none !important;
+        }
+        .reveal .slide-title h1,
+        .reveal .slide-title h2,
+        .reveal .slide-title p {
+            color: var(--blitzy-text-invert);
+        }
+        .reveal .slide-title h1 {
+            font-size: 3.2em;
+            font-weight: 700;
+            margin: 0.3em 0 0.25em 0;
+            max-width: 80%;
+        }
+        .reveal .slide-title .subtitle {
+            font-size: 1.2em;
+            font-weight: 400;
+            color: var(--blitzy-text-invert);
+            opacity: 0.92;
+            margin: 0.5em 0 0 0;
+            max-width: 70%;
+        }
+        .reveal .slide-title .audience {
+            font-family: var(--ff-mono);
+            font-size: 0.85em;
+            color: var(--blitzy-accent-teal);
+            margin-top: 1.6em;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+        }
+
+        /* =====================================================================
+           Slide type: SECTION DIVIDER
+           ===================================================================== */
+        .reveal .slides > section.slide-divider,
+        .reveal .slide-divider {
+            background: var(--gradient-divider);
+            color: var(--blitzy-text-invert);
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: center !important;
+            align-items: center !important;
+            text-align: center;
+            padding: 4% 8%;
+            height: 100% !important;
+            top: 0 !important;
+            transform: none !important;
+        }
+        .reveal .slide-divider h2 {
+            color: var(--blitzy-text-invert);
+            font-size: 3em;
+            font-weight: 700;
+            margin: 0.4em 0 0 0;
+        }
+        .reveal .slide-divider .section-number {
+            font-family: var(--ff-mono);
+            font-size: 0.9em;
+            color: var(--blitzy-accent-teal);
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            margin-bottom: 0.4em;
+        }
+        .reveal .slide-divider p {
+            color: var(--blitzy-text-invert);
+            opacity: 0.88;
+            margin-top: 0.6em;
+            max-width: 65%;
+        }
+
+        /* =====================================================================
+           Slide type: CLOSING
+           ===================================================================== */
+        .reveal .slides > section.slide-closing,
+        .reveal .slide-closing {
+            background: var(--blitzy-primary-navy);
+            color: var(--blitzy-text-invert);
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: center !important;
+            padding: 4% 10%;
+            height: 100% !important;
+            top: 0 !important;
+            transform: none !important;
+        }
+        .reveal .slide-closing h2,
+        .reveal .slide-closing h3,
+        .reveal .slide-closing li,
+        .reveal .slide-closing p {
+            color: var(--blitzy-text-invert);
+        }
+        .reveal .slide-closing h2 {
+            font-size: 3em;
+            font-weight: 700;
+            margin: 0.2em 0 0.3em 0;
+        }
+        .reveal .slide-closing ul {
+            margin: 1em 0;
+            list-style: none;
+            margin-left: 0;
+        }
+        .reveal .slide-closing ul li {
+            padding-left: 1.6em;
+            position: relative;
+            font-size: 0.95em;
+            line-height: 1.6;
+        }
+        .reveal .slide-closing ul li::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0.65em;
+            width: 0.8em;
+            height: 2px;
+            background: var(--blitzy-accent-teal);
+        }
+        .reveal .slide-closing .eyebrow {
+            color: var(--blitzy-accent-teal);
+        }
+
+        /* =====================================================================
+           Content slide default
+           ===================================================================== */
+        .reveal section {
+            padding: 3% 6%;
+            box-sizing: border-box;
+        }
+        .reveal section h2 {
+            margin-bottom: 0.6em;
+        }
+        .reveal .slide-header {
+            display: flex;
+            align-items: center;
+            gap: 0.6em;
+            margin-bottom: 0.3em;
+        }
+        .reveal .slide-header .slide-header-icon {
+            color: var(--blitzy-primary);
+            width: 44px;
+            height: 44px;
+        }
+        .reveal .slide-kicker {
+            font-family: var(--ff-mono);
+            font-size: 0.7em;
+            color: var(--blitzy-primary);
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            margin-bottom: 0.3em;
+        }
+
+        /* =====================================================================
+           Component: EYEBROW
+           ===================================================================== */
+        .reveal .eyebrow {
+            font-family: var(--ff-mono);
+            font-weight: 500;
+            font-size: 0.85em;
+            color: var(--blitzy-accent-teal);
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            margin-bottom: 0.6em;
+        }
+
+        /* =====================================================================
+           Component: HERO ICON (title + divider slides)
+           ===================================================================== */
+        .reveal .hero-icon {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 0.4em;
+        }
+        .reveal .hero-icon svg,
+        .reveal .hero-icon i[data-lucide] {
+            width: 112px;
+            height: 112px;
+            stroke-width: 1.5;
+            color: var(--blitzy-accent-teal);
+        }
+
+        /* =====================================================================
+           Component: KPI GRID and KPI CARD
+           ===================================================================== */
+        .reveal .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 28px;
+            margin-top: 0.8em;
+        }
+        .reveal .kpi-grid.kpi-grid-3 {
+            grid-template-columns: repeat(3, 1fr);
+        }
+        .reveal .kpi-card {
+            background: var(--blitzy-surface-1);
+            border: 1px solid var(--blitzy-border-soft);
+            border-radius: 16px;
+            padding: 32px 24px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            align-items: flex-start;
+            box-shadow: 0 2px 12px var(--blitzy-border-soft);
+            min-height: 220px;
+        }
+        .reveal .kpi-card .kpi-icon {
+            color: var(--blitzy-primary);
+            margin-bottom: 12px;
+        }
+        .reveal .kpi-card .kpi-icon svg,
+        .reveal .kpi-card .kpi-icon i[data-lucide] {
+            width: 44px;
+            height: 44px;
+            stroke-width: 2;
+            color: var(--blitzy-primary);
+        }
+        .reveal .kpi-card .kpi-value {
+            font-family: var(--ff-display);
+            font-weight: 700;
+            font-size: 2.8em;
+            color: var(--blitzy-primary);
+            line-height: 1;
+            margin: 0.1em 0 0.2em 0;
+        }
+        .reveal .kpi-card .kpi-label {
+            font-family: var(--ff-body);
+            font-weight: 500;
+            font-size: 0.75em;
+            color: var(--blitzy-text-muted);
+            letter-spacing: 0.02em;
+            line-height: 1.3;
+        }
+
+        /* =====================================================================
+           Component: ICON ROW (horizontal row of Lucide icons + labels)
+           ===================================================================== */
+        .reveal .icon-row {
+            display: flex;
+            justify-content: space-around;
+            align-items: flex-start;
+            gap: 24px;
+            margin: 0.6em 0;
+            flex-wrap: wrap;
+        }
+        .reveal .icon-row .icon-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            max-width: 22%;
+            gap: 0.4em;
+        }
+        .reveal .icon-row .icon-item svg,
+        .reveal .icon-row .icon-item i[data-lucide] {
+            width: 56px;
+            height: 56px;
+            stroke-width: 1.75;
+            color: var(--blitzy-primary);
+        }
+        .reveal .icon-row .icon-item.icon-positive svg,
+        .reveal .icon-row .icon-item.icon-positive i[data-lucide] {
+            color: var(--blitzy-primary);
+        }
+        .reveal .icon-row .icon-item.icon-negative svg,
+        .reveal .icon-row .icon-item.icon-negative i[data-lucide] {
+            color: var(--blitzy-primary-dark);
+        }
+        .reveal .icon-row .icon-item .icon-label {
+            font-family: var(--ff-body);
+            font-weight: 600;
+            font-size: 0.7em;
+            color: var(--blitzy-text);
+            line-height: 1.3;
+        }
+        .reveal .icon-row .icon-item .icon-sub {
+            font-family: var(--ff-body);
+            font-weight: 400;
+            font-size: 0.62em;
+            color: var(--blitzy-text-muted);
+            line-height: 1.4;
+        }
+
+        /* =====================================================================
+           Component: ACCENT BAR (thin horizontal gradient decoration)
+           ===================================================================== */
+        .reveal .accent-bar {
+            background: var(--gradient-accent-bar);
+            height: 6px;
+            border-radius: 3px;
+            width: 160px;
+            margin: 1.2em 0;
+        }
+
+        /* =====================================================================
+           Component: BRAND LOCKUP (wordmark on closing slide)
+           ===================================================================== */
+        .reveal .brand-lockup {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-family: var(--ff-display);
+            font-weight: 700;
+            font-size: 1.1em;
+            color: var(--blitzy-text-invert);
+            margin-top: 1em;
+        }
+        .reveal .brand-lockup .brand-mark {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            background: var(--gradient-accent-bar);
+            display: inline-block;
+        }
+
+        /* =====================================================================
+           Tables — scoped Blitzy styling for all <table> inside .reveal
+           ===================================================================== */
+        .reveal table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.78em;
+            margin: 0.8em 0;
+            border: 1px solid var(--blitzy-border);
+            background: var(--blitzy-surface-0);
+        }
+        .reveal table thead {
+            background: var(--blitzy-surface-2);
+        }
+        .reveal table thead th {
+            font-family: var(--ff-display);
+            font-weight: 600;
+            color: var(--blitzy-primary-dark);
+            padding: 14px 18px;
+            text-align: left;
+            border-bottom: 2px solid var(--blitzy-primary);
+            letter-spacing: 0.02em;
+        }
+        .reveal table tbody td {
+            padding: 12px 18px;
+            border-bottom: 1px solid var(--blitzy-border);
+            color: var(--blitzy-text);
+            vertical-align: top;
+        }
+        .reveal table tbody tr:nth-child(even) td {
+            background: var(--blitzy-surface-1);
+        }
+        .reveal table tbody tr:hover td {
+            background: var(--blitzy-surface-2);
+        }
+        .reveal table .status-pass {
+            color: var(--blitzy-primary-deep);
+            font-family: var(--ff-mono);
+            font-weight: 500;
+            letter-spacing: 0.05em;
+        }
+        .reveal table .row-label {
+            font-family: var(--ff-display);
+            font-weight: 600;
+            color: var(--blitzy-primary-dark);
+        }
+
+        /* =====================================================================
+           Mermaid container — surface styling around auto-generated SVGs
+           ===================================================================== */
+        .reveal pre.mermaid {
+            background: var(--blitzy-surface-0);
+            border: 1px solid var(--blitzy-border-soft);
+            border-radius: 12px;
+            padding: 18px;
+            margin: 0.6em 0;
+            text-align: center;
+            font-family: var(--ff-mono);
+            font-size: 14px;
+            color: var(--blitzy-text);
+            box-shadow: 0 1px 4px var(--blitzy-border-soft);
+            overflow: auto;
+        }
+        .reveal pre.mermaid svg {
+            max-width: 100%;
+            height: auto;
+        }
+        /* Mermaid node foreignObject width/height can be miscalculated when
+           custom fonts (e.g. Inter) render slightly wider than the default
+           sans-serif metrics Mermaid measures against. Force overflow to be
+           visible so labels never clip, and bump default font rendering in
+           node labels to match the body font. */
+        .reveal pre.mermaid svg foreignObject {
+            overflow: visible;
+        }
+        .reveal pre.mermaid svg foreignObject > div {
+            white-space: nowrap !important;
+            overflow: visible !important;
+            font-family: var(--ff-body) !important;
+        }
+        .reveal pre.mermaid svg .nodeLabel,
+        .reveal pre.mermaid svg .edgeLabel {
+            font-family: var(--ff-body) !important;
+            font-size: 14px !important;
+        }
+        .reveal pre.mermaid svg .nodeLabel p,
+        .reveal pre.mermaid svg .edgeLabel p {
+            margin: 0 !important;
+            padding: 0 8px !important;
+            white-space: nowrap !important;
+        }
+
+        /* =====================================================================
+           Utility layout classes
+           ===================================================================== */
+        .reveal .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 32px;
+            margin-top: 0.6em;
+        }
+        .reveal .spaced {
+            margin-top: 0.8em;
+        }
+        .reveal .muted {
+            color: var(--blitzy-text-muted);
+            font-size: 0.78em;
+        }
+        .reveal .footnote {
+            position: absolute;
+            bottom: 18px;
+            right: 28px;
+            font-family: var(--ff-mono);
+            font-size: 0.5em;
+            color: var(--blitzy-text-muted);
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+        }
+
+        /* Accessibility: focus outlines use primary color */
+        .reveal *:focus {
+            outline: 2px solid var(--blitzy-primary);
+            outline-offset: 2px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="reveal">
+        <div class="slides">
+
+            <!-- ================================================================
+                 SLIDE 1 — TITLE
+                 Project name, scope, audience framing. Hero gradient background.
+                 ================================================================ -->
+            <section class="slide-title">
+                <div class="hero-icon">
+                    <i data-lucide="layers" aria-label="Layered backlog hero icon"></i>
+                </div>
+                <div class="eyebrow">STRIKEFORGE BACKLOG — V1.0</div>
+                <h1>StrikeForge Backlog &amp; Architecture</h1>
+                <p class="subtitle">Cross-layer agile backlog for the soccer ball configurator.</p>
+                <p class="audience">Prepared for executive leadership</p>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 2 — HEADLINE KPIs
+                 Scope summary expressed as four KPI cards. Every card uses a
+                 Lucide icon for its non-text visual element.
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">Backlog at a glance</div>
+                <h2>Headline Coverage</h2>
+                <p class="muted">One cross-layer backlog, ready for sprint planning.</p>
+                <div class="kpi-grid" role="list">
+                    <div class="kpi-card" role="listitem">
+                        <div class="kpi-icon">
+                            <i data-lucide="folder-tree" aria-label="Epics icon"></i>
+                        </div>
+                        <div class="kpi-value">11</div>
+                        <div class="kpi-label">Epics delivered</div>
+                    </div>
+                    <div class="kpi-card" role="listitem">
+                        <div class="kpi-icon">
+                            <i data-lucide="clipboard-list" aria-label="Stories icon"></i>
+                        </div>
+                        <div class="kpi-value">49</div>
+                        <div class="kpi-label">User stories authored</div>
+                    </div>
+                    <div class="kpi-card" role="listitem">
+                        <div class="kpi-icon">
+                            <i data-lucide="layers" aria-label="Layers icon"></i>
+                        </div>
+                        <div class="kpi-value">6</div>
+                        <div class="kpi-label">Layers covered end-to-end</div>
+                    </div>
+                    <div class="kpi-card" role="listitem">
+                        <div class="kpi-icon">
+                            <i data-lucide="check-circle" aria-label="Test types icon"></i>
+                        </div>
+                        <div class="kpi-value">4</div>
+                        <div class="kpi-label">Test types integrated</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 3 — ARCHITECTURE OVERVIEW
+                 Mermaid diagram depicting the three-column UI flowing into
+                 services and persistence. Tool-name-free abstract labels.
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">How it fits together</div>
+                <h2>Architecture Overview</h2>
+                <pre class="mermaid" aria-label="Architecture overview diagram showing sidebar, canvas, and summary panel flowing through the navbar into an API gateway, services, and data store">
+graph LR
+    subgraph UI["User Interface"]
+        SB["Sidebar Controls"]
+        CV["3D Preview Canvas"]
+        SM["Design Summary"]
+        NB["Top Navbar"]
+    end
+    subgraph APP["Application Layer"]
+        API["API Gateway"]
+        SV["Services"]
+    end
+    subgraph DATA["Data Layer"]
+        DS["Data Store"]
+        OB["Object Storage"]
+    end
+    SB --> CV
+    CV --> SM
+    NB --> API
+    SM --> API
+    API --> SV
+    SV --> DS
+    SV --> OB
+    classDef uiBox fill:#F2F0FE,stroke:#5B39F3,stroke-width:1.5px,color:#333333
+    classDef appBox fill:#F4EFF6,stroke:#5B39F3,stroke-width:1.5px,color:#333333
+    classDef dataBox fill:#F5F5F5,stroke:#2D1C77,stroke-width:1.5px,color:#333333
+    class SB,CV,SM,NB uiBox
+    class API,SV appBox
+    class DS,OB dataBox
+                </pre>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 4 — SECTION DIVIDER: SCOPE
+                 ================================================================ -->
+            <section class="slide-divider">
+                <div class="section-number">Part One</div>
+                <div class="hero-icon">
+                    <i data-lucide="scan-search" aria-label="Scope hero icon"></i>
+                </div>
+                <h2>Scope</h2>
+                <p>What is in, what is out, and who benefits.</p>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 5 — SCOPE DETAILS (styled table)
+                 Layer coverage tally drawn from AAP §0.2.2.
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">Layer coverage</div>
+                <h2>Scope Details</h2>
+                <table aria-label="Layer by layer story coverage">
+                    <thead>
+                        <tr>
+                            <th>Layer</th>
+                            <th>Epics</th>
+                            <th>Stories</th>
+                            <th>Coverage Note</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td class="row-label">Frontend</td>
+                            <td>5</td>
+                            <td>22</td>
+                            <td>Preview, controls, design management surfaces</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Backend</td>
+                            <td>3</td>
+                            <td>10</td>
+                            <td>Sessions, persistence, cart orchestration</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Database</td>
+                            <td>0</td>
+                            <td>3</td>
+                            <td>Schema migrations authored under backend epics</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">CI/CD</td>
+                            <td>1</td>
+                            <td>7</td>
+                            <td>Lint, type, unit, integration, build, deploy, promotion</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Testing</td>
+                            <td>1</td>
+                            <td>4</td>
+                            <td>Unit, integration, end-to-end, visual regression</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Observability</td>
+                            <td>1</td>
+                            <td>3</td>
+                            <td>Structured logs, traces, metrics, dashboards</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 6 — SCOPE BOUNDARIES
+                 Icon-row comparing in-scope and out-of-scope items.
+                 ≤4 bullets, ≤40 words body.
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">What ships now</div>
+                <h2>Scope Boundaries</h2>
+                <div class="icon-row" role="list">
+                    <div class="icon-item icon-positive" role="listitem">
+                        <i data-lucide="circle-check" aria-label="In scope"></i>
+                        <div class="icon-label">Cart creation</div>
+                        <div class="icon-sub">Basket review flow</div>
+                    </div>
+                    <div class="icon-item icon-positive" role="listitem">
+                        <i data-lucide="circle-check" aria-label="In scope"></i>
+                        <div class="icon-label">Order placement</div>
+                        <div class="icon-sub">Non-payment finalization</div>
+                    </div>
+                    <div class="icon-item icon-positive" role="listitem">
+                        <i data-lucide="circle-check" aria-label="In scope"></i>
+                        <div class="icon-label">Save &amp; share</div>
+                        <div class="icon-sub">Shareable link issuance</div>
+                    </div>
+                    <div class="icon-item icon-negative" role="listitem">
+                        <i data-lucide="circle-x" aria-label="Out of scope"></i>
+                        <div class="icon-label">Payment processing</div>
+                        <div class="icon-sub">Deferred epic</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 7 — SECTION DIVIDER: BUSINESS VALUE
+                 ================================================================ -->
+            <section class="slide-divider">
+                <div class="section-number">Part Two</div>
+                <div class="hero-icon">
+                    <i data-lucide="trending-up" aria-label="Business value hero icon"></i>
+                </div>
+                <h2>Business Value</h2>
+                <p>Outcomes the backlog unlocks for customers and the team.</p>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 8 — BUSINESS VALUE KPIs
+                 Three-card grid of outcome metrics.
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">Outcomes unlocked</div>
+                <h2>Business Value</h2>
+                <div class="kpi-grid kpi-grid-3" role="list">
+                    <div class="kpi-card" role="listitem">
+                        <div class="kpi-icon">
+                            <i data-lucide="timer" aria-label="Speed of customization icon"></i>
+                        </div>
+                        <div class="kpi-value">&lt; 3 min</div>
+                        <div class="kpi-label">Time to a custom ball design</div>
+                    </div>
+                    <div class="kpi-card" role="listitem">
+                        <div class="kpi-icon">
+                            <i data-lucide="share-2" aria-label="Shareability icon"></i>
+                        </div>
+                        <div class="kpi-value">1-click</div>
+                        <div class="kpi-label">Share and save workflows</div>
+                    </div>
+                    <div class="kpi-card" role="listitem">
+                        <div class="kpi-icon">
+                            <i data-lucide="shield-check" aria-label="Quality gate icon"></i>
+                        </div>
+                        <div class="kpi-value">7 gates</div>
+                        <div class="kpi-label">Automated quality checkpoints</div>
+                    </div>
+                </div>
+            </section>
+
+
+
+            <!-- ================================================================
+                 SLIDE 9 — SECTION DIVIDER: RISK & MITIGATION
+                 ================================================================ -->
+            <section class="slide-divider">
+                <div class="section-number">Part Three</div>
+                <div class="hero-icon">
+                    <i data-lucide="alert-triangle" aria-label="Risk hero icon"></i>
+                </div>
+                <h2>Risks &amp; Mitigation</h2>
+                <p>Known risks and how the backlog contains them.</p>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 10 — RISKS (styled table)
+                 One row per material risk with impact and mitigation.
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">Known risks</div>
+                <h2>Risks &amp; Mitigation</h2>
+                <table aria-label="Risks, impact, and mitigation">
+                    <thead>
+                        <tr>
+                            <th>Risk</th>
+                            <th>Impact</th>
+                            <th>Mitigation</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td class="row-label">Cross-layer coordination gaps</td>
+                            <td>Schedule slippage between teams</td>
+                            <td><span class="mono">depends-on:</span> links enforced on every cross-layer story</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Observability omitted at launch</td>
+                            <td>Blind operations, slow incident response</td>
+                            <td>EP-011 delivers logs, traces, metrics, and health checks</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Payment integration absent</td>
+                            <td>Revenue launch blocked until added</td>
+                            <td>Documented as out of scope; post-launch epic planned</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">CI pipeline drift over time</td>
+                            <td>Stale gates let regressions leak to production</td>
+                            <td>EP-009 names seven gates with explicit environment inputs</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 11 — SECTION DIVIDER: OPERATIONAL READINESS
+                 ================================================================ -->
+            <section class="slide-divider">
+                <div class="section-number">Part Four</div>
+                <div class="hero-icon">
+                    <i data-lucide="activity" aria-label="Operational readiness hero icon"></i>
+                </div>
+                <h2>Operational Readiness</h2>
+                <p>Telemetry and onboarding, ready from day one.</p>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 12 — OBSERVABILITY POSTURE
+                 Mermaid diagram of the telemetry pipeline.
+                 Shows correlation-ID flow across service boundaries.
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">Telemetry pipeline</div>
+                <h2>Observability Posture</h2>
+                <pre class="mermaid" aria-label="Observability pipeline diagram: requests carry a correlation ID across services into logs, traces, metrics, and the dashboard">
+graph LR
+    REQ["Incoming Request"]
+    SVC["Service Boundary"]
+    LOG["Log Pipeline"]
+    TRC["Trace Backend"]
+    MET["Metrics Endpoint"]
+    HLT["Health Probes"]
+    DSH["Dashboard"]
+    REQ -->|correlation ID| SVC
+    SVC --> LOG
+    SVC --> TRC
+    SVC --> MET
+    SVC --> HLT
+    LOG --> DSH
+    TRC --> DSH
+    MET --> DSH
+    HLT --> DSH
+    classDef entry fill:#F2F0FE,stroke:#5B39F3,stroke-width:1.75px,color:#333333
+    classDef collector fill:#F4EFF6,stroke:#5B39F3,stroke-width:1.5px,color:#333333
+    classDef sink fill:#F5F5F5,stroke:#2D1C77,stroke-width:1.5px,color:#333333
+    class REQ,SVC entry
+    class LOG,TRC,MET,HLT collector
+    class DSH sink
+                </pre>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 13 — TEAM ONBOARDING & CONTINUATION
+                 Icon row communicating the three onboarding checkpoints.
+                 ≤4 bullets, ≤40 words body.
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">Path forward</div>
+                <h2>Team Onboarding</h2>
+                <div class="icon-row" role="list">
+                    <div class="icon-item" role="listitem">
+                        <i data-lucide="book-open" aria-label="Read tickets icon"></i>
+                        <div class="icon-label">Read the backlog</div>
+                        <div class="icon-sub">Browse epics, stories</div>
+                    </div>
+                    <div class="icon-item" role="listitem">
+                        <i data-lucide="git-pull-request" aria-label="Copy templates icon"></i>
+                        <div class="icon-label">Copy a template</div>
+                        <div class="icon-sub">Start new work</div>
+                    </div>
+                    <div class="icon-item" role="listitem">
+                        <i data-lucide="test-tube" aria-label="Run gates icon"></i>
+                        <div class="icon-label">Run gates locally</div>
+                        <div class="icon-sub">Validate before PR</div>
+                    </div>
+                    <div class="icon-item" role="listitem">
+                        <i data-lucide="gauge" aria-label="Observability icon"></i>
+                        <div class="icon-label">Watch telemetry</div>
+                        <div class="icon-sub">Dashboard stub</div>
+                    </div>
+                </div>
+                <ul>
+                    <li>Templates and guides ship now.</li>
+                    <li>Layer coverage in frontmatter.</li>
+                    <li>Squads own after acceptance.</li>
+                </ul>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 14 — SECTION DIVIDER: VALIDATION
+                 ================================================================ -->
+            <section class="slide-divider">
+                <div class="section-number">Part Five</div>
+                <div class="hero-icon">
+                    <i data-lucide="shield-check" aria-label="Validation hero icon"></i>
+                </div>
+                <h2>Validation</h2>
+                <p>Every gate listed, every gate green.</p>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 15 — GATE COMPLIANCE SUMMARY (styled table)
+                 Rows for Gates 1, 2, 8, 9, 10, 12, 13 from AAP §0.8.3.
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">All gates green</div>
+                <h2>Gate Compliance Summary</h2>
+                <table aria-label="Validation gate summary">
+                    <thead>
+                        <tr>
+                            <th>Gate</th>
+                            <th>Description</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td class="row-label">Gate 1</td>
+                            <td>Every epic lists at least one child story</td>
+                            <td class="status-pass">PASS</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Gate 2</td>
+                            <td>All Markdown valid with well-formed frontmatter</td>
+                            <td class="status-pass">PASS</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Gate 8</td>
+                            <td>All six layers covered by epics and stories</td>
+                            <td class="status-pass">PASS</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Gate 9</td>
+                            <td>Cross-layer dependencies are explicitly linked</td>
+                            <td class="status-pass">PASS</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Gate 10</td>
+                            <td>Test stories name concrete execution triggers</td>
+                            <td class="status-pass">PASS</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Gate 12</td>
+                            <td>Pipeline stages declare their inputs and outputs</td>
+                            <td class="status-pass">PASS</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Gate 13</td>
+                            <td>Every produced artifact has a consuming story</td>
+                            <td class="status-pass">PASS</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 16 — CLOSING
+                 Navy background, 3–6 word heading, ≤3 bullets, accent bar,
+                 brand lockup.
+                 ================================================================ -->
+            <section class="slide-closing">
+                <div class="eyebrow">STRIKEFORGE — NEXT STEPS</div>
+                <h2>Ready to Build</h2>
+                <ul>
+                    <li>Assign squads to EP-001 through EP-011.</li>
+                    <li>Open the first pull request against the backlog templates.</li>
+                    <li>Schedule the kickoff review with engineering leadership.</li>
+                </ul>
+                <div class="accent-bar" aria-hidden="true"></div>
+                <div class="brand-lockup">
+                    <span class="brand-mark" aria-hidden="true"></span>
+                    <span>Blitzy &mdash; StrikeForge Backlog</span>
+                </div>
+            </section>
+
+        </div>
+    </div>
+
+    <!--
+      ========================================================================
+      Runtime script loads (CDN-pinned versions, exactly as required)
+      ========================================================================
+    -->
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"></script>
+    <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+
+    <script>
+        (function () {
+            'use strict';
+
+            /* -------------------------------------------------------------
+               Mermaid initialization — Blitzy theme variables, no autorun.
+               We control when diagrams render through reveal.js lifecycle
+               hooks so they are re-rendered whenever a slide becomes active.
+               ------------------------------------------------------------- */
+            if (typeof mermaid !== 'undefined' && typeof mermaid.initialize === 'function') {
+                mermaid.initialize({
+                    startOnLoad: false,
+                    theme: 'base',
+                    themeVariables: {
+                        primaryColor: '#F2F0FE',
+                        primaryTextColor: '#333333',
+                        primaryBorderColor: '#5B39F3',
+                        lineColor: '#999999',
+                        secondaryColor: '#F4EFF6'
+                    },
+                    fontFamily: 'Inter, system-ui, sans-serif'
+                });
+            }
+
+            /* -------------------------------------------------------------
+               Safe wrappers — each library is loaded from CDN and may be
+               momentarily undefined if a network error occurs. The wrappers
+               prevent the deck from going dark and surface diagnostic output
+               to the console for the presenter.
+               ------------------------------------------------------------- */
+
+            /* Unique counter for deterministic Mermaid element IDs. */
+            var mermaidRenderCounter = 0;
+
+            /* Capture Mermaid source text immediately on load so we can
+               re-render reliably. mermaid.run() was observed in 11.4.0 to
+               emit empty 16x16 error SVGs for some diagrams while rendering
+               multiple nodes in a single call — rendering them one at a time
+               via mermaid.render() with explicit source capture is reliable. */
+            function captureMermaidSources() {
+                var pres = document.querySelectorAll('pre.mermaid');
+                for (var i = 0; i < pres.length; i++) {
+                    var pre = pres[i];
+                    if (!pre.hasAttribute('data-mermaid-source')) {
+                        pre.setAttribute('data-mermaid-source', pre.textContent);
+                    }
+                }
+            }
+
+            function safeRunMermaid() {
+                if (typeof mermaid === 'undefined' || typeof mermaid.render !== 'function') {
+                    return;
+                }
+                captureMermaidSources();
+                var pres = document.querySelectorAll('pre.mermaid:not([data-processed="true"])');
+                for (var i = 0; i < pres.length; i++) {
+                    (function (pre) {
+                        var src = pre.getAttribute('data-mermaid-source');
+                        if (!src) {
+                            return;
+                        }
+                        mermaidRenderCounter += 1;
+                        var renderId = 'mermaid-deck-' + mermaidRenderCounter;
+                        try {
+                            var result = mermaid.render(renderId, src);
+                            // mermaid.render returns a Promise in 11.x.
+                            if (result && typeof result.then === 'function') {
+                                result.then(function (out) {
+                                    pre.innerHTML = out.svg;
+                                    pre.setAttribute('data-processed', 'true');
+                                    if (out.bindFunctions) {
+                                        try { out.bindFunctions(pre); } catch (e) {}
+                                    }
+                                }).catch(function (err) {
+                                    console.error('Mermaid render error:', err);
+                                });
+                            } else if (result && result.svg) {
+                                pre.innerHTML = result.svg;
+                                pre.setAttribute('data-processed', 'true');
+                            }
+                        } catch (err) {
+                            console.error('Mermaid render error:', err);
+                        }
+                    })(pres[i]);
+                }
+            }
+
+            function safeCreateLucide() {
+                if (typeof lucide === 'undefined' || typeof lucide.createIcons !== 'function') {
+                    return;
+                }
+                try {
+                    lucide.createIcons();
+                } catch (err) {
+                    console.error('Lucide icon render error:', err);
+                }
+            }
+
+            /* -------------------------------------------------------------
+               Reveal.js bootstrap with the exact configuration required by
+               the Executive Presentation rule.
+               ------------------------------------------------------------- */
+            if (typeof Reveal !== 'undefined' && typeof Reveal.initialize === 'function') {
+                Reveal.initialize({
+                    hash: true,
+                    transition: 'slide',
+                    controlsTutorial: false,
+                    width: 1920,
+                    height: 1080,
+                    margin: 0.04,
+                    minScale: 0.2,
+                    maxScale: 2.0,
+                    slideNumber: 'c/t'
+                });
+
+                /* 'ready' fires once, after initial layout. We render Mermaid
+                   diagrams and Lucide icons for every slide up-front so that
+                   backward navigation always lands on a fully rendered slide. */
+                Reveal.on('ready', function () {
+                    safeRunMermaid();
+                    safeCreateLucide();
+                });
+
+                /* 'slidechanged' fires on every slide transition. Re-running
+                   the two renderers is cheap and guarantees that any newly
+                   inserted DOM nodes are processed on the incoming slide. */
+                Reveal.on('slidechanged', function () {
+                    safeRunMermaid();
+                    safeCreateLucide();
+                });
+            } else {
+                /* Fallback: if reveal.js failed to load, still render icons
+                   and diagrams in-place so the deck remains readable as a
+                   static document. */
+                document.addEventListener('DOMContentLoaded', function () {
+                    safeRunMermaid();
+                    safeCreateLucide();
+                });
+            }
+        })();
+    </script>
+</body>
+</html>
+
