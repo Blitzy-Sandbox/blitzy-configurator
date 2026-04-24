@@ -5,7 +5,7 @@ epic: EP-005
 layer: frontend
 points: 3
 priority: medium
-depends-on: [ST-029]
+depends-on: [ST-024, ST-029]
 ---
 
 ## Narrative
