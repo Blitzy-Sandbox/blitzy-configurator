@@ -31,7 +31,7 @@ The epic deliberately stops short of taking payment. Charging a card, collecting
 
 - ST-032 — Create Order endpoint capturing a cart state as a durable order record.
 - ST-033 — Retrieve Cart endpoint returning the signed-in user's current cart contents.
-- ST-034 — Finalize Order step performing non-payment post-processing.
+- ST-034 — Finalize Order step performing the documented post-processing workflow.
 - ST-035 — Orders and order-items schema migration with indexes supporting retrieval queries.
 
 ## Out of Scope

@@ -5,7 +5,7 @@ epic: EP-006
 layer: backend
 points: 2
 priority: high
-depends-on: [ST-024]
+depends-on: [ST-024, ST-026]
 ---
 
 ## Narrative

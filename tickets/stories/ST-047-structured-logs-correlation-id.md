@@ -5,7 +5,7 @@ epic: EP-011
 layer: observability
 points: 5
 priority: high
-depends-on: [ST-024]
+depends-on: [ST-023, ST-024, ST-026]
 ---
 
 ## Narrative

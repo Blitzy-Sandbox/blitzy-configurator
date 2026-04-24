@@ -18,3 +18,4 @@ As an authenticated user, I want to fetch the list of my saved designs from the 
 - [ ] The response includes, per design, the server-assigned identifier, title, last-modified timestamp, and enough metadata for a client to render a list without loading the full design payload.
 - [ ] When the authenticated user has no designs, the endpoint returns an empty collection with a success status (not an error).
 - [ ] The endpoint supports deterministic ordering (for example, most-recently-modified first) so repeated calls with unchanged state produce the same order.
+- [ ] The endpoint enforces a documented maximum page size and supports a bounded paginated traversal mechanism (cursor-based, offset-based, or equivalent), so that authenticated users with large design libraries cannot produce unbounded responses and every response is capped at the documented page size.
