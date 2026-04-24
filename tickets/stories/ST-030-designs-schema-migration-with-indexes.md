@@ -1,7 +1,7 @@
 ---
 id: ST-030
 title: Introduce Designs Schema with Ownership and Indexes
-epic: EP-007
+epic: EP-012
 layer: database
 points: 5
 priority: high

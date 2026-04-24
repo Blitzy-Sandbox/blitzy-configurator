@@ -9,7 +9,7 @@ priority: high
 
 ## Narrative
 
-As an end user, I want to pick the primary panel color from a curated palette, so that I can express my team's dominant color identity.
+As an end user, I want to pick the primary panel color from a curated palette, so that I can convey my team's dominant color identity.
 
 ## Acceptance Criteria
 

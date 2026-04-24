@@ -10,7 +10,7 @@ This folder contains empty ticket scaffolds. Use them to author new epics and st
 ## How to Create
 
 1. Copy the appropriate template file (`epic-template.md` for an epic, `story-template.md` for a story).
-2. Rename the copy to the next sequential ID with a kebab-case slug — for example `EP-012-new-epic-slug.md` or `ST-050-new-story-slug.md`. IDs are zero-padded to three digits.
+2. Rename the copy to the next sequential ID with a kebab-case slug — for example `EP-013-new-epic-slug.md` or `ST-050-new-story-slug.md`. IDs are zero-padded to three digits.
 3. Move the renamed copy into `/tickets/epics/` (for epics) or `/tickets/stories/` (for stories).
 4. Replace every `<placeholder>` token with a real value.
 5. For story files only: if the story requires a `test-type` or `depends-on` field, remove the leading `# ` comment prefix to activate that line; otherwise delete the commented line entirely.
@@ -20,7 +20,7 @@ This folder contains empty ticket scaffolds. Use them to author new epics and st
 
 ### Epic frontmatter fields
 
-- `id` — `EP-00N`, zero-padded to three digits (`EP-001` through `EP-011`).
+- `id` — `EP-00N`, zero-padded to three digits (`EP-001` through `EP-012`, sequential; the next new epic takes `EP-013`).
 - `title` — Title Case descriptive phrase.
 - `layer` — exactly one of: `frontend`, `backend`, `database`, `ci-cd`, `testing`, `observability`.
 - `stories` — non-empty list of child story IDs (e.g., `[ST-001, ST-002]`).

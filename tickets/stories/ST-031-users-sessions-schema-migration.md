@@ -1,7 +1,7 @@
 ---
 id: ST-031
 title: Introduce Users and Sessions Schemas with Indexes
-epic: EP-007
+epic: EP-012
 layer: database
 points: 5
 priority: high

@@ -1,7 +1,7 @@
 ---
 id: ST-035
 title: Introduce Orders and Order Items Schema with Indexes
-epic: EP-008
+epic: EP-012
 layer: database
 points: 5
 priority: high
