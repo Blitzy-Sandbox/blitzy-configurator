@@ -1,6 +1,6 @@
 ---
 id: ST-042
-title: Promote Deployment Through Development, Staging, and Production
+title: Environment Promotion Through Development, Staging, and Production
 epic: EP-009
 layer: ci-cd
 points: 5
