@@ -42,6 +42,6 @@
     "incremental": true,
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
-  "include": ["src/**/*.ts", "jest.config.unit.ts", "jest.config.integration.ts"],
+  "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "coverage", "migrations", "tests/integration/**/*.ts"]
 }
