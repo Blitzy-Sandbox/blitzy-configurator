@@ -1,0 +1,198 @@
+# StrikeForge Cloud Build Pipeline (7 steps with explicit waitFor)
+# Authored per AAP §0.6.10 (MG1-E gates 1–4) and §0.6.11 (MG2-G build/deploy/promotion).
+# Rule R8 enforced via `set -eu` in every shell entrypoint.
+# Substitutions allow the operator to override defaults at submit time.
+
+steps:
+  # -----------------------------------------------------------------
+  # Gate 1 — lint (ST-036)
+  # -----------------------------------------------------------------
+  - id: 'lint'
+    name: 'node:20-alpine'
+    waitFor: ['-']
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -eu
+        apk add --no-cache bash git
+        npm ci --workspaces --include-workspace-root
+        mkdir -p /workspace/reports
+        cd backend && npx eslint src/ --max-warnings 0 --format json --output-file /workspace/reports/eslint-backend.json
+        cd /workspace/frontend && npx eslint src/ --max-warnings 0 --format json --output-file /workspace/reports/eslint-frontend.json
+
+  # -----------------------------------------------------------------
+  # Gate 2 — type-check (ST-037)
+  # -----------------------------------------------------------------
+  - id: 'typecheck'
+    name: 'node:20-alpine'
+    waitFor: ['lint']
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -eu
+        apk add --no-cache bash git
+        mkdir -p /workspace/reports
+        cd backend && npx tsc --noEmit 2>&1 | tee /workspace/reports/tsc-backend.log
+        cd /workspace/frontend && npx tsc --noEmit 2>&1 | tee /workspace/reports/tsc-frontend.log
+
+  # -----------------------------------------------------------------
+  # Gate 3 — unit tests (ST-038)
+  # -----------------------------------------------------------------
+  - id: 'test:unit'
+    name: 'node:20-alpine'
+    waitFor: ['typecheck']
+    entrypoint: 'sh'
+    env:
+      - 'COVERAGE_THRESHOLD=${_COVERAGE_THRESHOLD}'
+    args:
+      - '-c'
+      - |
+        set -eu
+        apk add --no-cache bash git
+        mkdir -p /workspace/reports
+        cd backend && npx jest --config jest.config.unit.ts --coverage --coverageThreshold "{\"global\":{\"lines\":${_COVERAGE_THRESHOLD}}}" --ci --json --outputFile=/workspace/reports/jest-unit-results.json
+        cp -r backend/coverage /workspace/reports/coverage-unit
+
+  # -----------------------------------------------------------------
+  # Gate 4 — integration tests (ST-039) — fail-closed per Rule R8
+  # -----------------------------------------------------------------
+  - id: 'test:integration'
+    name: 'gcr.io/cloud-builders/docker'
+    waitFor: ['test:unit']
+    entrypoint: 'bash'
+    env:
+      - 'DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/strikeforge'
+      - 'FIREBASE_PROJECT_ID=strikeforge-ci'
+      - 'GCS_BUCKET_NAME=strikeforge-logos-ci'
+      - 'GCS_EMULATOR_HOST=http://localhost:4443'
+      - 'COVERAGE_THRESHOLD=${_COVERAGE_THRESHOLD}'
+      - 'GCP_REGION=${_REGION}'
+    args:
+      - '-c'
+      - |
+        set -eu
+        mkdir -p /workspace/reports
+        # Start dependency services via the ci profile
+        docker compose --profile ci up -d postgres firebase-auth-emulator gcs-emulator
+        # Wait for postgres readiness
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          if docker compose exec -T postgres pg_isready -U postgres; then break; fi
+          sleep 2
+        done
+        cd backend
+        npx node-pg-migrate up
+        npx jest --config jest.config.integration.ts --forceExit --ci --json --outputFile=/workspace/reports/jest-integration-results.json
+
+  # -----------------------------------------------------------------
+  # Step 5 — build container image (ST-040)
+  # -----------------------------------------------------------------
+  - id: 'build'
+    name: 'gcr.io/cloud-builders/docker'
+    waitFor: ['test:integration']
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -eu
+        docker build \
+          --file backend/Dockerfile \
+          --tag gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA \
+          --tag gcr.io/$PROJECT_ID/strikeforge:latest \
+          backend/
+        docker push gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA
+        docker push gcr.io/$PROJECT_ID/strikeforge:latest
+        DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA | cut -d@ -f2)
+        mkdir -p /workspace/deployments
+        cat > /workspace/deployments/build-metadata.json <<META
+        {
+          "commitSha": "$COMMIT_SHA",
+          "imageDigest": "$DIGEST",
+          "image": "gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA"
+        }
+        META
+
+  # -----------------------------------------------------------------
+  # Step 6 — deploy to development via Cloud Deploy (ST-041)
+  # -----------------------------------------------------------------
+  - id: 'deploy'
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    waitFor: ['build']
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -eu
+        DIGEST=$(jq -r .imageDigest /workspace/deployments/build-metadata.json)
+        gcloud deploy releases create release-$COMMIT_SHA \
+          --project=$PROJECT_ID \
+          --region=${_REGION} \
+          --delivery-pipeline=${_PIPELINE_NAME} \
+          --source=. \
+          --images=gcr.io/$PROJECT_ID/strikeforge=gcr.io/$PROJECT_ID/strikeforge@$DIGEST
+        sleep 60
+        SERVICE_URL=$(gcloud run services describe strikeforge --region=${_REGION} --project=$PROJECT_ID --format='value(status.url)' || echo 'unknown')
+        cat > /workspace/deployments/deploy-metadata.json <<META
+        {
+          "deploymentId": "release-$COMMIT_SHA",
+          "serviceUrl": "$SERVICE_URL"
+        }
+        META
+
+  # -----------------------------------------------------------------
+  # Step 7 — environment promotion (ST-042)
+  # -----------------------------------------------------------------
+  - id: 'promotion'
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    waitFor: ['deploy']
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -eu
+        ROLLOUTS=$(gcloud deploy rollouts list \
+          --project=$PROJECT_ID \
+          --region=${_REGION} \
+          --delivery-pipeline=${_PIPELINE_NAME} \
+          --release=release-$COMMIT_SHA \
+          --format=json)
+        cat > /workspace/deployments/promotion-log.json <<META
+        {
+          "releaseId": "release-$COMMIT_SHA",
+          "rollouts": $ROLLOUTS,
+          "approvalRequired": ["staging", "production"],
+          "recordedApprovals": []
+        }
+        META
+
+# -----------------------------------------------------------------
+# Artifacts — capture every report and metadata file to GCS
+# -----------------------------------------------------------------
+artifacts:
+  objects:
+    location: 'gs://${_ARTIFACTS_BUCKET}/${BUILD_ID}'
+    paths:
+      - 'reports/**'
+      - 'deployments/**'
+
+# -----------------------------------------------------------------
+# Substitutions (operator-overridable)
+# -----------------------------------------------------------------
+substitutions:
+  _COVERAGE_THRESHOLD: '80'
+  _ARTIFACTS_BUCKET: 'strikeforge-build-artifacts'
+  _REGION: 'us-central1'
+  _PIPELINE_NAME: 'strikeforge-delivery-pipeline'
+  _DELIVERY_CONFIG: 'delivery-pipeline/clouddeploy.yaml'
+
+# -----------------------------------------------------------------
+# Options
+# -----------------------------------------------------------------
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+  env:
+    - 'DOCKER_BUILDKIT=1'
+
+timeout: '3600s'

@@ -1,0 +1,38 @@
+apiVersion: skaffold/v4beta7
+kind: Config
+metadata:
+  name: strikeforge-backend
+
+build:
+  artifacts:
+    - image: gcr.io/${PROJECT_ID}/strikeforge
+      context: backend
+      docker:
+        dockerfile: Dockerfile
+  tagPolicy:
+    gitCommit:
+      variant: CommitSha
+
+manifests:
+  rawYaml:
+    - delivery-pipeline/run-service.yaml
+
+deploy:
+  cloudrun: {}
+
+profiles:
+  - name: development
+    deploy:
+      cloudrun:
+        projectid: ${PROJECT_ID}
+        region: ${GCP_REGION}
+  - name: staging
+    deploy:
+      cloudrun:
+        projectid: ${PROJECT_ID}
+        region: ${GCP_REGION}
+  - name: production
+    deploy:
+      cloudrun:
+        projectid: ${PROJECT_ID}
+        region: ${GCP_REGION}

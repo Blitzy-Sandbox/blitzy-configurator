@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    profiles: [default, ci]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: strikeforge
+    ports:
+      - '5432:5432'
+    volumes:
+      - strikeforge-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d strikeforge']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  firebase-auth-emulator:
+    image: node:20-alpine
+    restart: unless-stopped
+    profiles: [default, ci]
+    command:
+      - 'sh'
+      - '-c'
+      - 'npm install -g firebase-tools && firebase emulators:start --only auth --project strikeforge-local --host 0.0.0.0 --auth-port 9099'
+    ports:
+      - '9099:9099'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:9099']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  gcs-emulator:
+    image: fsouza/fake-gcs-server:latest
+    restart: unless-stopped
+    profiles: [default, ci]
+    command:
+      - '-scheme'
+      - 'http'
+      - '-port'
+      - '4443'
+      - '-public-host'
+      - 'gcs-emulator:4443'
+    ports:
+      - '4443:4443'
+    volumes:
+      - strikeforge-gcs-data:/data
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:4443/storage/v1/b']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: builder
+    profiles: [default]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      firebase-auth-emulator:
+        condition: service_healthy
+      gcs-emulator:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/strikeforge
+      FIREBASE_PROJECT_ID: strikeforge-local
+      FIREBASE_AUTH_EMULATOR_HOST: firebase-auth-emulator:9099
+      GCS_BUCKET_NAME: strikeforge-logos-local
+      GCS_EMULATOR_HOST: http://gcs-emulator:4443
+      STORAGE_EMULATOR_HOST: http://gcs-emulator:4443
+      COVERAGE_THRESHOLD: '80'
+      GCP_REGION: us-central1
+      NODE_ENV: development
+      PORT: '3000'
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    command:
+      - 'sh'
+      - '-c'
+      - 'npm install && npx node-pg-migrate up && npm run dev'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/healthz']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+volumes:
+  strikeforge-pg-data:
+  strikeforge-gcs-data:
