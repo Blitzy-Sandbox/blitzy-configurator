@@ -10,9 +10,37 @@ import type { Express, NextFunction, Request, Response } from 'express';
 
 import { validateEnv } from './config/env';
 import { createLogger } from './logging/pino';
-import { correlationMiddleware, pinoCorrelationMixin } from './middleware/correlation';
+import { correlationMiddleware, correlationStore } from './middleware/correlation';
 import { createHealthRouter } from './routes/health';
 import { createMetrics } from './routes/metrics';
+
+/**
+ * Pino mixin that reads the active `CorrelationContext` from the
+ * `correlationStore` AsyncLocalStorage and emits its `correlationId`
+ * (and `uid` when present) on every log record.
+ *
+ * This function is defined HERE (not in `./middleware/correlation`)
+ * because the correlation module is the FOUNDATIONAL layer and must
+ * not import from `./logging/pino` (which would create a circular
+ * dependency). The mixin is a pure consumer of the exported
+ * `correlationStore` and has no other dependencies.
+ *
+ * Per Rule R2 / Rule C5 the only identity fields ever returned are
+ * `correlationId` and `uid`. The pino redaction allow-list in
+ * `./logging/pino.ts` provides defence-in-depth against any other
+ * field accidentally appearing in a log record.
+ */
+function pinoCorrelationMixin(): Record<string, string> {
+  const ctx = correlationStore.getStore();
+  if (ctx === undefined) {
+    return {};
+  }
+  const fields: Record<string, string> = { correlationId: ctx.correlationId };
+  if (ctx.uid !== undefined) {
+    fields['uid'] = ctx.uid;
+  }
+  return fields;
+}
 
 /**
  * Application entry point.
@@ -68,8 +96,7 @@ function bootstrap(): Bootstrapped {
   // labels (cardinal property for ST-048-AC2 trace-metric
   // correlation).
   const SERVICE_NAME = process.env['SERVICE_NAME'] ?? 'strikeforge-backend';
-  const SERVICE_VERSION =
-    process.env['SERVICE_VERSION'] ?? process.env['COMMIT_SHA'] ?? '0.1.0';
+  const SERVICE_VERSION = process.env['SERVICE_VERSION'] ?? process.env['COMMIT_SHA'] ?? '0.1.0';
   const NODE_ENV = process.env['NODE_ENV'] ?? 'development';
   const portRaw = process.env['PORT'] ?? '3000';
   const PORT = Number.parseInt(portRaw, 10);
@@ -109,8 +136,10 @@ function bootstrap(): Bootstrapped {
   // Correlation ID middleware. Stamps every inbound request with a
   // UUID v4 (or preserves the inbound x-correlation-id) and pushes
   // the value into AsyncLocalStorage so the pino mixin and outbound
-  // HTTP interceptors can read it without parameter threading.
-  app.use(correlationMiddleware());
+  // HTTP interceptors can read it without parameter threading. This
+  // is a DIRECT middleware (not a factory): it takes (req, res, next)
+  // directly and is registered without invoking it.
+  app.use(correlationMiddleware);
 
   // Attach a request-scoped logger reference to every request. The
   // mixin on the root logger (set above) means every log record
@@ -167,10 +196,7 @@ function bootstrap(): Bootstrapped {
 
   // Step 8: bind the listening socket. PORT is validated above.
   const server = app.listen(PORT, () => {
-    logger.info(
-      { port: PORT, service: SERVICE_NAME, environment: NODE_ENV },
-      'backend_listening',
-    );
+    logger.info({ port: PORT, service: SERVICE_NAME, environment: NODE_ENV }, 'backend_listening');
   });
 
   const shutdown = async (): Promise<void> => {

@@ -43,7 +43,11 @@ export interface CreateLoggerOptions {
    * Optional pino mixin function. Called at every record emission;
    * the returned object is merged into the record so dynamic fields
    * such as the current correlation ID can be added without manual
-   * threading. See `middleware/correlation.ts#pinoCorrelationMixin`.
+   * threading. The application-level mixin is defined in
+   * `backend/src/index.ts`, where it reads the active
+   * `correlationStore` (`AsyncLocalStorage` from
+   * `./middleware/correlation`) and emits `correlationId` (and `uid`
+   * when authenticated) on every log record.
    */
   mixin?: () => Record<string, unknown>;
 }
