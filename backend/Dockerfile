@@ -25,12 +25,24 @@ COPY package.json package-lock.json* ./
 # Install ALL dependencies (devDependencies included for TypeScript compilation)
 RUN npm install --no-audit --no-fund
 
+# The backend's tsconfig.json extends ../tsconfig.json (the monorepo root).
+# The Docker build context is `backend/`, so the parent tsconfig is not
+# available in the build context. Synthesize a minimal placeholder at the
+# expected path so the `extends` clause resolves at compile time. The
+# placeholder declares no compiler options (the backend's tsconfig fully
+# specifies strict mode); this keeps the container self-contained and
+# preserves the cloudbuild.yaml `--file backend/Dockerfile backend/` context.
+RUN echo '{"compilerOptions":{},"exclude":[]}' > /tsconfig.json
+
 # Copy the rest of the source
 COPY tsconfig.json ./
 COPY src ./src
 COPY migrations ./migrations
 
-# Compile TypeScript (no-op until src/ exists; safe placeholder)
+# Compile TypeScript so the production stage can run from `dist/`. This step
+# is exercised in CI via Cloud Build's MG2-G build stage; locally docker-compose
+# targets `builder` and runs ts-node-dev directly against `src/`, so the
+# compiled output is unused but still verified to be free of compile errors.
 RUN npm run build
 
 # Prune devDependencies so the production stage can copy a lean node_modules

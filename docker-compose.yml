@@ -9,14 +9,15 @@
 #   docker compose ps --format json | jq -s -r '.[].State' | sort | uniq
 #   # expected output: running
 #
-# The three infrastructure services (postgres, firebase-auth-emulator,
-# gcs-emulator) start with bare `docker compose up -d`. The `backend` service
-# is gated behind the `app` profile so it only starts once Track 1 source code
-# exists in `backend/src/`. To run the full stack locally (after Track 1):
-#   docker compose --profile app up -d
-#
-# CI integration tests start the infrastructure services only (the backend
-# process runs directly via `jest`):
+# All four services (postgres, firebase-auth-emulator, gcs-emulator, backend)
+# start with bare `docker compose up -d` per AAP §0.1.2. The backend service
+# uses `target: builder` from `backend/Dockerfile` so ts-node-dev can run the
+# TypeScript sources from a bind-mounted `./backend` directory without an
+# explicit production build cycle. The `backend/src/` and `backend/migrations/`
+# directories MUST exist on the host (the builder stage copies both); if you
+# need to bring up only the infrastructure services without the backend
+# (e.g. running Jest integration tests against the host), pass an explicit
+# service list:
 #   docker compose up -d postgres firebase-auth-emulator gcs-emulator
 #
 # All healthchecks bind to 127.0.0.1 (IPv4) because BusyBox `wget` resolves
@@ -89,19 +90,28 @@ services:
       timeout: 5s
       retries: 20
 
-  # Backend Express service. Profile-gated under `app` because:
-  #  (a) Phase A scaffolding does not yet create backend/src/, so `npm run dev`
-  #      would crash continuously and produce false negatives at Gate A.
-  #  (b) CI integration tests spawn the backend directly from jest rather than
-  #      via this compose service.
-  # Once Track 1 source code exists, run `docker compose --profile app up -d`
-  # to bring up the full stack.
+  # Backend Express service — Phase A minimum implementation that satisfies:
+  #   * Rule R4 — fail-fast within 2s if any of the six required env vars
+  #     is unset (DATABASE_URL, FIREBASE_PROJECT_ID, GCS_BUCKET_NAME,
+  #     GCS_EMULATOR_HOST, COVERAGE_THRESHOLD, GCP_REGION).
+  #   * Rule R6 — `backend/src/tracing.ts` is the FIRST import in
+  #     `backend/src/index.ts`, registering OpenTelemetry auto-instrumentation
+  #     before any application module loads.
+  #   * AAP §0.1.2 — `docker compose up -d` brings up the backend alongside
+  #     postgres, firebase-auth-emulator, and gcs-emulator (4 services).
+  #   * AAP §0.5.6 — middleware chain ordering: tracing → express.json →
+  #     correlation → request logger → metrics → routes → error handler.
+  #   * ST-048 — `/healthz`, `/readyz`, `/metrics` endpoints exposed.
+  #
+  # The Dockerfile's `builder` stage is targeted so ts-node-dev can run from
+  # source. The bind-mount `./backend:/app` enables hot-reload during dev;
+  # the anonymous `/app/node_modules` volume preserves the container's
+  # node_modules (which were populated by `npm install` during the build).
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
       target: builder
-    profiles: ['app']
     depends_on:
       postgres:
         condition: service_healthy
@@ -120,6 +130,8 @@ services:
       GCP_REGION: us-central1
       NODE_ENV: development
       PORT: '3000'
+      SERVICE_NAME: strikeforge-backend
+      SERVICE_VERSION: 0.1.0
     ports:
       - '3000:3000'
     volumes:
@@ -128,13 +140,13 @@ services:
     command:
       - 'sh'
       - '-c'
-      - 'npm install && npx node-pg-migrate up && npm run dev'
+      - 'npm install --no-audit --no-fund && npx node-pg-migrate up && npm run dev'
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/healthz']
       interval: 10s
       timeout: 5s
       retries: 20
-      start_period: 40s
+      start_period: 60s
 
 volumes:
   strikeforge-pg-data:

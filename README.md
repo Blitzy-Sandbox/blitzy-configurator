@@ -13,7 +13,7 @@ Build / Cloud Deploy delivery pipeline.
 ├── delivery-pipeline/     # Cloud Deploy pipeline + targets (dev → staging → prod)
 ├── docs/                  # Architecture decisions, observability, executive summary
 ├── tickets/               # 12 epics (EP-001..EP-012), 49 stories (ST-001..ST-049)
-├── docker-compose.yml     # Local PostgreSQL 15 + Firebase Auth + GCS emulators
+├── docker-compose.yml     # Local stack: PostgreSQL 15, Firebase Auth + GCS emulators, backend
 ├── cloudbuild.yaml        # 7-step CI pipeline: lint → typecheck → unit → integration → build → deploy → promotion
 ├── skaffold.yaml          # Skaffold config for Cloud Deploy renders
 ├── package.json           # npm workspaces root (backend, frontend)
@@ -50,26 +50,27 @@ cp .env.example .env
 # 3. Install workspace dependencies
 npm install
 
-# 4. Start local infrastructure (PostgreSQL, Firebase Auth emulator, GCS emulator)
-#    The backend service is profile-gated (see step 7). This command brings up
-#    only the three infrastructure services that Phase A scaffolding requires.
+# 4. Start the full local stack — Phase A Gate A.
+#    This brings up all four services: postgres, firebase-auth-emulator,
+#    gcs-emulator, and backend. The backend mounts the host's `backend/src/`
+#    via a bind-mount and runs `ts-node-dev --respawn` for hot reload.
 docker compose up -d
 
-# 5. Verify all services reached running state — Phase A Gate A.
+# 5. Verify all four services reached running state — Phase A Gate A.
 #    Note: docker compose v2 emits NDJSON (one object per line), so use `.State`
 #    on each line rather than `.[].State` (which would require a JSON array).
 docker compose ps --format json | jq -r '.State' | sort | uniq
 # Expected: running
 
-# 6. Apply database migrations (requires backend/migrations/ from Track 1).
-#    Run from the host with the local DATABASE_URL:
+# 6. Verify the backend liveness probe (Phase A Gate A health check).
+curl -sf http://localhost:3000/healthz
+# Expected: {"status":"ok"}
+
+# 7. Apply database migrations (requires backend/migrations/ from Track 1).
+#    Migrations run automatically inside the backend container at startup, so
+#    on the host this is normally a no-op:
 DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/strikeforge \
   npm --workspace backend run migrate:up
-
-# 7. (Optional) Start the backend service in Docker once Track 1 source code
-#    exists (`backend/src/index.ts`). The backend is gated behind the `app`
-#    profile so Phase A scaffolding does not crash when src/ is empty:
-docker compose --profile app up -d backend
 
 # 8. To run the frontend dev server locally:
 npm --workspace frontend run dev

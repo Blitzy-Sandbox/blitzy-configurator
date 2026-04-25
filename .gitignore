@@ -15,6 +15,16 @@ yarn-error.log*
 pnpm-debug.log*
 .pnpm-store/
 .npm/
+# The monorepo uses a single hoisted package-lock.json at the repo root
+# (per the npm workspaces layout authored in Phase A). The docker-compose
+# backend service runs `npm install` inside the container with WORKDIR=/app
+# bind-mounted from `backend/`, which generates a transient
+# `backend/package-lock.json` on the host. That file MUST NOT be committed
+# because npm would then resolve workspace dependencies twice (once from
+# root, once from backend), defeating the hoisting. The same applies to
+# `frontend/package-lock.json` if a similar bind-mount pattern is used.
+backend/package-lock.json
+frontend/package-lock.json
 
 # ---------------------------------------------------------------------
 # Environment files (NEVER commit real values; .env.example is the
