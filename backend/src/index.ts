@@ -8,7 +8,7 @@ import './tracing';
 import express from 'express';
 import type { Express, NextFunction, Request, Response } from 'express';
 
-import { loadEnv } from './config/env';
+import { validateEnv } from './config/env';
 import { createLogger } from './logging/pino';
 import { correlationMiddleware, pinoCorrelationMixin } from './middleware/correlation';
 import { createHealthRouter } from './routes/health';
@@ -52,8 +52,30 @@ function bootstrap(): Bootstrapped {
   // Step 1: validate environment variables. Rule R4 mandates this
   // happen synchronously at startup so a misconfigured deploy fails
   // within 2 seconds with a descriptive error, not 30 seconds later
-  // with a confusing connection error.
-  const env = loadEnv();
+  // with a confusing connection error. validateEnv() throws a
+  // MissingEnvVarError on the first absent / empty required var; the
+  // throw propagates to the outer try/catch which exits non-zero.
+  validateEnv();
+
+  // Step 1a: read non-required operational identity vars with
+  // documented safe defaults. These (SERVICE_NAME, SERVICE_VERSION,
+  // NODE_ENV, PORT) intentionally do NOT belong to Rule R4's required
+  // six (see `backend/src/config/env.ts` for the canonical list);
+  // they have sensible operational defaults so a missing value does
+  // not block startup. The fallbacks here MUST stay in lockstep with
+  // the same fallbacks in `backend/src/tracing.ts` so traces and
+  // metrics are dimensioned by identical service/environment/version
+  // labels (cardinal property for ST-048-AC2 trace-metric
+  // correlation).
+  const SERVICE_NAME = process.env['SERVICE_NAME'] ?? 'strikeforge-backend';
+  const SERVICE_VERSION =
+    process.env['SERVICE_VERSION'] ?? process.env['COMMIT_SHA'] ?? '0.1.0';
+  const NODE_ENV = process.env['NODE_ENV'] ?? 'development';
+  const portRaw = process.env['PORT'] ?? '3000';
+  const PORT = Number.parseInt(portRaw, 10);
+  if (Number.isNaN(PORT) || PORT < 1 || PORT > 65535) {
+    throw new Error(`PORT must be a valid TCP port (1-65535); got "${portRaw}".`);
+  }
 
   // Step 2: build the application logger. Rule R2 redaction is
   // applied at logger construction so every record (including those
@@ -63,17 +85,17 @@ function bootstrap(): Bootstrapped {
   // during a request automatically carries the correlation ID
   // (Constraint C5).
   const logger = createLogger({
-    service: env.SERVICE_NAME,
-    environment: env.NODE_ENV,
-    version: env.SERVICE_VERSION,
+    service: SERVICE_NAME,
+    environment: NODE_ENV,
+    version: SERVICE_VERSION,
     mixin: pinoCorrelationMixin,
   });
 
   // Step 3: build the Prometheus metrics bundle.
   const metrics = createMetrics({
-    service: env.SERVICE_NAME,
-    environment: env.NODE_ENV,
-    version: env.SERVICE_VERSION,
+    service: SERVICE_NAME,
+    environment: NODE_ENV,
+    version: SERVICE_VERSION,
   });
 
   // Step 4: assemble the Express app and middleware chain.
@@ -112,7 +134,7 @@ function bootstrap(): Bootstrapped {
   // pg.Pool, this lambda is replaced with a real `SELECT 1` probe.
   const checkDb = async (): Promise<boolean> => {
     // At Phase A the readiness contract is satisfied by the fact that
-    // `loadEnv()` has already validated `DATABASE_URL` at startup —
+    // `validateEnv()` has already validated `DATABASE_URL` at startup —
     // the process would have exited non-zero before reaching this
     // bootstrap if the env var were missing. No `pg.Pool` is wired
     // yet because no repository code has been authored, so the probe
@@ -144,9 +166,9 @@ function bootstrap(): Bootstrapped {
   });
 
   // Step 8: bind the listening socket. PORT is validated above.
-  const server = app.listen(env.PORT, () => {
+  const server = app.listen(PORT, () => {
     logger.info(
-      { port: env.PORT, service: env.SERVICE_NAME, environment: env.NODE_ENV },
+      { port: PORT, service: SERVICE_NAME, environment: NODE_ENV },
       'backend_listening',
     );
   });

@@ -96,7 +96,7 @@ import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions'
  * not to observability metadata. A traced span tagged
  * `version=unknown` is strictly more useful than no traces at all
  * because the SDK refused to start. The six required env vars are
- * validated by `loadEnv()` later in the boot sequence; if any of
+ * validated by `validateEnv()` later in the boot sequence; if any of
  * those is missing, the backend exits AFTER tracing has had a chance
  * to emit a startup span describing the failure.
  */
