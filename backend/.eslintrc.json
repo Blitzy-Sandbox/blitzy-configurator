@@ -1,0 +1,48 @@
+{
+  "extends": ["../.eslintrc.json"],
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "module",
+    "project": "./tsconfig.json"
+  },
+  "env": {
+    "node": true,
+    "browser": false,
+    "es2022": true,
+    "jest": true
+  },
+  "plugins": ["@typescript-eslint"],
+  "rules": {
+    "@typescript-eslint/no-misused-promises": "error",
+    "@typescript-eslint/await-thenable": "error",
+    "@typescript-eslint/no-floating-promises": "error",
+    "no-process-exit": "off"
+  },
+  "overrides": [
+    {
+      "files": ["migrations/**/*.js"],
+      "parser": "espree",
+      "parserOptions": {
+        "ecmaVersion": 2022,
+        "sourceType": "script"
+      },
+      "env": {
+        "node": true
+      },
+      "rules": {
+        "@typescript-eslint/no-var-requires": "off",
+        "@typescript-eslint/no-explicit-any": "off",
+        "@typescript-eslint/no-misused-promises": "off",
+        "@typescript-eslint/await-thenable": "off",
+        "@typescript-eslint/no-floating-promises": "off",
+        "@typescript-eslint/consistent-type-imports": "off"
+      }
+    },
+    {
+      "files": ["jest.config.unit.ts", "jest.config.integration.ts"],
+      "rules": {
+        "no-console": "off"
+      }
+    }
+  ]
+}
