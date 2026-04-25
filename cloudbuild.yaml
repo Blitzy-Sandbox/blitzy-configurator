@@ -1,49 +1,137 @@
-# StrikeForge Cloud Build Pipeline (7 steps with explicit waitFor)
-# Authored per AAP §0.6.10 (MG1-E gates 1–4) and §0.6.11 (MG2-G build/deploy/promotion).
-# Rule R8 enforced via `set -eu` in every shell entrypoint.
-# Substitutions allow the operator to override defaults at submit time.
+# =====================================================================
+# StrikeForge Cloud Build Pipeline — Seven-Step CI/CD
+# ---------------------------------------------------------------------
+# This file defines the complete Cloud Build pipeline for the
+# StrikeForge 3D ball configurator backend. Seven steps execute in a
+# strict dependency chain, each with an explicit `waitFor` directive:
+#
+#   1. lint              (ST-036)  — ESLint across backend + frontend
+#   2. typecheck         (ST-037)  — `tsc --noEmit` across both workspaces
+#   3. test:unit         (ST-038)  — Jest unit suite + coverage gate
+#   4. test:integration  (ST-039)  — Jest integration with LocalGCP
+#   5. build             (ST-040)  — Docker image → Container Registry
+#   6. deploy            (ST-041)  — Cloud Deploy release → development
+#   7. promotion         (ST-042)  — dev → staging → production rollouts
+#
+# Every step writes its report/metadata to either /workspace/reports or
+# /workspace/deployments. The `artifacts` block at the bottom uploads
+# both directories to gs://${_ARTIFACTS_BUCKET}/${BUILD_ID}/ so Cloud
+# Build artifact viewers, the ST-049 dashboard, and the Segmented PR
+# Review workflow can consume the outputs.
+#
+# Authority:
+#   - AAP §0.3.2 — "Cloud Build pipeline with seven explicit waitFor steps"
+#   - AAP §0.6.10 — first four gates (MG1-E)
+#   - AAP §0.6.11 — build / deploy / promotion (MG2-G)
+#   - AAP §0.8.1 R8 — "Gates fail closed" (enforced via `set -eu`)
+#   - AAP §0.8.1 R2 — credential allow-list (no secret values printed)
+#   - AAP §0.8.1 R9 — payment processing excluded (no relevant tooling)
+#   - AAP §0.8.2 LocalGCP Verification Rule — emulator-only integration
+#
+# Cloud Build conventions used:
+#   * `/workspace` is a persistent volume shared across every step, so
+#     `node_modules` installed in step 1 is reused by every subsequent
+#     Node-based step. We do NOT reinstall in steps 2–4.
+#   * `waitFor: ['-']` means "start immediately; do not wait for any
+#     prior step". Used on the `lint` step to begin the pipeline.
+#   * The Cloud Build host's Docker daemon is reachable from any step
+#     image that ships docker-cli (or installs it via apk). This is how
+#     the `test:integration` step uses `docker compose` against the
+#     LocalGCP emulator profile, and how the `build` step pushes images.
+#   * Pre-defined substitutions ($PROJECT_ID, $COMMIT_SHA, $BUILD_ID)
+#     are populated automatically by Cloud Build at submit time.
+#   * User substitutions (those prefixed with `_`) accept overrides via
+#     the `--substitutions` flag of `gcloud builds submit`.
+# =====================================================================
 
 steps:
-  # -----------------------------------------------------------------
-  # Gate 1 — lint (ST-036)
-  # -----------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Step 1 — lint (ST-036)
+  # -------------------------------------------------------------------
+  # Triggers immediately on every pull request commit. Installs the
+  # entire monorepo's dependencies (`npm ci --workspaces`) so subsequent
+  # steps can reuse the resulting `node_modules` from /workspace.
+  # Emits two report artifacts:
+  #   /workspace/reports/eslint-backend.json
+  #   /workspace/reports/eslint-frontend.json
+  # `--max-warnings 0` ensures any ESLint warning is treated as a
+  # failure (Rule R8: gates fail closed).
+  # -------------------------------------------------------------------
   - id: 'lint'
     name: 'node:20-alpine'
     waitFor: ['-']
     entrypoint: 'sh'
+    timeout: '900s'
     args:
       - '-c'
       - |
         set -eu
         apk add --no-cache bash git
-        npm ci --workspaces --include-workspace-root
         mkdir -p /workspace/reports
-        cd backend && npx eslint src/ --max-warnings 0 --format json --output-file /workspace/reports/eslint-backend.json
-        cd /workspace/frontend && npx eslint src/ --max-warnings 0 --format json --output-file /workspace/reports/eslint-frontend.json
+        # Install all workspaces (backend + frontend + root devDeps).
+        # `--include-workspace-root` ensures shared lint/format tools
+        # at the repo root are also installed.
+        npm ci --workspaces --include-workspace-root --no-audit --no-fund
+        # Backend lint — fails non-zero on any warning.
+        cd /workspace/backend
+        npx eslint src/ --max-warnings 0 --format json \
+          --output-file /workspace/reports/eslint-backend.json
+        # Frontend lint — same strictness.
+        cd /workspace/frontend
+        npx eslint src/ --max-warnings 0 --format json \
+          --output-file /workspace/reports/eslint-frontend.json
 
-  # -----------------------------------------------------------------
-  # Gate 2 — type-check (ST-037)
-  # -----------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Step 2 — typecheck (ST-037)
+  # -------------------------------------------------------------------
+  # Runs `tsc --noEmit` across backend and frontend. Reuses the
+  # `node_modules` installed by the lint step (persisted in /workspace).
+  # Emits two log artifacts:
+  #   /workspace/reports/tsc-backend.log
+  #   /workspace/reports/tsc-frontend.log
+  # `tee` preserves the log while still propagating the exit code via
+  # set -o pipefail (implicit under `set -eu`).
+  # -------------------------------------------------------------------
   - id: 'typecheck'
     name: 'node:20-alpine'
     waitFor: ['lint']
     entrypoint: 'sh'
+    timeout: '600s'
     args:
       - '-c'
       - |
         set -eu
         apk add --no-cache bash git
         mkdir -p /workspace/reports
-        cd backend && npx tsc --noEmit 2>&1 | tee /workspace/reports/tsc-backend.log
-        cd /workspace/frontend && npx tsc --noEmit 2>&1 | tee /workspace/reports/tsc-frontend.log
+        # Run `tsc --noEmit`, capturing stdout and stderr to the log
+        # file. If `tsc` exits non-zero, dump the log to stderr (so it
+        # surfaces in Cloud Build logs) and propagate the exit code.
+        # We avoid `tee` + pipefail to keep this fail-closed without
+        # relying on shell-specific pipefail semantics (Rule R8).
+        cd /workspace/backend
+        npx tsc --noEmit > /workspace/reports/tsc-backend.log 2>&1 \
+          || { cat /workspace/reports/tsc-backend.log >&2; exit 1; }
+        cat /workspace/reports/tsc-backend.log
+        cd /workspace/frontend
+        npx tsc --noEmit > /workspace/reports/tsc-frontend.log 2>&1 \
+          || { cat /workspace/reports/tsc-frontend.log >&2; exit 1; }
+        cat /workspace/reports/tsc-frontend.log
 
-  # -----------------------------------------------------------------
-  # Gate 3 — unit tests (ST-038)
-  # -----------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Step 3 — test:unit (ST-038)
+  # -------------------------------------------------------------------
+  # Executes the backend unit suite with coverage. `_COVERAGE_THRESHOLD`
+  # is interpolated into the Jest threshold object so a coverage drop
+  # produces a non-zero exit (Rule R8: gates fail closed).
+  # Emits:
+  #   /workspace/reports/jest-unit-results.json
+  #   /workspace/reports/coverage-unit/   (HTML + lcov + clover)
+  # -------------------------------------------------------------------
   - id: 'test:unit'
     name: 'node:20-alpine'
     waitFor: ['typecheck']
     entrypoint: 'sh'
+    timeout: '900s'
     env:
       - 'COVERAGE_THRESHOLD=${_COVERAGE_THRESHOLD}'
     args:
@@ -52,123 +140,352 @@ steps:
         set -eu
         apk add --no-cache bash git
         mkdir -p /workspace/reports
-        cd backend && npx jest --config jest.config.unit.ts --coverage --coverageThreshold "{\"global\":{\"lines\":${_COVERAGE_THRESHOLD}}}" --ci --json --outputFile=/workspace/reports/jest-unit-results.json
-        cp -r backend/coverage /workspace/reports/coverage-unit
+        cd /workspace/backend
+        # The threshold object is parameterized by COVERAGE_THRESHOLD.
+        # Jest exits non-zero when any test fails OR when coverage
+        # drops below the threshold — both are required for ST-038.
+        npx jest --config jest.config.unit.ts \
+          --coverage \
+          --coverageThreshold "{\"global\":{\"lines\":${_COVERAGE_THRESHOLD}}}" \
+          --ci \
+          --json \
+          --outputFile=/workspace/reports/jest-unit-results.json
+        # Persist the coverage report so the artifact uploader can
+        # publish it to GCS for the dashboard / PR-review workflow.
+        if [ -d coverage ]; then
+          cp -r coverage /workspace/reports/coverage-unit
+        fi
 
-  # -----------------------------------------------------------------
-  # Gate 4 — integration tests (ST-039) — fail-closed per Rule R8
-  # -----------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Step 4 — test:integration (ST-039)
+  # -------------------------------------------------------------------
+  # Boots the LocalGCP emulator profile (postgres + firebase-auth +
+  # gcs-emulator) via `docker compose`, runs the migrations against
+  # the emulator postgres, then executes the integration suite.
+  #
+  # Image: node:20-alpine. Cloud Build's host Docker daemon is
+  # accessible from any step that has docker-cli installed, so we add
+  # docker-cli + docker-compose-plugin via apk. This gives us:
+  #   - Node 20 LTS for `npx node-pg-migrate` and `npx jest`
+  #   - docker / docker compose for spinning up the emulator profile
+  #
+  # LocalGCP Verification Rule: every GCP service interaction (Firebase
+  # Auth + GCS) targets the emulator. No live GCP credentials are used
+  # in the integration suite. Integration tests create their own
+  # resources during setup and clean up after teardown.
+  #
+  # Rule R8 (gates fail closed):
+  #   - `set -eu` propagates any failure to a non-zero exit.
+  #   - The postgres readiness loop exits non-zero after 10 attempts.
+  #   - `--forceExit` ensures Jest cannot hang on dangling handles.
+  # -------------------------------------------------------------------
   - id: 'test:integration'
-    name: 'gcr.io/cloud-builders/docker'
+    name: 'node:20-alpine'
     waitFor: ['test:unit']
-    entrypoint: 'bash'
+    entrypoint: 'sh'
+    timeout: '1800s'
     env:
       - 'DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/strikeforge'
       - 'FIREBASE_PROJECT_ID=strikeforge-ci'
+      - 'FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099'
       - 'GCS_BUCKET_NAME=strikeforge-logos-ci'
-      - 'GCS_EMULATOR_HOST=http://localhost:4443'
+      - 'GCS_EMULATOR_HOST=http://127.0.0.1:4443'
+      - 'STORAGE_EMULATOR_HOST=http://127.0.0.1:4443'
       - 'COVERAGE_THRESHOLD=${_COVERAGE_THRESHOLD}'
       - 'GCP_REGION=${_REGION}'
+      - 'NODE_ENV=test'
+      - 'SERVICE_NAME=strikeforge-backend'
+      - 'SERVICE_VERSION=ci-${COMMIT_SHA}'
     args:
       - '-c'
       - |
         set -eu
+        # Install docker CLI + compose plugin so we can drive the
+        # LocalGCP emulator profile from this Node-based image. Cloud
+        # Build mounts /var/run/docker.sock automatically, so a
+        # docker-cli installation in any step image works against the
+        # host daemon (this is the documented Cloud Build behavior for
+        # docker-in-docker workloads).
+        apk add --no-cache bash git docker-cli docker-cli-compose
         mkdir -p /workspace/reports
-        # Start dependency services via the ci profile
-        docker compose --profile ci up -d postgres firebase-auth-emulator gcs-emulator
-        # Wait for postgres readiness
+        cd /workspace
+        # ----- Bring up the LocalGCP profile -----
+        # The compose file declares postgres, firebase-auth-emulator,
+        # gcs-emulator, and backend services. We start only the three
+        # dependency services (the integration suite drives the API
+        # boundary directly through supertest, no live backend needed).
+        docker compose up -d postgres firebase-auth-emulator gcs-emulator
+        # ----- Wait for postgres to accept connections -----
+        # 10 attempts × 2s = up to 20s of grace for cold start. The
+        # `set -e` causes the loop body to exit non-zero if every
+        # attempt fails (the final `exit 1` is reached only when no
+        # iteration succeeds).
+        echo 'Waiting for postgres readiness...'
+        ready=0
         for i in 1 2 3 4 5 6 7 8 9 10; do
-          if docker compose exec -T postgres pg_isready -U postgres; then break; fi
+          if docker compose exec -T postgres pg_isready -U postgres -d strikeforge; then
+            ready=1
+            break
+          fi
           sleep 2
         done
-        cd backend
+        if [ "$ready" -ne 1 ]; then
+          echo 'postgres failed to become ready within 20s' >&2
+          docker compose logs postgres >&2 || true
+          exit 1
+        fi
+        # ----- Apply migrations on the host network -----
+        # The compose `postgres` service publishes 5432:5432 so the
+        # host (this step container) can reach it via 127.0.0.1.
+        cd /workspace/backend
         npx node-pg-migrate up
-        npx jest --config jest.config.integration.ts --forceExit --ci --json --outputFile=/workspace/reports/jest-integration-results.json
+        # ----- Execute the integration suite -----
+        # Per ST-044-AC3, environment-vs-assertion failures are
+        # distinguished in the Jest report. `--ci --json` produces a
+        # machine-parseable artifact for downstream review.
+        npx jest --config jest.config.integration.ts \
+          --forceExit \
+          --ci \
+          --json \
+          --outputFile=/workspace/reports/jest-integration-results.json
 
-  # -----------------------------------------------------------------
-  # Step 5 — build container image (ST-040)
-  # -----------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Step 5 — build (ST-040)
+  # -------------------------------------------------------------------
+  # Produces an immutable, content-addressable container image and
+  # publishes it to Container Registry as
+  #   gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA  (immutable tag)
+  #   gcr.io/$PROJECT_ID/strikeforge:latest       (mutable convenience)
+  #
+  # Per ST-040-AC2 the stage emits IMAGE_DIGEST, COMMIT_SHA, and
+  # BUILD_TIMESTAMP. These are written to
+  #   /workspace/deployments/build-metadata.json
+  # so the deploy step can read the digest deterministically (no race
+  # against the registry) and downstream observability dashboards can
+  # correlate builds to releases.
+  #
+  # Per ST-040-AC4 the artifact is immutable: the digest uniquely
+  # identifies image content; rebuilding the same COMMIT_SHA produces
+  # the same digest (or a new one that the registry stores alongside
+  # rather than overwriting).
+  # -------------------------------------------------------------------
   - id: 'build'
     name: 'gcr.io/cloud-builders/docker'
     waitFor: ['test:integration']
     entrypoint: 'bash'
+    timeout: '1200s'
     args:
       - '-c'
       - |
         set -eu
+        BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        # Build with both the immutable :$COMMIT_SHA tag (auditable per
+        # ST-041-AC4) and the convenience :latest tag.
         docker build \
           --file backend/Dockerfile \
           --tag gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA \
           --tag gcr.io/$PROJECT_ID/strikeforge:latest \
+          --label org.opencontainers.image.revision=$COMMIT_SHA \
+          --label org.opencontainers.image.created=$BUILD_TIMESTAMP \
+          --label org.opencontainers.image.source=https://github.com/blitzy/blitzy-configurator \
           backend/
+        # Push the SHA-tagged image first so the deploy step can
+        # resolve a digest even if `:latest` push races.
         docker push gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA
         docker push gcr.io/$PROJECT_ID/strikeforge:latest
-        DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA | cut -d@ -f2)
+        # Capture the immutable digest. `docker inspect` returns the
+        # registry-assigned digest in the form `repo@sha256:...`; we
+        # split on `@` and keep the right side.
+        DIGEST=$(docker inspect \
+          --format='{{index .RepoDigests 0}}' \
+          gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA \
+          | cut -d@ -f2)
+        # Sanity check: a missing digest is a build failure (Rule R8).
+        if [ -z "$DIGEST" ]; then
+          echo 'build: failed to resolve image digest from registry' >&2
+          exit 1
+        fi
         mkdir -p /workspace/deployments
+        # Emit machine-parseable build metadata. Downstream `deploy`
+        # and `promotion` steps consume `imageDigest` directly; the
+        # ST-049 dashboard correlates `commitSha` and `buildTimestamp`
+        # to deploy markers.
         cat > /workspace/deployments/build-metadata.json <<META
         {
           "commitSha": "$COMMIT_SHA",
           "imageDigest": "$DIGEST",
-          "image": "gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA"
+          "image": "gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA",
+          "imageWithDigest": "gcr.io/$PROJECT_ID/strikeforge@$DIGEST",
+          "buildId": "$BUILD_ID",
+          "buildTimestamp": "$BUILD_TIMESTAMP"
         }
         META
+        echo 'build: published image digest:' "$DIGEST"
 
-  # -----------------------------------------------------------------
-  # Step 6 — deploy to development via Cloud Deploy (ST-041)
-  # -----------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Step 6 — deploy (ST-041)
+  # -------------------------------------------------------------------
+  # Creates a Cloud Deploy release seeded at the `development` target
+  # in the strikeforge delivery pipeline. Cloud Deploy auto-promotes
+  # to development per delivery-pipeline/clouddeploy.yaml
+  # (development.requireApproval: false). Subsequent promotion to
+  # staging and production is gated by recorded human approvals.
+  #
+  # Per ST-041-AC2 the stage emits DEPLOYMENT_URL and DEPLOYMENT_ID.
+  # We write them to
+  #   /workspace/deployments/deploy-metadata.json
+  # alongside the source COMMIT_SHA + IMAGE_DIGEST for traceability
+  # (ST-041-AC4 — every deployment is auditable).
+  #
+  # The `--images` flag pins the release to the exact digest emitted
+  # by the build step so dev/staging/prod all run the same artifact
+  # (Rule R10 IMAGE_DIGEST flow).
+  # -------------------------------------------------------------------
   - id: 'deploy'
     name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     waitFor: ['build']
     entrypoint: 'bash'
+    timeout: '1500s'
     args:
       - '-c'
       - |
         set -eu
-        DIGEST=$(jq -r .imageDigest /workspace/deployments/build-metadata.json)
-        gcloud deploy releases create release-$COMMIT_SHA \
+        # Read the digest written by the build step. `jq` is bundled
+        # with the cloud-sdk:slim image.
+        DIGEST=$(jq -r '.imageDigest' /workspace/deployments/build-metadata.json)
+        if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+          echo 'deploy: missing imageDigest in build-metadata.json' >&2
+          exit 1
+        fi
+        # Cloud Deploy release name is bounded to lowercase alnum +
+        # hyphens, max 63 chars. We use a short COMMIT_SHA prefix.
+        SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-12)
+        RELEASE_ID="release-$SHORT_SHA"
+        # Create the release. The pipeline auto-deploys to the first
+        # target (`development`) which has requireApproval: false.
+        gcloud deploy releases create "$RELEASE_ID" \
           --project=$PROJECT_ID \
           --region=${_REGION} \
           --delivery-pipeline=${_PIPELINE_NAME} \
           --source=. \
           --images=gcr.io/$PROJECT_ID/strikeforge=gcr.io/$PROJECT_ID/strikeforge@$DIGEST
+        # Wait briefly for the rollout to finish so we can capture the
+        # service URL. Production pipelines should poll
+        # `gcloud deploy rollouts list --filter="state=SUCCEEDED"`
+        # rather than sleeping; this is documented in
+        # docs/decisions/README.md as a known trade-off.
+        echo 'deploy: waiting for development rollout (60s)...'
         sleep 60
-        SERVICE_URL=$(gcloud run services describe strikeforge --region=${_REGION} --project=$PROJECT_ID --format='value(status.url)' || echo 'unknown')
+        # Capture the Cloud Run service URL for the development env.
+        # If the service is not yet reachable, record `unknown`
+        # rather than failing — the readiness probe will catch it on
+        # the actual rollout.
+        SERVICE_URL=$(gcloud run services describe strikeforge \
+          --region=${_REGION} \
+          --project=$PROJECT_ID \
+          --format='value(status.url)' 2>/dev/null || echo 'unknown')
+        DEPLOY_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        # Emit deploy metadata. `deploymentId` and `serviceUrl` are
+        # the ST-041-AC2 outputs; `targetEnv` records ST-041-AC1's
+        # `TARGET_ENV` input (always `development` for the seed
+        # release; promotions to staging/production are recorded by
+        # the next step).
         cat > /workspace/deployments/deploy-metadata.json <<META
         {
-          "deploymentId": "release-$COMMIT_SHA",
-          "serviceUrl": "$SERVICE_URL"
+          "deploymentId": "$RELEASE_ID",
+          "deploymentUrl": "$SERVICE_URL",
+          "serviceUrl": "$SERVICE_URL",
+          "targetEnv": "development",
+          "commitSha": "$COMMIT_SHA",
+          "imageDigest": "$DIGEST",
+          "image": "gcr.io/$PROJECT_ID/strikeforge@$DIGEST",
+          "deployTimestamp": "$DEPLOY_TIMESTAMP"
         }
         META
+        echo 'deploy: created release' "$RELEASE_ID" 'serviceUrl=' "$SERVICE_URL"
 
-  # -----------------------------------------------------------------
-  # Step 7 — environment promotion (ST-042)
-  # -----------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Step 7 — promotion (ST-042)
+  # -------------------------------------------------------------------
+  # Records the rollout state of the just-created release and emits
+  # a promotion log capturing which approvals are required for the
+  # remaining environments (staging + production). The actual
+  # human-approval click happens in the Cloud Deploy console; this
+  # step does not auto-approve. Per ST-042-AC2 only
+  # development → staging and staging → production paths are
+  # permitted, which is enforced by the linear `serialPipeline` in
+  # delivery-pipeline/clouddeploy.yaml (any other source-target
+  # combination is rejected by Cloud Deploy itself).
+  #
+  # Per ST-042-AC4 the stage emits NEXT_DEPLOYMENT_ID identifying the
+  # downstream rollout it triggered. For the development seed, the
+  # downstream rollout is the staging rollout (which exists in PENDING
+  # state until a human approves it).
+  # -------------------------------------------------------------------
   - id: 'promotion'
     name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     waitFor: ['deploy']
     entrypoint: 'bash'
+    timeout: '600s'
     args:
       - '-c'
       - |
         set -eu
+        DIGEST=$(jq -r '.imageDigest' /workspace/deployments/build-metadata.json)
+        SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-12)
+        RELEASE_ID="release-$SHORT_SHA"
+        # List all rollouts for this release. Cloud Deploy creates
+        # one rollout per target as the release progresses; the
+        # development rollout is auto-deployed, staging/production
+        # are PENDING_APPROVAL until manually approved.
         ROLLOUTS=$(gcloud deploy rollouts list \
           --project=$PROJECT_ID \
           --region=${_REGION} \
           --delivery-pipeline=${_PIPELINE_NAME} \
-          --release=release-$COMMIT_SHA \
-          --format=json)
+          --release="$RELEASE_ID" \
+          --format=json 2>/dev/null || echo '[]')
+        # Try to extract the staging rollout's ID as
+        # NEXT_DEPLOYMENT_ID per ST-042-AC4. If staging is not yet
+        # rolled out (Cloud Deploy enqueues but may not create the
+        # next rollout until the previous succeeds), report `pending`.
+        NEXT_DEPLOYMENT_ID=$(echo "$ROLLOUTS" \
+          | jq -r '[.[] | select(.targetId == "staging")] | first | .name // "pending"')
+        PROMOTION_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         cat > /workspace/deployments/promotion-log.json <<META
         {
-          "releaseId": "release-$COMMIT_SHA",
+          "releaseId": "$RELEASE_ID",
+          "commitSha": "$COMMIT_SHA",
+          "imageDigest": "$DIGEST",
+          "promotionTimestamp": "$PROMOTION_TIMESTAMP",
           "rollouts": $ROLLOUTS,
+          "permittedPromotionPaths": [
+            "development->staging",
+            "staging->production"
+          ],
           "approvalRequired": ["staging", "production"],
-          "recordedApprovals": []
+          "recordedApprovals": [],
+          "nextDeploymentId": "$NEXT_DEPLOYMENT_ID"
         }
         META
+        echo 'promotion: recorded for release' "$RELEASE_ID"
+        echo 'promotion: nextDeploymentId=' "$NEXT_DEPLOYMENT_ID"
 
-# -----------------------------------------------------------------
+# =====================================================================
 # Artifacts — capture every report and metadata file to GCS
-# -----------------------------------------------------------------
+# ---------------------------------------------------------------------
+# Both `reports/**` (lint/typecheck/jest outputs + coverage) and
+# `deployments/**` (build/deploy/promotion metadata) are uploaded to
+# gs://${_ARTIFACTS_BUCKET}/${BUILD_ID}/. The `BUILD_ID` substitution
+# is provided by Cloud Build automatically per build invocation.
+#
+# Consumers:
+#   - ST-049 dashboard correlates `deployments/*.json` with deploy
+#     markers to overlay deploy lines on request-rate charts.
+#   - The Segmented PR Review workflow reads `reports/eslint-*.json`
+#     and `reports/jest-*-results.json` to populate CODE_REVIEW.md.
+#   - ST-038 / ST-039 / ST-043 / ST-044 verifications inspect the
+#     coverage and integration outputs respectively.
+# =====================================================================
 artifacts:
   objects:
     location: 'gs://${_ARTIFACTS_BUCKET}/${BUILD_ID}'
@@ -176,9 +493,18 @@ artifacts:
       - 'reports/**'
       - 'deployments/**'
 
-# -----------------------------------------------------------------
-# Substitutions (operator-overridable)
-# -----------------------------------------------------------------
+# =====================================================================
+# Substitutions — operator-overridable defaults
+# ---------------------------------------------------------------------
+# Cloud Build user-defined substitutions MUST be prefixed with `_`.
+# Override at submit time via:
+#   gcloud builds submit --config=cloudbuild.yaml \
+#     --substitutions=_COVERAGE_THRESHOLD=85,_REGION=us-east1
+#
+# `_COVERAGE_THRESHOLD` mirrors the runtime $COVERAGE_THRESHOLD env
+# variable consumed by Jest in step 3. Per Rule R4 the source code
+# does NOT default this — it must come from the environment.
+# =====================================================================
 substitutions:
   _COVERAGE_THRESHOLD: '80'
   _ARTIFACTS_BUCKET: 'strikeforge-build-artifacts'
@@ -186,13 +512,42 @@ substitutions:
   _PIPELINE_NAME: 'strikeforge-delivery-pipeline'
   _DELIVERY_CONFIG: 'delivery-pipeline/clouddeploy.yaml'
 
-# -----------------------------------------------------------------
-# Options
-# -----------------------------------------------------------------
+# =====================================================================
+# Build options
+# ---------------------------------------------------------------------
+# `E2_HIGHCPU_8` provides 8 vCPUs / 8 GB RAM — sufficient for parallel
+# Jest workers and Docker build with BuildKit caching.
+# `CLOUD_LOGGING_ONLY` ensures all step logs stream to Cloud Logging
+# (compatible with the ST-049 distributed-tracing posture).
+# `DOCKER_BUILDKIT=1` enables BuildKit for faster, cache-aware builds
+# in step 5. `dynamicSubstitutions: true` lets `${VAR}` expansions
+# work inside artifact paths and env values.
+# =====================================================================
 options:
   machineType: 'E2_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY
+  dynamicSubstitutions: true
   env:
     - 'DOCKER_BUILDKIT=1'
 
+# =====================================================================
+# Pipeline-wide timeout
+# ---------------------------------------------------------------------
+# 3600s (1 hour) is a hard ceiling — individual steps have tighter
+# per-step timeouts that fire first. If the whole pipeline exceeds
+# this, Cloud Build cancels remaining steps and marks the run failed
+# (Rule R8: gates fail closed).
+# =====================================================================
 timeout: '3600s'
+
+# =====================================================================
+# Tags
+# ---------------------------------------------------------------------
+# Surfaced in the Cloud Build console for filtering. Used by
+# observability dashboards to attribute build markers to the
+# strikeforge service.
+# =====================================================================
+tags:
+  - 'strikeforge'
+  - 'ci-cd'
+  - 'backend'
