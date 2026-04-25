@@ -1,8 +1,34 @@
+# Local infrastructure for the StrikeForge configurator.
+#
+# Quick start (Phase A Gate A):
+#   docker compose up -d
+#   # docker compose v2 emits one JSON object per line (NDJSON), so use `.State`
+#   # rather than `.[].State` (which would require a JSON array). Either of the
+#   # two equivalent invocations below produces a single "running" line:
+#   docker compose ps --format json | jq -r '.State' | sort | uniq
+#   docker compose ps --format json | jq -s -r '.[].State' | sort | uniq
+#   # expected output: running
+#
+# The three infrastructure services (postgres, firebase-auth-emulator,
+# gcs-emulator) start with bare `docker compose up -d`. The `backend` service
+# is gated behind the `app` profile so it only starts once Track 1 source code
+# exists in `backend/src/`. To run the full stack locally (after Track 1):
+#   docker compose --profile app up -d
+#
+# CI integration tests start the infrastructure services only (the backend
+# process runs directly via `jest`):
+#   docker compose up -d postgres firebase-auth-emulator gcs-emulator
+#
+# All healthchecks bind to 127.0.0.1 (IPv4) because BusyBox `wget` resolves
+# `localhost` to ::1 first and Node.js / firebase-tools bind IPv4 by default.
+
 services:
+  # PostgreSQL 15 — Cloud SQL target equivalent for local development.
+  # Pinned to 15-alpine per AAP §0.4.4. Supplies DATABASE_URL endpoint
+  # accessed via TCP 127.0.0.1:5432 (host) or postgres:5432 (compose network).
   postgres:
     image: postgres:15-alpine
     restart: unless-stopped
-    profiles: [default, ci]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -17,26 +43,35 @@ services:
       timeout: 3s
       retries: 20
 
+  # Firebase Auth Emulator — bundled with the firebase-tools npm package.
+  # We install firebase-tools at container start using `--ignore-scripts` to
+  # skip transitive native compilation (notably re2) that hangs on alpine due
+  # to missing build tools. Auth-only emulator is configured via firebase.json
+  # because firebase-tools 15.x removed the --host / --auth-port CLI flags.
   firebase-auth-emulator:
     image: node:20-alpine
     restart: unless-stopped
-    profiles: [default, ci]
+    working_dir: /fb
     command:
       - 'sh'
       - '-c'
-      - 'npm install -g firebase-tools && firebase emulators:start --only auth --project strikeforge-local --host 0.0.0.0 --auth-port 9099'
+      - 'mkdir -p /fb && cd /fb && echo ''{"emulators":{"auth":{"host":"0.0.0.0","port":9099}}}'' > firebase.json && npm install -g firebase-tools --omit=optional --ignore-scripts --no-fund --no-audit --no-progress && firebase emulators:start --only auth --project strikeforge-local'
     ports:
       - '9099:9099'
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:9099']
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:9099']
       interval: 10s
       timeout: 5s
-      retries: 20
+      retries: 30
+      start_period: 120s
 
+  # fake-gcs-server — emulates Google Cloud Storage with the Storage v1 API.
+  # The `-public-host gcs-emulator:4443` flag makes signed URLs reference the
+  # compose-network hostname. The `@google-cloud/storage` SDK targets this
+  # emulator via the STORAGE_EMULATOR_HOST environment variable.
   gcs-emulator:
     image: fsouza/fake-gcs-server:latest
     restart: unless-stopped
-    profiles: [default, ci]
     command:
       - '-scheme'
       - 'http'
@@ -49,17 +84,24 @@ services:
     volumes:
       - strikeforge-gcs-data:/data
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:4443/storage/v1/b']
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:4443/storage/v1/b']
       interval: 10s
       timeout: 5s
       retries: 20
 
+  # Backend Express service. Profile-gated under `app` because:
+  #  (a) Phase A scaffolding does not yet create backend/src/, so `npm run dev`
+  #      would crash continuously and produce false negatives at Gate A.
+  #  (b) CI integration tests spawn the backend directly from jest rather than
+  #      via this compose service.
+  # Once Track 1 source code exists, run `docker compose --profile app up -d`
+  # to bring up the full stack.
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
       target: builder
-    profiles: [default]
+    profiles: ['app']
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,7 +130,7 @@ services:
       - '-c'
       - 'npm install && npx node-pg-migrate up && npm run dev'
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/healthz']
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/healthz']
       interval: 10s
       timeout: 5s
       retries: 20

@@ -51,17 +51,27 @@ cp .env.example .env
 npm install
 
 # 4. Start local infrastructure (PostgreSQL, Firebase Auth emulator, GCS emulator)
+#    The backend service is profile-gated (see step 7). This command brings up
+#    only the three infrastructure services that Phase A scaffolding requires.
 docker compose up -d
 
-# 5. Verify all services reached running state
-docker compose ps --format json | jq -r '.[].State' | sort | uniq
+# 5. Verify all services reached running state — Phase A Gate A.
+#    Note: docker compose v2 emits NDJSON (one object per line), so use `.State`
+#    on each line rather than `.[].State` (which would require a JSON array).
+docker compose ps --format json | jq -r '.State' | sort | uniq
 # Expected: running
 
-# 6. Apply database migrations
-docker compose exec backend npx node-pg-migrate up
+# 6. Apply database migrations (requires backend/migrations/ from Track 1).
+#    Run from the host with the local DATABASE_URL:
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/strikeforge \
+  npm --workspace backend run migrate:up
 
-# 7. The backend service inside the docker-compose 'backend' container will
-#    serve on http://localhost:3000. To run the frontend dev server locally:
+# 7. (Optional) Start the backend service in Docker once Track 1 source code
+#    exists (`backend/src/index.ts`). The backend is gated behind the `app`
+#    profile so Phase A scaffolding does not crash when src/ is empty:
+docker compose --profile app up -d backend
+
+# 8. To run the frontend dev server locally:
 npm --workspace frontend run dev
 ```
 
