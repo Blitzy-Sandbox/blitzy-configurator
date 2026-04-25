@@ -1,0 +1,28 @@
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+build/
+**/build/
+coverage/
+**/coverage/
+playwright-report/
+**/playwright-report/
+test-results/
+**/test-results/
+*.lock
+*.log
+.git/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Existing project documentation and backlog files are not Prettier-managed in Phase A
+docs/
+tickets/
+blitzy/
+
+# Visual-regression baselines are committed but not formatted
+frontend/visual-baselines/
+
+# Markdown files without code blocks have wide line tolerance
