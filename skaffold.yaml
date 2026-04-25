@@ -1,8 +1,82 @@
+# =====================================================================
+# StrikeForge Skaffold Configuration — Cloud Deploy Render & Deploy
+# ---------------------------------------------------------------------
+# This file is the Skaffold configuration consumed by Google Cloud
+# Deploy when promoting the StrikeForge backend Cloud Run image
+# through the development → staging → production progression defined
+# in `delivery-pipeline/clouddeploy.yaml`.
+#
+# Cloud Deploy invokes Skaffold in two phases:
+#   1. RENDER — `skaffold render` is called when a release is created
+#      to produce the rendered Cloud Run service manifest with the
+#      built image digest substituted into the artifact reference.
+#   2. DEPLOY — `skaffold apply` (`cloudrun` deployer) is called once
+#      per target during rollout to apply the rendered manifest to
+#      that environment's Cloud Run service.
+#
+# The three Skaffold profile names (`development`, `staging`,
+# `production`) MUST match exactly the three target names declared in
+# `delivery-pipeline/clouddeploy.yaml`. Cloud Deploy resolves a
+# target's profile by name; a mismatch causes the rollout to fail.
+#
+# Authority:
+#   - AAP §0.3.2 — "skaffold.yaml | Cloud Deploy / Skaffold orchestration reference"
+#   - AAP §0.6.11 MG2-G — "CREATE | skaffold.yaml | Skaffold reference for Cloud Deploy"
+#   - AAP §0.4.7 — "skaffold.yaml | CI/CD | Skaffold profile referenced by Cloud Deploy"
+#   - AAP §0.8.1 R10 — same image digest flows through every target
+#   - ST-041 — Cloud Deploy release creation seeds the development target
+#   - ST-042 — environment promotion across dev → staging → prod
+#
+# Cross-file integration contract:
+#   - `cloudbuild.yaml` step 5 builds and pushes the image with the
+#     tag pattern `gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA`. This
+#     file's `build.artifacts[0].image` MUST match that base image
+#     name (`gcr.io/${PROJECT_ID}/strikeforge`).
+#   - `cloudbuild.yaml` step 6 invokes `gcloud deploy releases create`
+#     with `--images=gcr.io/$PROJECT_ID/strikeforge=...@$DIGEST`,
+#     which pins the artifact to a specific digest at release time.
+#     The `--images` flag overrides Skaffold's `tagPolicy` for Cloud
+#     Build–driven releases, so the policy below applies only to
+#     local `skaffold dev` / `skaffold run` workflows.
+#   - `delivery-pipeline/clouddeploy.yaml` declares the three Targets
+#     `development`, `staging`, `production` whose `run.location`
+#     fields supply the project + region at deploy time. Per the
+#     Cloud Deploy contract, target-level project/location values
+#     take precedence over profile-level values; the profile-level
+#     `projectid` / `region` declared below serve as the default for
+#     local development.
+#
+# Local development note:
+#   This file is NOT invoked directly during local development.
+#   Local dev runs via `docker compose up -d` (Phase A Gate A).
+#   Skaffold is consumed only by Cloud Deploy in the CI/CD pipeline.
+# =====================================================================
+
 apiVersion: skaffold/v4beta7
 kind: Config
 metadata:
   name: strikeforge-backend
 
+# =====================================================================
+# Build configuration
+# ---------------------------------------------------------------------
+# Declares the single backend image artifact that Skaffold knows how
+# to produce when invoked locally (e.g., `skaffold build` /
+# `skaffold dev`). In the Cloud Build CI pipeline, the image is
+# already built and pushed by step 5 of `cloudbuild.yaml`, and
+# step 6 passes `--images=...@<digest>` to `gcloud deploy releases
+# create` — that flag overrides this artifact reference at release
+# time so the rendered manifest carries the immutable digest.
+#
+# `context: backend` makes the Docker build context the `backend/`
+# folder; combined with `docker.dockerfile: Dockerfile`, Skaffold
+# resolves the Dockerfile path to `backend/Dockerfile`.
+#
+# `tagPolicy.gitCommit.variant: CommitSha` tags the built image with
+# the full git commit SHA. This matches the `:$COMMIT_SHA` tag that
+# `cloudbuild.yaml` step 5 applies, providing a consistent identity
+# across local Skaffold builds and Cloud Build CI builds.
+# =====================================================================
 build:
   artifacts:
     - image: gcr.io/${PROJECT_ID}/strikeforge
@@ -13,24 +87,71 @@ build:
     gitCommit:
       variant: CommitSha
 
+# =====================================================================
+# Manifests
+# ---------------------------------------------------------------------
+# Skaffold's render phase consumes the Cloud Run service manifest
+# referenced here. The manifest describes a Cloud Run Service
+# (apiVersion: serving.knative.dev/v1) and is authored separately as
+# `delivery-pipeline/run-service.yaml`. Cloud Deploy substitutes the
+# resolved image digest into the manifest's `spec.template.spec.containers[].image`
+# field during rendering, producing an environment-specific rendered
+# manifest that the deploy phase applies to each target.
+# =====================================================================
 manifests:
   rawYaml:
     - delivery-pipeline/run-service.yaml
 
+# =====================================================================
+# Deploy stanza
+# ---------------------------------------------------------------------
+# `cloudrun: {}` selects Cloud Run as the deployer (NOT kubectl,
+# Helm, or Kustomize). Per the Cloud Deploy + Skaffold contract,
+# this empty object is intentional: Cloud Deploy populates the
+# project ID and region at rollout time from each target's
+# `run.location` field in `delivery-pipeline/clouddeploy.yaml`.
+# Profile-level overrides below apply only to local `skaffold dev`
+# / `skaffold run` workflows; Cloud Deploy ignores them in favor of
+# the target definitions.
+# =====================================================================
 deploy:
   cloudrun: {}
 
+# =====================================================================
+# Profiles — one per Cloud Deploy target
+# ---------------------------------------------------------------------
+# Profile names MUST match the target names in
+# `delivery-pipeline/clouddeploy.yaml` exactly:
+#   - development → DeliveryPipeline.serialPipeline.stages[0].targetId
+#   - staging     → DeliveryPipeline.serialPipeline.stages[1].targetId
+#   - production  → DeliveryPipeline.serialPipeline.stages[2].targetId
+#
+# At release creation, Cloud Deploy walks the pipeline stages in
+# order; for each target it looks up the matching profile by name
+# and merges that profile's deploy settings with the top-level
+# deploy stanza. The merged configuration drives `skaffold render`
+# (one render per target) and `skaffold apply` (one apply per target
+# rollout).
+#
+# `${PROJECT_ID}` and `${GCP_REGION}` are Skaffold template variables
+# resolved at release-creation time from Cloud Deploy substitution
+# values. They serve as the local-development defaults; in CI/CD,
+# Cloud Deploy uses the per-target `run.location` from
+# `delivery-pipeline/clouddeploy.yaml` instead.
+# =====================================================================
 profiles:
   - name: development
     deploy:
       cloudrun:
         projectid: ${PROJECT_ID}
         region: ${GCP_REGION}
+
   - name: staging
     deploy:
       cloudrun:
         projectid: ${PROJECT_ID}
         region: ${GCP_REGION}
+
   - name: production
     deploy:
       cloudrun:
