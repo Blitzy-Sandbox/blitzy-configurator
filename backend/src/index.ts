@@ -7,11 +7,12 @@ import './tracing';
 
 import express from 'express';
 import type { Express, NextFunction, Request, Response } from 'express';
+import { Pool } from 'pg';
 
-import { validateEnv } from './config/env';
+import { requireEnv, validateEnv } from './config/env';
 import { createLogger } from './logging/pino';
 import { correlationMiddleware, correlationStore } from './middleware/correlation';
-import { createHealthRouter } from './routes/health';
+import { createHealthRoutes } from './routes/health';
 import { createMetrics } from './routes/metrics';
 
 /**
@@ -155,27 +156,27 @@ function bootstrap(): Bootstrapped {
   // the duration histogram on every response.
   app.use(metrics.middleware);
 
-  // Step 5: routes.
+  // Step 5: construct the PostgreSQL connection pool.
   //
-  // Health probes — /healthz never queries the database; /readyz
-  // queries via the supplied probe. At Phase A there is no pg.Pool
-  // yet, so the probe always resolves true. When Track 1 wires the
-  // pg.Pool, this lambda is replaced with a real `SELECT 1` probe.
-  const checkDb = async (): Promise<boolean> => {
-    // At Phase A the readiness contract is satisfied by the fact that
-    // `validateEnv()` has already validated `DATABASE_URL` at startup —
-    // the process would have exited non-zero before reaching this
-    // bootstrap if the env var were missing. No `pg.Pool` is wired
-    // yet because no repository code has been authored, so the probe
-    // returns `true` to signal the application is ready to receive
-    // traffic. When Track 1 introduces `backend/src/db/pool.ts`, this
-    // lambda will be swapped at the call site for a real reachability
-    // check via `pool.query('SELECT 1')`; the swap point is the
-    // `createHealthRouter({ checkDb })` invocation below, which keeps
-    // the router itself agnostic to how readiness is determined.
-    return Promise.resolve(true);
-  };
-  app.use(createHealthRouter({ checkDb }));
+  // The connection configuration is derived ENTIRELY from
+  // `DATABASE_URL` per Constraint C3 (Cloud SQL dual-path: Unix-socket
+  // host on Cloud Run, TCP host locally — the URL form encodes both).
+  // Because `validateEnv()` has already run, `requireEnv('DATABASE_URL')`
+  // is guaranteed to return a non-empty string here.
+  //
+  // `new Pool(...)` does NOT open any TCP connection — it only stores
+  // configuration. Connections are created lazily on the first
+  // `pool.query(...)` call (made by `/readyz` shortly after bootup).
+  // This is what allows the backend to start and answer `/healthz`
+  // even when PostgreSQL is unreachable; readiness then correctly
+  // reports `503 not_ready` until the DB is available.
+  const pool = new Pool({ connectionString: requireEnv('DATABASE_URL') });
+
+  // Health probes — /healthz never queries the DB (cheap liveness
+  // check); /readyz runs `SELECT 1` against the pool with a bounded
+  // timeout. The router itself is fully encapsulated; this composition
+  // root only injects the pool dependency.
+  app.use(createHealthRoutes({ pool }));
 
   // Metrics endpoint — Prometheus scrapes /metrics every 30s by
   // default; Cloud Monitoring and Grafana use the same path.
@@ -200,6 +201,10 @@ function bootstrap(): Bootstrapped {
   });
 
   const shutdown = async (): Promise<void> => {
+    // Step 1: stop accepting new HTTP connections; wait for in-flight
+    // requests to drain. `server.close()` is the idiomatic Node way to
+    // do this — it lets active sockets finish their current request,
+    // then resolves.
     await new Promise<void>((resolve, reject) => {
       server.close((err) => {
         if (err !== undefined && err !== null) {
@@ -209,6 +214,11 @@ function bootstrap(): Bootstrapped {
         }
       });
     });
+    // Step 2: drain the PostgreSQL pool. `pool.end()` waits for every
+    // checked-out client to be released and then closes the underlying
+    // sockets. Doing this AFTER `server.close()` guarantees no in-
+    // flight HTTP request is denied a DB connection mid-response.
+    await pool.end();
   };
 
   // Step 9: process-level signal handling. Cloud Run delivers
