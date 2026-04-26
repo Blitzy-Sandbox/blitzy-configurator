@@ -68,6 +68,8 @@
 
 import type { Quaternion } from 'three';
 
+import type { IdleAutoRotateRef } from './useIdleAutoRotate';
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -213,15 +215,32 @@ declare global {
 /**
  * The set of refs the bridge needs from `BallCanvas.tsx` to fulfill
  * its contract. All five fields are `MutableRefObject` instances
- * returned from React `useRef(...)` calls (or by `useDragRotation` /
- * `useIdleAutoRotate`), which means they are stable across renders
- * and safe to capture in a module-scoped closure.
+ * returned from React `useRef(...)` calls (or — in the case of
+ * `idleAutoRotateRef` — a structurally compatible `IdleAutoRotateRef`
+ * whose `current` is the angular velocity in rad/s), which means they
+ * are stable across renders and safe to capture in a module-scoped
+ * closure.
+ *
+ * Field shape contract:
+ *   - dragRotationRef       — drag-rotation accumulator (mutated in
+ *                             place by `useDragRotation` pointer
+ *                             handlers).
+ *   - autoRotationAccumRef  — auto-rotation accumulator (mutated in
+ *                             place by `Sphere.tsx`'s `useFrame`).
+ *   - isDraggingRef         — boolean flag (true while primary
+ *                             pointer is captured by `useDragRotation`).
+ *   - idleAutoRotateRef     — read-only velocity ref from
+ *                             `useIdleAutoRotate`. `.current` is 0
+ *                             when not auto-rotating, positive when
+ *                             auto-rotating.
+ *   - wrapperRef            — DOM ref to the canvas wrapper element
+ *                             (target for synthetic pointer dispatch).
  */
 export interface TestBridgeRefs {
   readonly dragRotationRef: React.MutableRefObject<Quaternion>;
-  readonly autoRotationRef: React.MutableRefObject<Quaternion>;
+  readonly autoRotationAccumRef: React.MutableRefObject<Quaternion>;
   readonly isDraggingRef: React.MutableRefObject<boolean>;
-  readonly isAutoRotatingRef: React.MutableRefObject<boolean>;
+  readonly idleAutoRotateRef: IdleAutoRotateRef;
   readonly wrapperRef: React.MutableRefObject<HTMLElement | null>;
 }
 
@@ -347,11 +366,15 @@ export function installTestBridge(refs: TestBridgeRefs): () => void {
 
   const api: StrikeForgeTestApi = {
     getDragRotation: () => quaternionToPlain(refs.dragRotationRef.current),
-    getAutoRotation: () => quaternionToPlain(refs.autoRotationRef.current),
+    getAutoRotation: () => quaternionToPlain(refs.autoRotationAccumRef.current),
     getComposedRotation: () =>
-      multiplyQuaternionsPlain(refs.autoRotationRef.current, refs.dragRotationRef.current),
+      multiplyQuaternionsPlain(refs.autoRotationAccumRef.current, refs.dragRotationRef.current),
     getIsDragging: () => refs.isDraggingRef.current,
-    getIsAutoRotating: () => refs.isAutoRotatingRef.current,
+    // "Auto-rotating" maps to "the idle hook's angular velocity is
+    // non-zero". Per the `IdleAutoRotateRef` binary contract, this
+    // is true exactly when auto-rotation is engaged (idle timer
+    // fired AND no interaction since).
+    getIsAutoRotating: () => refs.idleAutoRotateRef.current !== 0,
     dispatchPointerEvent,
     dispatchPointerSequence: (events) => {
       for (const init of events) {

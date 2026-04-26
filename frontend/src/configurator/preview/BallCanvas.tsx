@@ -44,6 +44,7 @@
 
 import { Canvas } from '@react-three/fiber';
 import { useEffect, useRef } from 'react';
+import { Quaternion } from 'three';
 
 import { Sphere } from './Sphere';
 import { initializePerformanceInstrumentation } from './performance';
@@ -133,40 +134,65 @@ export function BallCanvas(props: BallCanvasProps): JSX.Element {
   }, []);
 
   // -----------------------------------------------------------------------
+  // Wrapper element ref. We type it explicitly as `HTMLDivElement` and
+  // cross-cast to the drag hook's `HTMLElement`-typed ref via a callback
+  // ref pattern that keeps both refs synchronized.
+  //
+  // Constructed BEFORE the hooks below because `useIdleAutoRotate` now
+  // takes a containerRef as input — its activity-detection listeners
+  // bind to the wrapping <div>'s pointer/wheel/touch events. The same
+  // ref is also forwarded to `useDragRotation` via `attachRef`.
+  // -----------------------------------------------------------------------
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // -----------------------------------------------------------------------
   // ST-003 — Idle auto-rotation hook.
   //
-  // Constructed before the drag hook so its `notifyInteraction` is
-  // available to be passed into `useDragRotation`'s options.
-  //
-  // `isAutoRotatingRef` is destructured here SOLELY for the dev-only
-  // test bridge below. Production rendering does not consume the flag;
-  // `tickAutoRotation` already honors it internally.
+  // Returns an `IdleAutoRotateRef` whose `.current` is the angular
+  // velocity in rad/s around the world Y axis (binary: 0 when
+  // interactive, AUTO_ROTATION_ANGULAR_VELOCITY_RAD_PER_SEC when
+  // idle). The hook attaches its own activity-detection listeners
+  // to the wrapper element and to `window`, so no `notifyInteraction`
+  // callback is needed from the drag hook — auto-rotation pauses on
+  // ANY pointer interaction with the container, on ANY pointer click
+  // anywhere in the configurator (sidebars, header, etc.), and on
+  // ANY keyboard event.
   // -----------------------------------------------------------------------
-  const { autoRotationRef, isAutoRotatingRef, notifyInteraction, tickAutoRotation } =
-    useIdleAutoRotate();
+  const idleAutoRotateRef = useIdleAutoRotate(wrapperRef);
+
+  // -----------------------------------------------------------------------
+  // Auto-rotation accumulator quaternion.
+  //
+  // Owned at the BallCanvas level (not inside `useIdleAutoRotate`)
+  // because the read-side (`Sphere.tsx`) integrates the per-frame
+  // velocity into this accumulator, AND the dev-only test bridge
+  // reads this accumulator to verify auto-rotation progress.
+  // Centralizing the accumulator here keeps a single source of truth
+  // for both consumers.
+  //
+  // The accumulator is mutated in place by `Sphere.tsx`'s `useFrame`
+  // loop; it is never reset (auto-rotation resumes from the previous
+  // orientation after each pause/resume cycle, which matches the
+  // turntable mental model).
+  // -----------------------------------------------------------------------
+  const autoRotationAccumRef = useRef<Quaternion>(new Quaternion());
 
   // -----------------------------------------------------------------------
   // ST-002 — Drag rotation hook.
   //
   // The `attachRef` returned here is bound to the wrapping <div> below.
-  // `onInteractionStart` is wired to `notifyInteraction` so a drag
-  // immediately pauses auto-rotation per ST-003-AC2.
+  //
+  // `onInteractionStart` is intentionally OMITTED here: the new
+  // `useIdleAutoRotate` self-detects activity via its own listeners
+  // on the same container element, so a redundant callback wiring is
+  // no longer required. ST-003-AC2 is satisfied because pointerdown
+  // on the container fires both useDragRotation's handler AND
+  // useIdleAutoRotate's handler (DOM event listeners are additive).
   //
   // `isDraggingRef` is destructured here SOLELY for the dev-only test
-  // bridge below. Production rendering does not consume the flag;
-  // `useIdleAutoRotate` reacts to interaction via the
-  // `notifyInteraction` callback path, not by polling this flag.
+  // bridge below. Production rendering does not consume the flag.
   // -----------------------------------------------------------------------
-  const { attachRef, dragRotationRef, isDraggingRef } = useDragRotation({
-    onInteractionStart: notifyInteraction,
-  });
-
-  // -----------------------------------------------------------------------
-  // Wrapper element ref. We type it explicitly as `HTMLDivElement` and
-  // cross-cast to the hook's `HTMLElement`-typed ref via a callback
-  // ref pattern that keeps both refs synchronized.
-  // -----------------------------------------------------------------------
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const { attachRef, dragRotationRef, isDraggingRef } = useDragRotation();
 
   // Synchronize the wrapper ref with the drag hook's `attachRef`.
   // `attachRef` is a `RefObject<HTMLElement>` whose `.current` is
@@ -213,9 +239,9 @@ export function BallCanvas(props: BallCanvasProps): JSX.Element {
     }
     return installTestBridge({
       dragRotationRef,
-      autoRotationRef,
+      autoRotationAccumRef,
       isDraggingRef,
-      isAutoRotatingRef,
+      idleAutoRotateRef,
       wrapperRef,
     });
     // The five refs are stable `MutableRefObject` instances returned
@@ -288,8 +314,8 @@ export function BallCanvas(props: BallCanvasProps): JSX.Element {
         ------------------------------------------------------------- */}
         <Sphere
           dragRotationRef={dragRotationRef}
-          autoRotationRef={autoRotationRef}
-          tickAutoRotation={tickAutoRotation}
+          idleAutoRotateRef={idleAutoRotateRef}
+          autoRotationAccumRef={autoRotationAccumRef}
         />
       </Canvas>
     </div>

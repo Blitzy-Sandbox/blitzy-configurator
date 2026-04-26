@@ -43,13 +43,14 @@
 
 import { useFrame } from '@react-three/fiber';
 import { useEffect, useMemo, useRef } from 'react';
-import { MeshStandardMaterial, Quaternion, SphereGeometry, type Mesh } from 'three';
+import { MeshStandardMaterial, Quaternion, SphereGeometry, Vector3, type Mesh } from 'three';
 
 import { useConfiguratorStore } from '../../state/configuratorStore';
 import { applyConfiguratorState } from '../texture/texturePipeline';
 import { getThreeTexture } from '../texture/threeTexture';
 
 import { useMaterialSwatch } from './useMaterialSwatch';
+import type { IdleAutoRotateRef } from './useIdleAutoRotate';
 
 // ---------------------------------------------------------------------------
 // Geometry constants
@@ -72,13 +73,35 @@ const SPHERE_WIDTH_SEGMENTS = 64;
 const SPHERE_HEIGHT_SEGMENTS = 64;
 
 // ---------------------------------------------------------------------------
+// Auto-rotation integration constants
+// ---------------------------------------------------------------------------
+
+/**
+ * World up axis around which auto-rotation accumulates. Module-scoped
+ * `Vector3` so it is allocated exactly once across the component's
+ * entire lifetime (avoids per-frame allocations inside `useFrame`).
+ */
+const Y_AXIS = new Vector3(0, 1, 0);
+
+/**
+ * Maximum delta time (in seconds) honored by the auto-rotation
+ * integration. R3F's `delta` is unbounded — when a tab is backgrounded
+ * and re-foregrounded, the next `useFrame` tick can carry a delta of
+ * many seconds, which would otherwise produce a single-frame rotation
+ * of multiple revolutions (visually jarring). Clamping to 0.1 s caps
+ * each tick at 100 ms × 0.3 rad/s = 0.03 rad ≈ 1.7° max — small
+ * enough to feel continuous.
+ */
+const MAX_DELTA_TIME_SEC = 0.1;
+
+// ---------------------------------------------------------------------------
 // Component props
 // ---------------------------------------------------------------------------
 
 /**
  * Props supplied by `BallCanvas.tsx`. All three fields are stable
- * across renders by virtue of being React refs (or `useCallback`
- * results), so this component never needs to re-mount.
+ * across renders by virtue of being React refs, so this component
+ * never needs to re-mount.
  */
 export interface SphereProps {
   /**
@@ -89,20 +112,24 @@ export interface SphereProps {
   readonly dragRotationRef: React.MutableRefObject<Quaternion>;
 
   /**
-   * The accumulated auto-rotation quaternion (mutated in place by the
-   * `useIdleAutoRotate.tickAutoRotation()` callback). Read inside
-   * `useFrame` and composed with the drag rotation.
+   * Read-only ref carrying the current auto-rotation angular velocity
+   * (in radians per second around the world Y axis). Per the
+   * `useIdleAutoRotate` contract, the value is binary:
+   *   - 0          when not auto-rotating (interactive or idle-pending).
+   *   - >0         when auto-rotating at the documented constant.
+   * Read by `useFrame` to gate the per-frame integration step.
    */
-  readonly autoRotationRef: React.MutableRefObject<Quaternion>;
+  readonly idleAutoRotateRef: IdleAutoRotateRef;
 
   /**
-   * Per-frame advance for the auto-rotation accumulator. Called from
-   * inside this component's `useFrame` loop so the auto-rotation
-   * progress stays in sync with R3F's render loop. The callback itself
-   * is a no-op while interaction is active or the idle timer is still
-   * counting down.
+   * The auto-rotation accumulator quaternion. Mutated IN PLACE by
+   * this component's `useFrame` integration step (each frame that
+   * `idleAutoRotateRef.current !== 0`, the per-frame rotation delta
+   * is multiplied into this accumulator). The accumulator persists
+   * across pause/resume cycles — auto-rotation resumes from the
+   * orientation it last reached, NOT from identity.
    */
-  readonly tickAutoRotation: (deltaTimeSec: number) => void;
+  readonly autoRotationAccumRef: React.MutableRefObject<Quaternion>;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +153,7 @@ export interface SphereProps {
  * drag rotation applied second.
  */
 export function Sphere(props: SphereProps): JSX.Element {
-  const { dragRotationRef, autoRotationRef, tickAutoRotation } = props;
+  const { dragRotationRef, idleAutoRotateRef, autoRotationAccumRef } = props;
 
   // -----------------------------------------------------------------------
   // Subscriptions to the configurator store. SELECTORS only, never the
@@ -242,19 +269,50 @@ export function Sphere(props: SphereProps): JSX.Element {
   const meshRef = useRef<Mesh>(null);
   const composedQuaternionRef = useRef<Quaternion>(new Quaternion());
 
-  useFrame((_state, deltaTimeSec) => {
-    // Advance the auto-rotation accumulator if appropriate. The hook
-    // itself is a no-op while interaction is active or while the idle
-    // timer is still pending — `tickAutoRotation` handles those gates
-    // internally, so this call is unconditional and cheap.
-    tickAutoRotation(deltaTimeSec);
+  // Per-frame delta quaternion. Reused (not reallocated) each tick to
+  // keep the GC pressure inside `useFrame` at zero. The 4 floats are
+  // overwritten via `setFromAxisAngle` before each multiply.
+  const autoRotationDeltaRef = useRef<Quaternion>(new Quaternion());
 
-    // Compose: auto rotation .copy() . multiply(drag rotation)
-    // We re-use `composedQuaternionRef.current` to avoid per-frame
-    // allocations; semantically this is identical to:
-    //   const finalQuat = autoRotationRef.current.clone().multiply(dragRotationRef.current)
+  useFrame((_state, deltaTimeSec) => {
+    // -----------------------------------------------------------------
+    // ST-003 auto-rotation integration step.
+    //
+    // Read the current angular velocity from the idle hook's ref. Per
+    // contract, the value is binary — 0 when not auto-rotating, or
+    // the documented constant (rad/s) when auto-rotating. The strict
+    // `!== 0` comparison keeps the integration step out of the hot
+    // path entirely while interaction is active or the idle timer is
+    // still pending.
+    //
+    // While paused (angularVelocity === 0), `autoRotationAccumRef`
+    // is read below but NOT written, so the orientation reached
+    // before the pause is preserved. When the idle timer fires
+    // again, integration resumes from the preserved orientation,
+    // which matches the turntable mental model in the AAP.
+    // -----------------------------------------------------------------
+    const angularVelocity = idleAutoRotateRef.current;
+    if (angularVelocity !== 0) {
+      const clampedDelta = Math.min(deltaTimeSec, MAX_DELTA_TIME_SEC);
+      const angleRad = angularVelocity * clampedDelta;
+      autoRotationDeltaRef.current.setFromAxisAngle(Y_AXIS, angleRad);
+      autoRotationAccumRef.current.multiply(autoRotationDeltaRef.current);
+    }
+
+    // -----------------------------------------------------------------
+    // Composition step: autoRotation × dragRotation.
+    //
+    // Per QA Report Issue #5 scope notes, the composition order is:
+    //
+    //     finalQuat = autoRotationAccum.clone().multiply(dragRotation)
+    //
+    // We reuse `composedQuaternionRef.current` to avoid allocating a
+    // fresh Quaternion per frame — semantically equivalent to:
+    //   const finalQuat =
+    //     autoRotationAccumRef.current.clone().multiply(dragRotationRef.current);
+    // -----------------------------------------------------------------
     composedQuaternionRef.current
-      .copy(autoRotationRef.current)
+      .copy(autoRotationAccumRef.current)
       .multiply(dragRotationRef.current);
 
     const mesh = meshRef.current;
