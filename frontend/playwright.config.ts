@@ -159,6 +159,43 @@ export default defineConfig({
   workers: process.env.CI ? 4 : undefined,
 
   // -----------------------------------------------------------------------
+  // Per-test timeout — 60s
+  // -----------------------------------------------------------------------
+  //
+  // Playwright's default per-test timeout is 30 seconds. That's adequate
+  // for ordinary DOM-heavy tests on a GPU-accelerated environment, but
+  // the StrikeForge configurator suite runs against software WebGL
+  // (SwiftShader / llvmpipe) on sandboxed CI runners with no GPU
+  // available. Software WebGL is CPU-bound, so:
+  //
+  //   - R3F initial mount is ~5× slower than on real GPU hardware.
+  //   - Canvas visibility / actionability checks are ~3-5× slower.
+  //   - Combined-suite parallel runs add inter-worker CPU contention,
+  //     pushing per-test wall time toward 30-45s for tests that would
+  //     ordinarily complete in 5-10s on hardware.
+  //
+  // Empirically observed wall times in a 17-test combined run on a
+  // 128-core / SwiftShader sandbox:
+  //   - simple navigation + canvas-visibility assertions: ~25-35s
+  //   - drag interaction + frame settle:                  ~40-50s
+  //   - resize across 3 breakpoints with R3F re-fit:      ~45s
+  //
+  // 60s gives comfortable headroom across every observed case while
+  // still surfacing genuine hangs (an infinite loop or a deadlocked
+  // animation frame would produce a timeout in any reasonable budget).
+  //
+  // Tests that need *more* than 60s (e.g. multi-step performance
+  // budget tests that include their own settle windows) call
+  // `test.setTimeout(60_000)` or higher explicitly.
+  //
+  // The hardware production budget (`MIN_FPS_BUDGET_HARDWARE = 30` in
+  // tests/performance/budget.spec.ts) and the initial-load budget
+  // (`INITIAL_LOAD_BUDGET_MS = 2000` per ST-005-AC3) remain in the
+  // assertion code, so this timeout change has no effect on what is
+  // actually measured.
+  timeout: 60_000,
+
+  // -----------------------------------------------------------------------
   // Reporters (HTML + JSON + list)
   // -----------------------------------------------------------------------
   reporter: [

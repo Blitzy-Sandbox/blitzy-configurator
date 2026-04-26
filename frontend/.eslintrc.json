@@ -44,6 +44,15 @@
         "@typescript-eslint/no-non-null-assertion": "off",
         "react-hooks/rules-of-hooks": "off"
       }
+    },
+    {
+      "files": [
+        "src/configurator/preview/**/*.tsx",
+        "src/configurator/preview/**/*.ts"
+      ],
+      "rules": {
+        "react/no-unknown-property": "off"
+      }
     }
   ]
 }

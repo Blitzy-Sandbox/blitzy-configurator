@@ -1,0 +1,403 @@
+/*
+ * =====================================================================
+ * StrikeForge 3D Configurator — Global stylesheet (Blitzy brand identity)
+ * =====================================================================
+ *
+ * Authority:
+ *   - QA Report Issue #10 ("Brand typography and color tokens not applied")
+ *   - AAP §0.8.2 Executive Presentation Rule (declares the canonical
+ *     Blitzy palette, gradients, and font families that the configurator
+ *     must mirror so that the live application is visually coherent with
+ *     the executive deck and other Blitzy surfaces).
+ *   - AAP §0.6.14 (three-region layout: controls / preview / summary).
+ *   - AAP §0.6.7 (file inventory — this stylesheet is the single style
+ *     entry point imported by `frontend/src/main.tsx`).
+ *
+ * Responsibilities:
+ *   1. Declare the Blitzy brand color and typography tokens as CSS
+ *      custom properties on `:root` so that every component (and the
+ *      Playwright runtime tests in `frontend/tests/configurator/`) can
+ *      assert against `getComputedStyle(...).getPropertyValue('--blitzy-…')`.
+ *   2. Apply Inter as the default body font, Space Grotesk as the
+ *      display/heading font, and Fira Code as the monospace font.
+ *      The `<link>` tags that load these families live in
+ *      `frontend/index.html`.
+ *   3. Reset native browser margins/padding on `html`, `body`, and
+ *      `#root` so the React tree owns the entire viewport — required
+ *      for ST-001-AC1 ("ball centered in viewport") and ST-001-AC3
+ *      (resize re-centering without overflow).
+ *   4. Provide the three-region grid layout used by `App.tsx`:
+ *      controls (left) | preview (center) | summary sidebar (right).
+ *      The grid collapses to a single column on narrow viewports
+ *      so the preview remains the dominant region (ST-001-AC3).
+ *   5. Declare the canonical Blitzy hero gradient, divider gradient,
+ *      and accent-bar gradient as CSS custom properties so any
+ *      surface that needs them (header strip, sidebar accents,
+ *      Save/Add-to-Cart CTAs in MG1-F) reads from one source of truth.
+ *
+ * Cross-cutting rules:
+ *   - Rule R7 / C6 (Fabric → Three texture order): N/A — pure CSS.
+ *   - Rule R2 (no credential material in logs): N/A — pure CSS.
+ *   - Rule R4 analog (no environment defaults): N/A — design tokens
+ *     are documented constants, not runtime configuration.
+ *
+ * Out of scope:
+ *   - Component-level styling (each component owns its own scoped CSS
+ *     or inline styles). This file ONLY declares tokens, document-level
+ *     resets, and the application shell layout.
+ *   - CSS-in-JS / styled-components / Tailwind. The user prompt §3 does
+ *     NOT specify a CSS framework, and AAP §0.6.14 explicitly notes
+ *     "No visual design system library was specified by the user —
+ *     styling is implemented directly via CSS modules or a lightweight
+ *     utility layer".
+ * =====================================================================
+ */
+
+/* ---------------------------------------------------------------------
+ * Blitzy brand tokens (canonical palette + typography from AAP §0.8.2)
+ * ------------------------------------------------------------------ */
+:root {
+  /* ---- Brand color palette ------------------------------------------- */
+  /* Primary brand purple — used for CTAs, focus rings, accent borders. */
+  --blitzy-primary: #5B39F3;
+  /* Darkened primary for hover states and high-contrast accents. */
+  --blitzy-primary-dark: #2D1C77;
+  /* Deep navy used in headers and large background blocks. */
+  --blitzy-primary-navy: #1A105F;
+  /* Lavender shade used for secondary surfaces. */
+  --blitzy-primary-light: #7A6DEC;
+  /* Saturated deep purple anchor for the gradient. */
+  --blitzy-primary-deep: #4101DB;
+  /* Mint teal — used as a sparing accent (e.g. live-preview pulse). */
+  --blitzy-accent-teal: #94FAD5;
+
+  /* ---- Surface neutrals (light → bright) ----------------------------- */
+  --blitzy-surface-0: #FFFFFF; /* Pure white — primary canvas. */
+  --blitzy-surface-1: #F5F5F5; /* Subtle off-white — secondary panels. */
+  --blitzy-surface-2: #F4EFF6; /* Tinted lavender — info banners. */
+  --blitzy-surface-3: #D9D9D9; /* Mid-grey — disabled controls. */
+
+  /* ---- Borders ------------------------------------------------------- */
+  --blitzy-border: #999999;       /* Standard border. */
+  --blitzy-border-soft: #D9D9D9;  /* Hairline border for cards. */
+
+  /* ---- Text ---------------------------------------------------------- */
+  --blitzy-text: #333333;         /* Primary body text on light surfaces. */
+  --blitzy-text-muted: #999999;   /* Secondary / disabled text. */
+  --blitzy-text-invert: #FFFFFF;  /* Text on dark/gradient surfaces. */
+
+  /* ---- Typography ---------------------------------------------------- */
+  /*
+   * The fallback chain (`-apple-system, BlinkMacSystemFont, ...`)
+   * keeps the site readable while Google Fonts is being downloaded
+   * (or in the rare case the network blocks fonts.googleapis.com).
+   */
+  --ff-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --ff-display: 'Space Grotesk', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --ff-mono: 'Fira Code', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* ---- Brand gradients (canonical from AAP §0.8.2) -------------------- */
+  /* Hero gradient — used on full-bleed marketing surfaces. */
+  --gradient-hero: linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%);
+  /* Divider gradient — thin separator strip. */
+  --gradient-divider: linear-gradient(90deg, #7A6DEC, #5B39F3, #4101DB);
+  /* Accent bar gradient — small inline accents next to headings. */
+  --gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #94FAD5 100%);
+
+  /* ---- Spacing scale (4-pt grid) -------------------------------------- */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+
+  /* ---- Component shape ----------------------------------------------- */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 16px;
+}
+
+/* ---------------------------------------------------------------------
+ * Document-level reset.
+ * ------------------------------------------------------------------ */
+
+/*
+ * `box-sizing: border-box` everywhere so width/padding/border arithmetic
+ * is intuitive across nested flex/grid containers (ST-001-AC3 resize
+ * behavior depends on this).
+ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/*
+ * Strip native margins on every element that has a default. The
+ * configurator owns its layout entirely; the browser's defaults are
+ * inappropriate for an app shell.
+ */
+body,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+ul,
+ol,
+figure,
+blockquote,
+dl,
+dd {
+  margin: 0;
+}
+
+ul,
+ol {
+  padding: 0;
+  list-style: none;
+}
+
+/*
+ * `html` and `body` MUST occupy the full viewport so the three-region
+ * layout in `App.tsx` can grid-fill 100vh. Any padding here would shift
+ * the sphere off-center (ST-001-AC1).
+ */
+html,
+body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  /* 16px base size matches AAP §0.6.14 "body type" expectations. */
+  font-size: 16px;
+}
+
+body {
+  font-family: var(--ff-body);
+  font-weight: 400;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--blitzy-text);
+  background-color: var(--blitzy-surface-1);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------------------------------------------------------------------
+ * Headings (display family).
+ * ------------------------------------------------------------------ */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--ff-display);
+  font-weight: 600;
+  color: var(--blitzy-text);
+  line-height: 1.25;
+}
+
+h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+h2 {
+  font-size: 1.375rem;
+  font-weight: 600;
+}
+
+h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------
+ * Code / monospace.
+ * ------------------------------------------------------------------ */
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--ff-mono);
+  font-size: 0.9rem;
+}
+
+/* ---------------------------------------------------------------------
+ * Focus indicator — visible 2px outline using the brand primary, kept
+ * accessible for ST-001-AC4-style "no console errors / no a11y warnings".
+ * ------------------------------------------------------------------ */
+:focus-visible {
+  outline: 2px solid var(--blitzy-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ---------------------------------------------------------------------
+ * Anchor defaults — the configurator does not have many anchors, but
+ * the share-link sidebar (ST-021) renders them; using the brand color
+ * here avoids per-component overrides.
+ * ------------------------------------------------------------------ */
+a {
+  color: var(--blitzy-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* ---------------------------------------------------------------------
+ * Three-region application shell (controls | preview | summary).
+ * ---------------------------------------------------------------------
+ *
+ * Per AAP §0.6.14, the top-level layout is three regions:
+ *   - left   → control sidebar (color pickers, pattern, finish, logo)
+ *   - center → 3D ball preview (R3F <Canvas>)
+ *   - right  → live design summary sidebar
+ *
+ * Implemented via CSS Grid with named template areas so that the
+ * layout collapses gracefully on narrow viewports (the controls and
+ * summary stack vertically below the preview at ≤900px wide). This
+ * satisfies ST-001-AC3 (resize keeps ball visible without distortion).
+ *
+ * The `.app-shell` class is applied to the top-level `<div>` rendered
+ * by `App.tsx`. Children render into the named grid areas via the
+ * `.app-shell-controls`, `.app-shell-preview`, `.app-shell-summary`
+ * helper classes.
+ * ------------------------------------------------------------------ */
+
+.app-shell {
+  display: grid;
+  /* 280px control sidebar | flexible preview | 280px summary sidebar */
+  grid-template-columns: 280px 1fr 280px;
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    'header  header   header'
+    'controls preview summary';
+  height: 100%;
+  width: 100%;
+  background-color: var(--blitzy-surface-1);
+  color: var(--blitzy-text);
+}
+
+.app-shell-header {
+  grid-area: header;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-md) var(--space-lg);
+  background: var(--gradient-hero);
+  color: var(--blitzy-text-invert);
+  border-bottom: 1px solid var(--blitzy-primary-dark);
+}
+
+.app-shell-header-title {
+  font-family: var(--ff-display);
+  font-weight: 700;
+  font-size: 1.25rem;
+  margin: 0;
+  color: var(--blitzy-text-invert);
+}
+
+.app-shell-header-actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.app-shell-controls {
+  grid-area: controls;
+  background-color: var(--blitzy-surface-0);
+  border-right: 1px solid var(--blitzy-border-soft);
+  padding: var(--space-lg) var(--space-md);
+  overflow-y: auto;
+}
+
+.app-shell-preview {
+  grid-area: preview;
+  position: relative;
+  /*
+   * Subtle radial gradient on the preview surface so the white ball
+   * still has visible contrast against its background, regardless of
+   * the user's selected primary color.
+   */
+  background:
+    radial-gradient(circle at 50% 40%, var(--blitzy-surface-0) 0%, var(--blitzy-surface-2) 100%);
+  overflow: hidden;
+  /* The R3F <Canvas> stretches to fill this region; ensure it has a
+     definite height to satisfy the WebGL renderer's requirement for a
+     non-zero parent size. */
+  min-height: 360px;
+}
+
+.app-shell-summary {
+  grid-area: summary;
+  background-color: var(--blitzy-surface-0);
+  border-left: 1px solid var(--blitzy-border-soft);
+  padding: var(--space-lg) var(--space-md);
+  overflow-y: auto;
+}
+
+/*
+ * Responsive collapse for narrow viewports — the controls and summary
+ * sidebars stack vertically below the preview so it remains the focus.
+ */
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 360px auto auto;
+    grid-template-areas:
+      'header'
+      'preview'
+      'controls'
+      'summary';
+  }
+  .app-shell-controls,
+  .app-shell-summary {
+    border-right: 0;
+    border-left: 0;
+    border-top: 1px solid var(--blitzy-border-soft);
+  }
+}
+
+/* ---------------------------------------------------------------------
+ * Reusable accent classes referenced by future control components.
+ * ------------------------------------------------------------------ */
+
+.brand-accent-bar {
+  display: block;
+  height: 4px;
+  width: 48px;
+  border-radius: var(--radius-sm);
+  background: var(--gradient-accent-bar);
+  margin-bottom: var(--space-md);
+}
+
+.brand-eyebrow {
+  display: inline-block;
+  font-family: var(--ff-display);
+  font-weight: 600;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--blitzy-primary-dark);
+  margin-bottom: var(--space-xs);
+}
