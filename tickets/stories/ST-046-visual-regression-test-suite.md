@@ -15,8 +15,8 @@ As a QA engineer, I want a visual regression test suite that compares rendered s
 
 ## Acceptance Criteria
 
-- [x] The visual regression suite is triggered on every pull request open and on every subsequent push to an open pull request against the default branch, and captures screenshots of at least the configurator, design list, cart, and order confirmation surfaces.
-- [x] Each captured screenshot is compared against a versioned baseline at a fixed viewport size, and any delta exceeding the documented pixel-difference threshold produces a failed verdict.
-- [x] A failed verdict surfaces side-by-side baseline and current screenshots in a visual regression report artifact emitted at a documented path and blocks merge until the difference is acknowledged.
-- [x] Baseline updates require an explicit commit to the versioned baseline artifacts so no run can silently overwrite the baseline with a new capture.
-- [x] The suite runs in the local development environment against locally-started services so developers can capture, refresh, and compare baselines without remote access.
+- [ ] The visual regression suite is triggered on every pull request open and on every subsequent push to an open pull request against the default branch, and captures screenshots of at least the configurator, design list, cart, and order confirmation surfaces.
+- [ ] Each captured screenshot is compared against a versioned baseline at a fixed viewport size, and any delta exceeding the documented pixel-difference threshold produces a failed verdict.
+- [ ] A failed verdict surfaces side-by-side baseline and current screenshots in a visual regression report artifact emitted at a documented path and blocks merge until the difference is acknowledged.
+- [ ] Baseline updates require an explicit commit to the versioned baseline artifacts so no run can silently overwrite the baseline with a new capture.
+- [ ] The suite runs in the local development environment against locally-started services so developers can capture, refresh, and compare baselines without remote access.

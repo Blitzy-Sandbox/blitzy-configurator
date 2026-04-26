@@ -14,7 +14,7 @@ As an authenticated user, I want to browse my previously saved designs and open 
 
 ## Acceptance Criteria
 
-- [x] The UI surfaces a list of designs owned by the current authenticated user, each item showing enough metadata (such as title and last-modified time) to identify it.
-- [x] Selecting a design from the list loads it into the configurator, replacing the current selections with the saved selections on the preview and in the sidebar.
-- [x] If the design list cannot be retrieved, the user sees an actionable failure message and the previous UI state is left intact.
-- [x] Loading a design from the list does not trigger an implicit save, and the Save Design CTA returns to the saved state until the user makes a change.
+- [ ] The UI surfaces a list of designs owned by the current authenticated user, each item showing enough metadata (such as title and last-modified time) to identify it.
+- [ ] Selecting a design from the list loads it into the configurator, replacing the current selections with the saved selections on the preview and in the sidebar.
+- [ ] If the design list cannot be retrieved, the user sees an actionable failure message and the previous UI state is left intact.
+- [ ] Loading a design from the list does not trigger an implicit save, and the Save Design CTA returns to the saved state until the user makes a change.

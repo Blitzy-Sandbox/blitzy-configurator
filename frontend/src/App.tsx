@@ -139,7 +139,6 @@ function DesignSummarySidebar(): JSX.Element {
   return (
     <aside
       className="app-shell-summary"
-      role="complementary"
       aria-label="Current design summary"
       data-testid="design-summary-sidebar"
     >
@@ -239,7 +238,6 @@ function ControlSidebar(): JSX.Element {
   return (
     <aside
       className="app-shell-controls"
-      role="complementary"
       aria-label="Configurator controls"
       data-testid="control-sidebar"
     >

@@ -49,6 +49,20 @@
  *   the integration check `if (angularVelocity !== 0)` is a single
  *   comparison.
  *
+ * Accessibility — `prefers-reduced-motion` (WCAG 2.3.3 "Animation
+ * from Interactions"):
+ *   When the user's operating system or browser advertises
+ *   `prefers-reduced-motion: reduce` (e.g. macOS "Reduce motion",
+ *   Windows "Show animations off", or a browser-level override),
+ *   this hook MUST NOT engage auto-rotation — vestibular triggers
+ *   are an accessibility hazard for users with motion-sensitivity
+ *   disorders. The preference is observed via
+ *   `window.matchMedia('(prefers-reduced-motion: reduce)')`. The
+ *   query is also subscribed to so that flipping the OS-level
+ *   preference at runtime (e.g. macOS toggling "Reduce motion"
+ *   mid-session) immediately suppresses any active rotation and
+ *   prevents future rotations until the preference is cleared.
+ *
  * Cross-cutting rules:
  *   - Rule R7 / C6: untouched. This hook does NOT touch the texture
  *     pipeline. Verified by the absence of any `needsUpdate` reference
@@ -113,6 +127,31 @@ const IDLE_THRESHOLD_MS = 3000;
  * via `quaternion.setFromAxisAngle(new Vector3(0, 1, 0), velocity * delta)`.
  */
 const AUTO_ROTATION_ANGULAR_VELOCITY_RAD_PER_SEC = 0.3;
+
+/**
+ * `prefers-reduced-motion` media query string. Centralized as a
+ * module-scoped constant so the listener-add and listener-remove
+ * paths stay in lock-step (any drift in the query string would
+ * silently break listener removal on cleanup).
+ */
+const PREFERS_REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
+
+/**
+ * Read the current `prefers-reduced-motion` user preference. Returns
+ * `false` outside browser environments (e.g. Jest with `node`
+ * environment) so unit tests do not need to stub `matchMedia`.
+ *
+ * Defensive against environments where `window.matchMedia` is
+ * undefined (SSR, older Node test environments) — falls back to
+ * `false` which is the "no reduced-motion preference expressed"
+ * baseline.
+ */
+function isReducedMotionPreferred(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return false;
+  }
+  return window.matchMedia(PREFERS_REDUCED_MOTION_QUERY).matches;
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -260,15 +299,40 @@ export function useIdleAutoRotate(
      * `scheduleIdleTimer()` produces exactly ONE pending callback,
      * not two. This invariant is critical for ST-003-AC3 (timer
      * restarts on each activity event).
+     *
+     * `prefers-reduced-motion` short-circuit (WCAG 2.3.3): if the
+     * user has expressed a motion-reduction preference, we ALWAYS
+     * clear any pending timer AND skip scheduling a new one. The
+     * velocity ref is left at 0 so the read-side never observes a
+     * non-zero auto-rotation velocity. Re-scheduling resumes
+     * automatically when the preference is cleared (handled by
+     * `onReducedMotionChange` below).
      */
     const scheduleIdleTimer = (): void => {
       if (idleTimerHandle !== null) {
         clearTimeout(idleTimerHandle);
+        idleTimerHandle = null;
+      }
+      if (isReducedMotionPreferred()) {
+        // Reduced motion preferred — never engage auto-rotation.
+        // The activity-handler path still runs and pauses any in-
+        // flight rotation, but no new timer is scheduled.
+        return;
       }
       idleTimerHandle = setTimeout(() => {
         // Idle threshold reached — engage auto-rotation by setting
         // the velocity to the documented constant (ST-003-AC1, AC4).
         // This is the ONLY place the velocity becomes non-zero.
+        // Defensive re-check: if the user toggled reduced-motion
+        // during the 3-second wait, the change handler will have
+        // already cleared this timer, but we add a second guard
+        // here in case the timer fires in the same tick the
+        // change handler runs.
+        if (isReducedMotionPreferred()) {
+          velocityRef.current = 0;
+          idleTimerHandle = null;
+          return;
+        }
         velocityRef.current = AUTO_ROTATION_ANGULAR_VELOCITY_RAD_PER_SEC;
         idleTimerHandle = null;
       }, IDLE_THRESHOLD_MS);
@@ -330,9 +394,58 @@ export function useIdleAutoRotate(
     window.addEventListener('keydown', onActivity);
     window.addEventListener('pointerdown', onActivity);
 
+    // -------------------------------------------------------------------
+    // `prefers-reduced-motion` media-query subscription.
+    //
+    // The OS-level / browser-level preference can change at runtime
+    // (macOS lets the user toggle "Reduce motion" without restarting
+    // applications; Chromium DevTools exposes the setting via the
+    // Rendering panel). Subscribing to the media query keeps the
+    // hook's behavior in sync with the live preference:
+    //   - If the user enables reduced motion mid-rotation, we
+    //     clear the in-flight rotation immediately by setting the
+    //     velocity to 0 and clearing any pending idle timer.
+    //   - If the user disables reduced motion, we re-schedule the
+    //     idle timer so auto-rotation resumes after the documented
+    //     idle interval (consistent with the activity-driven
+    //     resume path).
+    //
+    // `addEventListener('change', ...)` is the modern, well-supported
+    // API on `MediaQueryList`. Older Safari versions (< 14) use the
+    // legacy `addListener` API; we accept the slim compatibility
+    // window because the project targets evergreen browsers (per
+    // Vite build target `es2022`).
+    // -------------------------------------------------------------------
+    const reducedMotionMql =
+      typeof window.matchMedia === 'function'
+        ? window.matchMedia(PREFERS_REDUCED_MOTION_QUERY)
+        : null;
+    const onReducedMotionChange = (): void => {
+      if (isReducedMotionPreferred()) {
+        // User just enabled reduced motion — pause immediately.
+        if (idleTimerHandle !== null) {
+          clearTimeout(idleTimerHandle);
+          idleTimerHandle = null;
+        }
+        velocityRef.current = 0;
+      } else {
+        // User just disabled reduced motion — resume the
+        // idle-timer cycle so auto-rotation re-engages after the
+        // documented idle interval (matches the resume-after-
+        // activity contract in ST-003-AC3).
+        scheduleIdleTimer();
+      }
+    };
+    if (reducedMotionMql !== null) {
+      reducedMotionMql.addEventListener('change', onReducedMotionChange);
+    }
+
     // Bootstrap: set velocity to 0 (defensive — ref already starts at
     // 0, but a re-mount could carry a stale value if the ref were
     // shared across mounts) and schedule the first idle timer.
+    // `scheduleIdleTimer` itself short-circuits when reduced-motion
+    // is preferred, so the bootstrap path is correct in both
+    // preference states.
     velocityRef.current = 0;
     scheduleIdleTimer();
 
@@ -358,6 +471,14 @@ export function useIdleAutoRotate(
       element.removeEventListener('touchstart', onActivity);
       window.removeEventListener('keydown', onActivity);
       window.removeEventListener('pointerdown', onActivity);
+
+      // Symmetric cleanup of the media-query subscription. The
+      // remove call must reference the same handler instance that
+      // was added — both reference the closure-scoped
+      // `onReducedMotionChange` so the pair is exact.
+      if (reducedMotionMql !== null) {
+        reducedMotionMql.removeEventListener('change', onReducedMotionChange);
+      }
 
       // Reset velocity on unmount so a re-mount (e.g. StrictMode
       // mount/unmount/remount or HMR refresh) starts from the

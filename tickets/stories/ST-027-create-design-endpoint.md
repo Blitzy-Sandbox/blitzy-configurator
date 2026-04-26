@@ -14,7 +14,7 @@ As an authenticated user, I want to save the current configurator selections as 
 
 ## Acceptance Criteria
 
-- [x] The Create Design endpoint requires a valid session and persists a new design record with all configurator selections (colors, stitching pattern, material finish, logo reference and placement) owned by the authenticated user.
-- [x] A successful create returns the canonical persisted design, including a server-assigned identifier and timestamps, and does not mutate any other design owned by the user.
-- [x] Requests with invalid input (missing required selections, malformed logo reference) are rejected with a descriptive error and leave the persistence layer unchanged.
-- [x] Requests without a valid session are rejected by the session validation contract before reaching the persistence layer.
+- [ ] The Create Design endpoint requires a valid session and persists a new design record with all configurator selections (colors, stitching pattern, material finish, logo reference and placement) owned by the authenticated user.
+- [ ] A successful create returns the canonical persisted design, including a server-assigned identifier and timestamps, and does not mutate any other design owned by the user.
+- [ ] Requests with invalid input (missing required selections, malformed logo reference) are rejected with a descriptive error and leave the persistence layer unchanged.
+- [ ] Requests without a valid session are rejected by the session validation contract before reaching the persistence layer.

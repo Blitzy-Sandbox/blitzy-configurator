@@ -13,7 +13,7 @@ As an end user, I want unsupported combinations of pattern and finish to be visu
 
 ## Acceptance Criteria
 
-- [x] An unsupported pattern-and-finish combination renders the conflicting option in a disabled visual state.
-- [x] Hovering or focusing a disabled option reveals a tooltip explaining why the combination is currently unavailable.
-- [x] Clicking a disabled option produces no change to the preview and does not register as a selection.
-- [x] When the user changes the other variable so the combination becomes supported, the previously disabled option returns to the enabled state.
+- [ ] An unsupported pattern-and-finish combination renders the conflicting option in a disabled visual state.
+- [ ] Hovering or focusing a disabled option reveals a tooltip explaining why the combination is currently unavailable.
+- [ ] Clicking a disabled option produces no change to the preview and does not register as a selection.
+- [ ] When the user changes the other variable so the combination becomes supported, the previously disabled option returns to the enabled state.

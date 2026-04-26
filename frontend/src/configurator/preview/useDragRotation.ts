@@ -36,6 +36,12 @@
  *      current orientation.
  *   4. NEVER reset the cumulative quaternion on pointer up / cancel
  *      (ST-002-AC3 — no snap-back).
+ *   5. Attach a `keydown` listener to the same container element to
+ *      provide a keyboard alternative for rotation (Arrow keys). This
+ *      satisfies AAP §0.6.7 "every control reachable by keyboard" and
+ *      WCAG 2.1 AA Success Criterion 2.1.1 "Keyboard". The container
+ *      MUST be made focusable by the consumer (`BallCanvas.tsx`
+ *      provides `tabIndex={0}`); without focus, the listener is silent.
  *
  * Cross-cutting rules:
  *   - Rule R7 / C6 (texture update order): UNTOUCHED — this hook does
@@ -122,6 +128,22 @@ export interface DragRotationRef {
  * sensitivity on the reference hardware profile.
  */
 const DRAG_SENSITIVITY_RAD_PER_PX = 0.005;
+
+/**
+ * Per-keypress rotation step in radians for the keyboard alternative.
+ *
+ * 0.1 rad ≈ 5.73°. With this step:
+ *   - 16 ArrowRight keypresses ≈ 1.6 rad ≈ 91.7° (a full quarter turn).
+ *   - 64 keypresses ≈ 6.4 rad ≈ 366° (one full revolution), matching
+ *     the "1 viewport-width drag = 1 revolution" pointer convention
+ *     for a 1280-pixel viewport (1280 × 0.005 ≈ 6.4 rad).
+ *
+ * The step is fixed (no Shift-modifier acceleration) to keep the
+ * keyboard contract minimal and predictable for screen-reader users
+ * who rely on a documented interaction model. Adjust here if UX
+ * review reveals over- or under-sensitivity.
+ */
+const KEYBOARD_ROTATION_STEP_RAD = 0.1;
 
 // ---------------------------------------------------------------------------
 // Hook implementation
@@ -252,6 +274,22 @@ export function useDragRotation(
     /** Working delta quaternion — repopulated each pointermove. */
     const delta = new Quaternion();
 
+    /**
+     * Pre-allocated unit axes for the keyboard rotation handler.
+     * The Y axis maps to ArrowLeft / ArrowRight (yaw) and the X axis
+     * maps to ArrowUp / ArrowDown (pitch). The mapping mirrors the
+     * pointer-drag convention: dragging right rotates around +Y,
+     * dragging down rotates around +X (see derivation comments in
+     * `onPointerMove`).
+     *
+     * These vectors are NEVER mutated; they are passed to
+     * `Quaternion.setFromAxisAngle` by reference, which copies the
+     * axis components into the resulting quaternion's internal
+     * representation. Pre-allocating avoids per-keypress GC churn.
+     */
+    const Y_AXIS = new Vector3(0, 1, 0);
+    const X_AXIS = new Vector3(1, 0, 0);
+
     // ---------------------------------------------------------------------
     // Event handlers
     // ---------------------------------------------------------------------
@@ -379,6 +417,77 @@ export function useDragRotation(
       onPointerUp(event);
     };
 
+    /**
+     * Keyboard alternative to drag rotation (AAP §0.6.7 "every
+     * control reachable by keyboard"; WCAG 2.1 AA SC 2.1.1).
+     *
+     * Mapping (mirrors the pointer-drag convention so users who
+     * switch between keyboard and pointer get consistent results):
+     *   - ArrowRight → rotate +KEYBOARD_ROTATION_STEP_RAD around +Y
+     *                  (equivalent to a small drag right).
+     *   - ArrowLeft  → rotate −KEYBOARD_ROTATION_STEP_RAD around +Y.
+     *   - ArrowDown  → rotate +KEYBOARD_ROTATION_STEP_RAD around +X
+     *                  (equivalent to a small drag down).
+     *   - ArrowUp    → rotate −KEYBOARD_ROTATION_STEP_RAD around +X.
+     *
+     * Other keys are ignored (returned without preventDefault) so
+     * Tab navigation, Escape, etc. continue to work normally.
+     *
+     * `preventDefault` on Arrow keys stops the browser's default
+     * behavior (page scroll on body Arrow keys), which would
+     * otherwise make focusing the canvas and pressing arrows
+     * scroll the surrounding page. This is the keyboard equivalent
+     * of `touch-action: none` on the wrapper.
+     *
+     * The handler is attached to the container element rather than
+     * to `window`, so it fires only when the wrapper (or a focusable
+     * descendant inside it) holds keyboard focus. This avoids
+     * conflicts with text inputs in the surrounding configurator
+     * controls — typing arrow keys in a hex color field never
+     * rotates the ball.
+     *
+     * `useIdleAutoRotate` listens for `keydown` on `window`, so a
+     * keyboard rotation here ALSO pauses any in-flight idle auto-
+     * rotation — consistent with the pointer-drag pause behavior.
+     */
+    const onKeyDown = (event: KeyboardEvent): void => {
+      let axisVector: Vector3 | null = null;
+      let signedAngle = 0;
+      switch (event.key) {
+        case 'ArrowRight':
+          axisVector = Y_AXIS;
+          signedAngle = KEYBOARD_ROTATION_STEP_RAD;
+          break;
+        case 'ArrowLeft':
+          axisVector = Y_AXIS;
+          signedAngle = -KEYBOARD_ROTATION_STEP_RAD;
+          break;
+        case 'ArrowDown':
+          axisVector = X_AXIS;
+          signedAngle = KEYBOARD_ROTATION_STEP_RAD;
+          break;
+        case 'ArrowUp':
+          axisVector = X_AXIS;
+          signedAngle = -KEYBOARD_ROTATION_STEP_RAD;
+          break;
+        default:
+          return;
+      }
+
+      // Suppress the browser's default page-scroll on Arrow keys
+      // when the wrapper has focus. Without this, the surrounding
+      // page would scroll while the user is trying to rotate.
+      event.preventDefault();
+
+      // Build the incremental rotation (re-using the same `delta`
+      // working object as the pointer path — they cannot run
+      // concurrently because both originate from a single keyboard /
+      // pointer event loop). Then left-multiply onto the cumulative
+      // quaternion using the same composition rule as drag.
+      delta.setFromAxisAngle(axisVector, signedAngle);
+      quaternionRef.current.premultiply(delta);
+    };
+
     // ---------------------------------------------------------------------
     // Listener attachment
     // ---------------------------------------------------------------------
@@ -387,9 +496,10 @@ export function useDragRotation(
     element.addEventListener('pointermove', onPointerMove);
     element.addEventListener('pointerup', onPointerUp);
     element.addEventListener('pointercancel', onPointerCancel);
+    element.addEventListener('keydown', onKeyDown);
 
     // ---------------------------------------------------------------------
-    // Cleanup — symmetric removal of all four listeners. React's
+    // Cleanup — symmetric removal of all five listeners. React's
     // StrictMode invokes this cleanup between the development-only
     // double mount, ensuring no listener accumulates on the DOM
     // element across the mount/unmount/remount cycle.
@@ -399,6 +509,7 @@ export function useDragRotation(
       element.removeEventListener('pointermove', onPointerMove);
       element.removeEventListener('pointerup', onPointerUp);
       element.removeEventListener('pointercancel', onPointerCancel);
+      element.removeEventListener('keydown', onKeyDown);
     };
   }, [containerRef]);
 

@@ -339,6 +339,15 @@ export function BallCanvas(props: BallCanvasProps): JSX.Element {
         background: 'var(--blitzy-surface-1, #F5F5F5)',
       }}
       data-testid="ball-canvas-wrapper"
+      // Accessibility — keyboard alternative for the drag rotation
+      // contract (AAP §0.6.7 "every control reachable by keyboard";
+      // WCAG 2.1 AA SC 2.1.1 "Keyboard"). `tabIndex={0}` makes the
+      // wrapper a Tab-stop so keyboard users can focus the preview
+      // and use the arrow keys (handled by `useDragRotation`) to
+      // rotate the ball.
+      tabIndex={0}
+      role="application"
+      aria-label="3D ball preview. Drag with the pointer or use the arrow keys to rotate."
     >
       <Canvas
         camera={{ position: CAMERA_POSITION, fov: CAMERA_FOV }}

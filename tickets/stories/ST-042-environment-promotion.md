@@ -14,8 +14,8 @@ As a DevOps engineer, I want a promotion stage that advances an already-deployed
 
 ## Acceptance Criteria
 
-- [x] The promotion stage consumes `DEPLOYMENT_ID` (the source environment's deployment) and `PROMOTION_APPROVAL_ID` (the recorded approval) and triggers a downstream deploy stage run with the corresponding next-environment `TARGET_ENV`.
-- [x] Permitted promotion paths are development-to-staging and staging-to-production only; any other source-to-target combination is rejected with a documented error and does not trigger a downstream deploy.
-- [x] Promotion to production requires a valid, non-expired `PROMOTION_APPROVAL_ID` recorded against the staging `DEPLOYMENT_ID`; missing or revoked approvals reject the promotion and record the rejection.
-- [x] The promotion stage emits `NEXT_DEPLOYMENT_ID` as an output identifying the downstream deploy stage run it triggered, so that the promotion record is linkable to the resulting deployment without re-querying the pipeline history.
-- [x] The promoted deployment carries the same `IMAGE_DIGEST` and `COMMIT_SHA` as the source deployment, so every environment runs the exact same artifact.
+- [ ] The promotion stage consumes `DEPLOYMENT_ID` (the source environment's deployment) and `PROMOTION_APPROVAL_ID` (the recorded approval) and triggers a downstream deploy stage run with the corresponding next-environment `TARGET_ENV`.
+- [ ] Permitted promotion paths are development-to-staging and staging-to-production only; any other source-to-target combination is rejected with a documented error and does not trigger a downstream deploy.
+- [ ] Promotion to production requires a valid, non-expired `PROMOTION_APPROVAL_ID` recorded against the staging `DEPLOYMENT_ID`; missing or revoked approvals reject the promotion and record the rejection.
+- [ ] The promotion stage emits `NEXT_DEPLOYMENT_ID` as an output identifying the downstream deploy stage run it triggered, so that the promotion record is linkable to the resulting deployment without re-querying the pipeline history.
+- [ ] The promoted deployment carries the same `IMAGE_DIGEST` and `COMMIT_SHA` as the source deployment, so every environment runs the exact same artifact.

@@ -70,7 +70,13 @@ export default defineConfig({
   },
 
   preview: {
-    // `vite preview` serves the production build for local smoke testing.
+    // `vite preview` serves the production build for local smoke
+    // testing. Port 4173 is Vite's documented default and is
+    // intentionally kept distinct from the dev port (5173) so a
+    // running dev server does not collide with `vite preview`.
+    // Playwright `webServer` invokes the dev server only, so the
+    // Playwright `baseURL` (5173) is unaffected by this preview
+    // port choice. See `docs/decisions/README.md` for rationale.
     port: 4173,
     strictPort: true,
     host: '127.0.0.1',
@@ -81,9 +87,12 @@ export default defineConfig({
     outDir: 'dist',
     // Emit dist alongside the build artifacts for production triage.
     sourcemap: true,
-    // ES2020 enables `??`, `?.`, `BigInt`, etc. — required by Three.js
-    // and R3F internals; targeting `modules` (ES2017) is too conservative.
-    target: 'es2020',
+    // ES2022 (per AAP §0.6.2 / checkpoint instruction) enables `??`,
+    // `?.`, top-level await, error cause property, `.at()` Array
+    // method, and class fields — strictly a superset of ES2020 so
+    // Three.js / R3F / Fabric.js code paths remain compatible. See
+    // `docs/decisions/README.md` for the rationale entry.
+    target: 'es2022',
     // Three.js + R3F minified is ~600 KB; the default 500 KB warning
     // would fire on every build. Raise the limit so warnings remain
     // signal rather than noise. Anything above this threshold is a

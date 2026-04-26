@@ -256,11 +256,15 @@ export function LogoPositioner(_props: LogoPositionerProps = {}): JSX.Element {
         </p>
         <div
           ref={padRef}
-          role="application"
+          role="slider"
           tabIndex={0}
           aria-labelledby={positionLabelId}
           aria-describedby={positionLabelId}
           aria-roledescription="2D position pad"
+          aria-valuemin={POSITION_MIN}
+          aria-valuemax={POSITION_MAX}
+          aria-valuenow={logoPosition.x}
+          aria-valuetext={`x ${logoPosition.x.toFixed(2)}, y ${logoPosition.y.toFixed(2)}`}
           data-testid="logo-position-pad"
           data-x={logoPosition.x.toFixed(2)}
           data-y={logoPosition.y.toFixed(2)}

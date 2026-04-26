@@ -15,7 +15,7 @@ As a QA engineer, I want an end-to-end test suite that drives the full user inte
 
 ## Acceptance Criteria
 
-- [x] The end-to-end suite is triggered on every merge to the default branch and on every scheduled nightly run, and exercises at least the configurator load, color selection, save-design, load-design, and order creation flows against running services.
-- [x] Each run produces a per-flow pass/fail verdict, captures screenshots or recordings for any failed flow, and emits a test report artifact at a documented path.
-- [x] A failing flow produces a failed verdict that blocks deployment to production until the flow is fixed or explicitly waived through the documented exception process.
-- [x] The suite runs in the local development environment against locally-started services so developers can reproduce failures without remote access.
+- [ ] The end-to-end suite is triggered on every merge to the default branch and on every scheduled nightly run, and exercises at least the configurator load, color selection, save-design, load-design, and order creation flows against running services.
+- [ ] Each run produces a per-flow pass/fail verdict, captures screenshots or recordings for any failed flow, and emits a test report artifact at a documented path.
+- [ ] A failing flow produces a failed verdict that blocks deployment to production until the flow is fixed or explicitly waived through the documented exception process.
+- [ ] The suite runs in the local development environment against locally-started services so developers can reproduce failures without remote access.

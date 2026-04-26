@@ -13,7 +13,7 @@ As an end user, I want a smooth transition or loading indicator when I change th
 
 ## Acceptance Criteria
 
-- [x] Changing the stitching pattern produces a visible transition on the preview rather than an abrupt swap.
-- [x] Changing the material finish produces a visible transition on the preview rather than an abrupt swap.
-- [x] If a transition takes longer than the documented threshold, a loading indicator appears on the preview until the new state is fully rendered.
-- [x] The transition animation does not block unrelated interactions such as rotation or other sidebar selections.
+- [ ] Changing the stitching pattern produces a visible transition on the preview rather than an abrupt swap.
+- [ ] Changing the material finish produces a visible transition on the preview rather than an abrupt swap.
+- [ ] If a transition takes longer than the documented threshold, a loading indicator appears on the preview until the new state is fully rendered.
+- [ ] The transition animation does not block unrelated interactions such as rotation or other sidebar selections.

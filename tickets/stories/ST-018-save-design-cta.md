@@ -14,7 +14,7 @@ As an authenticated user, I want to save my current design with a single action,
 
 ## Acceptance Criteria
 
-- [x] A Save Design call-to-action is visible in the primary UI and is enabled whenever the current design has unsaved changes and the user is authenticated.
-- [x] Activating the Save Design CTA sends the current design selections to the persistence service and shows a success indicator once the save is confirmed.
-- [x] If persistence fails or the user is not authenticated, the user sees an actionable failure message that names the reason and the next step.
-- [x] Immediately after a successful save, the Save Design CTA reflects the saved state until the user makes another change.
+- [ ] A Save Design call-to-action is visible in the primary UI and is enabled whenever the current design has unsaved changes and the user is authenticated.
+- [ ] Activating the Save Design CTA sends the current design selections to the persistence service and shows a success indicator once the save is confirmed.
+- [ ] If persistence fails or the user is not authenticated, the user sees an actionable failure message that names the reason and the next step.
+- [ ] Immediately after a successful save, the Save Design CTA reflects the saved state until the user makes another change.
