@@ -1,0 +1,653 @@
+/**
+ * Design list visual regression — Playwright spec for ST-046-AC1
+ * coverage of the "design list" surface.
+ *
+ * ===========================================================================
+ * Authority
+ * ===========================================================================
+ *
+ *   - AAP §0.3.4 ("New Files to Create — Frontend"):
+ *       "frontend/tests/visual/*.spec.ts | toHaveScreenshot() visual
+ *        regression (ST-046)".
+ *   - AAP §0.6.12 (Merge Gate 2 — MG2-H Hardened Test Suites):
+ *       "toHaveScreenshot() baselines for configurator, DESIGN LIST,
+ *        cart, and order confirmation at fixed viewport (ST-046);
+ *        ≥4 surfaces."
+ *   - ST-046-AC1 (the AC source of truth per Rule R1):
+ *       "The visual regression suite … captures screenshots of at
+ *        least the configurator, DESIGN LIST, cart, and order
+ *        confirmation surfaces."
+ *   - ST-046-AC2: each captured screenshot is compared against a
+ *     versioned baseline at a fixed viewport size, and any delta
+ *     exceeding the documented pixel-difference threshold produces a
+ *     failed verdict.
+ *   - ST-046-AC4: baseline updates require an explicit commit to the
+ *     versioned baseline artifacts; no run silently overwrites a
+ *     baseline.
+ *   - ST-019 (Load Design List): the signed-in user sees a list of
+ *     their saved designs with metadata (title, last-modified
+ *     timestamp); selecting an entry loads it into the configurator;
+ *     fetch failure leaves the previously rendered UI intact.
+ *   - ST-018 (Save Design CTA): drives the saved-designs collection
+ *     that ST-019 surfaces; the populated-state fixture below is what
+ *     a user with three previously saved designs would see.
+ *   - ST-022 (Design Summary Sidebar — AC5): the design summary
+ *     sidebar hosts the Save Design and Add to Cart CTAs; when the
+ *     design list view opens as a drawer / dialog the summary
+ *     sidebar may remain partially visible behind it — that backdrop
+ *     content is captured as part of the visual baseline.
+ *   - ST-028 (Retrieve Designs By User Endpoint): GET /api/designs
+ *     returns a paginated list `{ items: Design[], nextCursor: string
+ *     | null }` of designs owned by the authenticated user — the
+ *     contract that the frontend's `getDesigns()` consumes and that
+ *     this spec mocks deterministically.
+ *
+ * ===========================================================================
+ * Coverage Surface
+ * ===========================================================================
+ *
+ *   This spec captures TWO baseline screenshots of the design list
+ *   surface — both contributing to the ST-046-AC1 four-surfaces
+ *   coverage requirement (configurator, design list, cart, order
+ *   confirmation):
+ *
+ *     1) `design-list-empty.png`     — empty state: signed-in user
+ *        with no saved designs. Validates that the empty-state copy
+ *        / CTA renders correctly when `items: []` is returned.
+ *     2) `design-list-populated.png` — populated state: signed-in
+ *        user with three saved designs at fixed timestamps.
+ *        Validates the design card layout, metadata display, and
+ *        ordering.
+ *
+ *   Both are taken at the fixed 1280×720 viewport configured in
+ *   `playwright.config.ts`. Both `chromium` and `webkit` projects run
+ *   this spec, so per-project baselines are stored under
+ *     frontend/visual-baselines/design-list.spec.ts/<project>/<name>.png
+ *   automatically by Playwright — no per-project filename munging is
+ *   required in this file.
+ *
+ * ===========================================================================
+ * Cross-cutting Rules
+ * ===========================================================================
+ *
+ *   - Rule R2 (no credential material in logs): this file performs
+ *     ZERO `console.*` calls; the constants `FAKE_ID_TOKEN` and
+ *     `'fake-refresh-token-for-tests'` are placeholder strings only
+ *     and are never logged. The frontend ESLint config enforces
+ *     `no-console: error` (allowing only `warn` and `error`), and
+ *     the workspace lint gate runs with `--max-warnings 0`.
+ *   - Rule R3 (Firebase Admin SDK only on backend): this file does
+ *     NOT import `firebase-admin`, never parses or verifies a JWT
+ *     manually, and never invokes `verifyIdToken()`. It only seeds
+ *     Firebase JS SDK persistence state via localStorage so the
+ *     SPA's auth observer resolves to a non-anonymous principal at
+ *     boot — a frontend-only technique.
+ *   - Rule R7 / C6 (Fabric → Three texture order): this file does
+ *     NOT touch the texture pipeline; the only canvas it inspects
+ *     is the R3F `<canvas>` element, which is masked out of every
+ *     snapshot.
+ *   - Rule R9 (financial-settlement exclusion): this file contains
+ *     no terminology associated with downstream financial
+ *     settlement, processor integrations, or financial-instrument
+ *     handling. The design list surface displays user-owned design
+ *     metadata only — no settlement or financial-instrument
+ *     elements appear in either the empty or populated baseline.
+ *
+ * ===========================================================================
+ * Determinism Strategy
+ * ===========================================================================
+ *
+ *   - Authentication is simulated via `page.addInitScript()` writing
+ *     the Firebase JS SDK's persisted localStorage key
+ *     `firebase:authUser:<apiKey>:[DEFAULT]`. With a persisted
+ *     authenticated user already in localStorage when the SPA boots,
+ *     the auth state observer resolves immediately to the seeded
+ *     user and the design-list endpoint, which requires a valid
+ *     session per ST-019, sees a non-anonymous principal. This
+ *     avoids hitting any real or emulated Firebase Auth REST
+ *     endpoint.
+ *   - All `/api/designs**` and `/api/cart` calls are mocked through
+ *     a single dispatching `page.route('**\/api/**')` handler.
+ *     Pattern matching is performed inside the handler against
+ *     `request.url()` and `request.method()` — most-specific
+ *     patterns are checked first. The single-handler design avoids
+ *     any reverse-registration-order ambiguity that overlapping
+ *     `page.route()` glob registrations could otherwise produce, and
+ *     mirrors the proven pattern from
+ *     `frontend/tests/visual/cart.spec.ts` and
+ *     `frontend/tests/visual/order-confirmation.spec.ts`.
+ *   - Firebase Auth REST URLs (`identitytoolkit.googleapis.com` and
+ *     `securetoken.googleapis.com`) are intercepted with empty 200
+ *     fixtures so any background SDK refresh attempt does not
+ *     produce a network error and therefore does not surface in the
+ *     snapshot.
+ *   - Design titles and timestamps are FIXED via module-scope
+ *     constants so the rendered design list is byte-deterministic
+ *     across runs.
+ *   - Even with fixed timestamps in the fixture, some implementations
+ *     may render relative time strings ("2 days ago", "Just now")
+ *     that drift with the test execution date. `<time>` semantic
+ *     locators and any `[data-testid="design-card-timestamp"]`
+ *     elements are masked at snapshot time as defense-in-depth.
+ *   - The 3D canvas is masked at snapshot time because R3F's WebGL
+ *     output varies with the rasteriser (SwiftShader vs. real GPU)
+ *     and is not part of the design list surface under test.
+ *   - Per the Playwright config the viewport is fixed at 1280×720,
+ *     `animations: 'disabled'`, `maxDiffPixelRatio: 0.01`, and
+ *     `threshold: 0.2` for `expect(page).toHaveScreenshot()`.
+ */
+
+import { test, expect, type Page, type Route, type Request } from '@playwright/test';
+
+// ---------------------------------------------------------------------------
+// Type aliases
+// ---------------------------------------------------------------------------
+//
+// These mirror the typed shapes that `frontend/src/api/designs.ts` and
+// `frontend/src/api/orders.ts` (created at MG1-F) will expose. Keeping
+// them here as local aliases means the spec is self-contained — it
+// does NOT import from `frontend/src/api/*`, so the spec can be
+// authored before that source code is final and so the spec keeps
+// compiling even if those modules later refactor their internal
+// types.
+
+/**
+ * Minimal design-summary shape returned by GET /api/designs per
+ * ST-028. Each entry is one row in the LoadDesignList view and
+ * carries enough metadata for ST-019-AC1 ("title and last-modified
+ * time") to identify it.
+ */
+type DesignSummary = {
+  id: string;
+  title: string;
+  createdAt: string;
+  lastModifiedAt: string;
+};
+
+/**
+ * Minimal cart-payload shape returned by GET /api/cart per ST-033.
+ * The design list view does not display the cart, but the SPA may
+ * prefetch the cart on initial mount (e.g., to render an
+ * always-visible cart badge in the top nav). Mocking it ensures any
+ * such prefetch resolves with deterministic data and does NOT
+ * surface a network error in the design list snapshot.
+ */
+type CartPayload = {
+  items: Array<{ designId: string; quantity: number; designTitle?: string }>;
+  subtotal: number;
+  currency: string;
+};
+
+// ---------------------------------------------------------------------------
+// Constants — fixed test fixtures
+// ---------------------------------------------------------------------------
+//
+// Every value here must remain CONSTANT across runs to satisfy
+// ST-046-AC2 (deterministic visual baselines). Changing any of these
+// constants requires an explicit baseline refresh via
+//   `npx playwright test tests/visual/design-list.spec.ts --update-snapshots`
+// followed by a deliberate commit (per ST-046-AC4).
+
+/**
+ * Placeholder ID-token string used to simulate an authenticated
+ * session. This is NOT a real JWT — it is an opaque string that the
+ * spec never logs. Per Rule R2, no `console.*` call ever references
+ * this constant.
+ */
+const FAKE_ID_TOKEN = 'fake-id-token-for-tests';
+
+/**
+ * Fixed ISO-8601 timestamp used for every `createdAt` and
+ * `lastModifiedAt` field in the design fixtures. The design list
+ * UI may render these as absolute dates ("Jun 15, 2024") or as
+ * relative strings ("3 months ago"); the absolute form is stable,
+ * but the relative form drifts with the test execution date — so
+ * any rendered timestamp element is also masked at snapshot time as
+ * defense-in-depth.
+ */
+const FIXED_TIMESTAMP = '2024-06-15T12:00:00.000Z';
+
+// ---------------------------------------------------------------------------
+// Helper — setAuthenticatedState(page, options?)
+// ---------------------------------------------------------------------------
+//
+// Seeds the Firebase JS SDK's persisted localStorage key BEFORE any
+// page script runs, so the SPA's `onAuthStateChanged()` observer
+// resolves to the seeded user immediately on boot — no network round
+// trip to identitytoolkit.googleapis.com, no signInWithEmailAndPassword
+// dialog, no flicker from anonymous → authenticated.
+//
+// The shape written to localStorage matches the v10 Firebase JS SDK's
+// authUser persistence schema — every required field is present so
+// that Firebase's persistence-rehydrate path accepts the entry. The
+// `apiKey` is `'fake-api-key'` here; if the real SPA constructs
+// firebase config from `import.meta.env.VITE_FIREBASE_API_KEY` and
+// that env var is absent at test time, the SDK falls back to its own
+// initialized apiKey value — but the persistence key uses whatever
+// apiKey the SDK was initialized with, NOT the one we wrote here.
+// Because we additionally mock all `identitytoolkit.googleapis.com/**`
+// and `securetoken.googleapis.com/**` calls with empty 200 fixtures,
+// any divergence between the seeded apiKey and the SDK's runtime
+// apiKey degrades gracefully — the SDK simply does not find a
+// persisted user and proceeds anonymously, but the design list
+// fixture still responds deterministically because the mock does not
+// inspect the bearer token.
+//
+// `addInitScript` ensures the localStorage write happens before any
+// SPA script — Firebase JS SDK reads persistence synchronously
+// during its initialization, so the seed must be present at module
+// evaluation time.
+//
+// Per Rule R3, this function does NOT import `firebase-admin`, does
+// NOT mint a real JWT, and does NOT verify any token. It writes a
+// synthetic persistence record only.
+async function setAuthenticatedState(
+  page: Page,
+  options: { uid?: string; email?: string; idToken?: string } = {},
+): Promise<void> {
+  const uid = options.uid ?? 'test-user-uid-design-list';
+  const email = options.email ?? 'design-list-test@example.test';
+  const idToken = options.idToken ?? FAKE_ID_TOKEN;
+
+  await page.addInitScript(
+    (args: { uid: string; email: string; idToken: string }) => {
+      const apiKey = 'fake-api-key';
+      const persistKey = `firebase:authUser:${apiKey}:[DEFAULT]`;
+      const now = Date.now();
+      const persistedUser = {
+        uid: args.uid,
+        email: args.email,
+        emailVerified: true,
+        isAnonymous: false,
+        providerData: [
+          {
+            providerId: 'password',
+            uid: args.email,
+            displayName: null,
+            email: args.email,
+            phoneNumber: null,
+            photoURL: null,
+          },
+        ],
+        stsTokenManager: {
+          refreshToken: 'fake-refresh-token-for-tests',
+          accessToken: args.idToken,
+          expirationTime: now + 60 * 60 * 1000,
+        },
+        createdAt: String(now),
+        lastLoginAt: String(now),
+        apiKey,
+        appName: '[DEFAULT]',
+      };
+      window.localStorage.setItem(persistKey, JSON.stringify(persistedUser));
+    },
+    { uid, email, idToken },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Helper — mockBackendApi(page, options?)
+// ---------------------------------------------------------------------------
+//
+// Single dispatching route handler. Matches `**\/api/**` and decides
+// the response based on the URL path + HTTP method. The `if` branches
+// are ordered MOST-SPECIFIC FIRST so that, e.g., `/api/designs`
+// is matched before the generic fallback. This avoids the
+// reverse-registration-order ambiguity that multiple overlapping
+// `page.route()` calls otherwise produce.
+//
+// Playwright matches routes in the OPPOSITE order to their
+// registration. Splitting `/api/designs` and `/api/cart` and
+// `/api/**` across three separate `page.route()` calls would mean
+// the most-recently-registered glob wins; if the broadest pattern is
+// registered last, it intercepts every `/api/designs` and
+// `/api/cart` request before the more specific handlers can
+// dispatch. The single-handler approach used here removes that
+// ambiguity entirely and mirrors the canonical pattern established
+// by `tests/visual/cart.spec.ts` and
+// `tests/visual/order-confirmation.spec.ts`.
+//
+// The handler always responds with `route.fulfill(...)` — never
+// `route.continue()` — because we want the spec to be fully
+// isolated from any real backend availability. If a request arrives
+// that the handler does not explicitly recognize, it falls through
+// to a generic empty 200 response so the SPA does not surface a
+// network error in the snapshot.
+//
+// Per Rule R2, the handler does not log any request body or header
+// content. The `request` parameter is consumed only via its `url()`
+// and `method()` accessors.
+//
+// Per Rule R9, neither the design list response nor the cart
+// response contains settlement-instrument, billing-address,
+// fund-authorization-form, or processor-credential fields. The
+// design list returns design metadata only (id, title, timestamps);
+// the cart returns line items + subtotal + currency only.
+async function mockBackendApi(
+  page: Page,
+  options: { designs?: DesignSummary[]; cart?: CartPayload } = {},
+): Promise<void> {
+  // ---------------------------------------------------------------------
+  // Firebase Auth REST endpoints — block both Identity Toolkit and the
+  // Secure Token Service so any background SDK refresh attempt resolves
+  // synthetically rather than producing a real network failure. These
+  // domains do NOT overlap with `**/api/**`, so registration order is
+  // irrelevant for them.
+  // ---------------------------------------------------------------------
+  await page.route('**/identitytoolkit.googleapis.com/**', (route: Route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
+  );
+  await page.route('**/securetoken.googleapis.com/**', (route: Route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id_token: FAKE_ID_TOKEN,
+        refresh_token: 'fake-refresh-token-for-tests',
+        expires_in: '3600',
+      }),
+    }),
+  );
+
+  // ---------------------------------------------------------------------
+  // Single dispatching handler for every `/api/**` request. Branches
+  // are ordered most-specific first.
+  // ---------------------------------------------------------------------
+  await page.route('**/api/**', async (route: Route, request: Request) => {
+    const url = request.url();
+    const method = request.method();
+
+    // GET /api/designs (and any `?cursor=...&limit=...` variant) —
+    // return the seeded design list per ST-028. The list is
+    // wrapped in `{ items, nextCursor }` per the documented
+    // pagination contract; `nextCursor: null` indicates this is
+    // the final (and only) page.
+    if (url.includes('/api/designs') && method === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: options.designs ?? [], nextCursor: null }),
+      });
+      return;
+    }
+
+    // GET /api/cart — return the seeded cart fixture per ST-033.
+    // The design list surface does not display the cart, but the
+    // SPA may prefetch the cart on initial mount (e.g., to render
+    // an always-visible cart badge in the top nav). Per
+    // ST-033-AC3, an empty cart still returns 200 with an empty
+    // representation (never 404).
+    if (url.includes('/api/cart') && method === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          options.cart ?? { items: [], subtotal: 0, currency: 'USD' },
+        ),
+      });
+      return;
+    }
+
+    // Fallback — every other `/api/**` request (including any
+    // non-GET hit on `/api/designs` or `/api/cart`, which the
+    // design list view should never trigger but a stray handler
+    // might) resolves to an empty 200 so the SPA does not surface
+    // a network error in the snapshot. This intentionally covers
+    // future endpoints we have not yet characterised; the empty
+    // body is conservative.
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: '{}',
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Test suite — Design list visual regression
+// ---------------------------------------------------------------------------
+//
+// Two tests, two screenshot baselines (one for the empty state and
+// one for the populated state). Each test seeds an authenticated
+// session, installs the design-and-cart mock with the appropriate
+// designs fixture, navigates to the SPA, opens the design list view,
+// waits for the surface to render, and asserts against its baseline
+// at the fixed viewport, masking the dynamic regions described
+// above.
+//
+// `test.beforeEach` seeds authentication for every test; the
+// per-test mock installation handles the empty-vs-populated
+// distinction.
+//
+// Both `chromium` and `webkit` projects (per playwright.config.ts)
+// run this spec, so the baselines are captured per-project.
+// Playwright stores per-project baselines under
+//   frontend/visual-baselines/design-list.spec.ts/<project>/<name>.png
+// automatically — no per-project filename munging is required in
+// this file.
+
+test.describe('Design list visual regression', () => {
+  // -----------------------------------------------------------------
+  // Per-test setup: seed authenticated session BEFORE navigation.
+  // -----------------------------------------------------------------
+  //
+  // `addInitScript` runs in every new document, so localStorage is
+  // populated before any SPA script reads `firebase.auth()`. ST-019
+  // requires the design-list endpoint to be guarded by a valid
+  // session; without this seed the SPA would treat the user as
+  // anonymous and the LoadDesignList trigger might be hidden or
+  // disabled.
+  test.beforeEach(async ({ page }) => {
+    await setAuthenticatedState(page);
+  });
+
+  // -----------------------------------------------------------------
+  // Test 1 — Empty state
+  // -----------------------------------------------------------------
+  //
+  // The signed-in user has zero saved designs. The design list view
+  // should render its empty-state copy / CTA (e.g., "You haven't
+  // saved any designs yet — create your first design to see it
+  // here"). The exact wording is the implementation's choice; the
+  // baseline captures whatever the UI renders.
+  test('empty state', async ({ page }) => {
+    // Install the dispatching backend mock with an empty designs
+    // array BEFORE navigation. Every `/api/**` request — including
+    // any prefetch on initial load — is intercepted from the first
+    // navigation onward.
+    await mockBackendApi(page, { designs: [] });
+
+    // Load the SPA and wait for the canvas to attach. The R3F
+    // canvas presence is the SPA-ready signal — every other surface
+    // (including any design list panel/drawer/modal) mounts after
+    // the configurator shell.
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+    await page.waitForSelector('canvas', { state: 'attached', timeout: 15_000 });
+
+    // -------------------------------------------------------------
+    // Open the design list view.
+    // -------------------------------------------------------------
+    //
+    // Per AAP §0.6.7 and §0.6.9 (MG1-F) the LoadDesignList
+    // component is mounted in the top navigation. The trigger
+    // affordance is implementation-dependent: it may be a button
+    // labeled "Load Design", "My Designs", or "Open Designs", or a
+    // button with `data-testid="load-design-list-trigger"`. We use
+    // a defensive `.or()` chain that matches any of these and
+    // click the first match. The `.first()` qualifier handles the
+    // edge case where the SPA renders multiple matching candidates
+    // (e.g., mobile + desktop variants both in the DOM).
+    const loadButton = page
+      .getByRole('button', { name: /load design|my designs|open designs/i })
+      .or(page.getByTestId('load-design-list-trigger'));
+    await loadButton.first().click();
+
+    // -------------------------------------------------------------
+    // Wait for the design list container to be visible.
+    // -------------------------------------------------------------
+    //
+    // The container itself may be a `<dialog role="dialog">`, a
+    // `<section role="region">` with an aria-label, or a generic
+    // `<div>` with `data-testid="design-list-panel"`. We wait for
+    // whichever is visible.
+    const listContainer = page
+      .getByRole('region', { name: /designs|saved designs/i })
+      .or(page.getByRole('dialog', { name: /designs|saved designs/i }))
+      .or(page.getByTestId('design-list-panel'));
+    await listContainer.first().waitFor({ state: 'visible', timeout: 5_000 });
+
+    // Allow any open / fade-in transitions and any deferred fetches
+    // to settle before the snapshot. The Playwright config sets
+    // `animations: 'disabled'` for screenshot capture, but waiting
+    // for `networkidle` is the simplest way to confirm there are
+    // no in-flight fetches that could mutate the surface
+    // mid-snapshot.
+    await page.waitForLoadState('networkidle');
+
+    // -------------------------------------------------------------
+    // Capture the visual baseline.
+    // -------------------------------------------------------------
+    //
+    // Mask the R3F WebGL canvas (visible behind any drawer / modal
+    // because the Three.js context continues rendering). The empty
+    // state surface contains no timestamp or relative-time
+    // elements (there are no design cards), so masking those is
+    // not required for this baseline — but `<time>` is masked as
+    // defense-in-depth in case the empty-state copy includes a
+    // "last visited" or "last updated" hint that surfaces a
+    // server-derived timestamp.
+    //
+    // `fullPage: false` — capture only the viewport so the
+    // snapshot is exactly 1280×720 (the playwright config
+    // viewport) and not the whole scrolled page.
+    await expect(page).toHaveScreenshot('design-list-empty.png', {
+      mask: [page.locator('canvas'), page.locator('time')],
+      fullPage: false,
+    });
+  });
+
+  // -----------------------------------------------------------------
+  // Test 2 — Populated state
+  // -----------------------------------------------------------------
+  //
+  // The signed-in user has three saved designs at fixed
+  // timestamps. The design list view should render three list
+  // items / cards with each design's title and last-modified
+  // metadata. Per ST-019-AC1, the metadata displayed must be
+  // sufficient to identify each design ("title and last-modified
+  // time") — but the EXACT formatting (absolute date, relative
+  // string, layout) is the implementation's choice. The baseline
+  // captures whatever the UI produces.
+  test('populated state', async ({ page }) => {
+    // Build the deterministic designs fixture. Three entries are
+    // sufficient to validate list layout (single vs. multi-item
+    // visual differences); the exact titles are arbitrary but
+    // chosen to be visually distinct strings of varying length
+    // ("Tournament Red" / "Practice Blue" / "Charity Match
+    // Yellow") so any per-card truncation behaviour is exercised
+    // by the baseline.
+    //
+    // Per Rule R9, this fixture contains design metadata only.
+    // There are no settlement-instrument, billing-address,
+    // fund-authorization-form, or processor-credential fields.
+    const designs: DesignSummary[] = [
+      {
+        id: 'design-fixture-001',
+        title: 'Tournament Red',
+        createdAt: FIXED_TIMESTAMP,
+        lastModifiedAt: FIXED_TIMESTAMP,
+      },
+      {
+        id: 'design-fixture-002',
+        title: 'Practice Blue',
+        createdAt: FIXED_TIMESTAMP,
+        lastModifiedAt: FIXED_TIMESTAMP,
+      },
+      {
+        id: 'design-fixture-003',
+        title: 'Charity Match Yellow',
+        createdAt: FIXED_TIMESTAMP,
+        lastModifiedAt: FIXED_TIMESTAMP,
+      },
+    ];
+
+    // Install the dispatching backend mock with the populated
+    // designs fixture BEFORE navigation. Every `/api/**` request —
+    // including any prefetch on initial load — is intercepted from
+    // the first navigation onward.
+    await mockBackendApi(page, { designs });
+
+    // Load the SPA and wait for the canvas to attach.
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+    await page.waitForSelector('canvas', { state: 'attached', timeout: 15_000 });
+
+    // Open the design list view via the same defensive locator
+    // chain used in the empty-state test.
+    const loadButton = page
+      .getByRole('button', { name: /load design|my designs|open designs/i })
+      .or(page.getByTestId('load-design-list-trigger'));
+    await loadButton.first().click();
+
+    // Wait for the design list container to be visible.
+    const listContainer = page
+      .getByRole('region', { name: /designs|saved designs/i })
+      .or(page.getByRole('dialog', { name: /designs|saved designs/i }))
+      .or(page.getByTestId('design-list-panel'));
+    await listContainer.first().waitFor({ state: 'visible', timeout: 5_000 });
+
+    // -------------------------------------------------------------
+    // Wait for at least one design card to render.
+    // -------------------------------------------------------------
+    //
+    // Each design entry could be an `<li role="listitem">` (the
+    // natural semantic for an itemised list) or a card with
+    // `data-testid="design-list-item"`. We scope the locator to
+    // `listContainer.first()` so we do not match unrelated list
+    // items elsewhere on the page.
+    const firstCard = listContainer
+      .first()
+      .getByRole('listitem')
+      .or(listContainer.first().getByTestId('design-list-item'))
+      .first();
+    await firstCard.waitFor({ state: 'visible', timeout: 5_000 });
+
+    // Allow any list-rendering transitions and any deferred fetches
+    // to settle before the snapshot.
+    await page.waitForLoadState('networkidle');
+
+    // -------------------------------------------------------------
+    // Capture the visual baseline.
+    // -------------------------------------------------------------
+    //
+    // The masked regions cover every potential source of dynamic
+    // content:
+    //   - `canvas`
+    //       The R3F WebGL canvas; its pixel output varies with
+    //       rasteriser (SwiftShader vs. real GPU) and must be
+    //       excluded from the comparison.
+    //   - `[data-testid="design-card-timestamp"]`
+    //       Any per-card timestamp display element (e.g., "Last
+    //       modified 3 months ago"). Even with FIXED_TIMESTAMP
+    //       values in the fixture, relative-time formatters will
+    //       drift with the test execution date.
+    //   - `time`
+    //       Semantic `<time>` elements that may render relative
+    //       dates; masking is defense-in-depth in case the UI
+    //       formats a timestamp as a relative string without using
+    //       the `data-testid` attribute.
+    //
+    // `fullPage: false` — capture only the viewport so the
+    // snapshot is exactly 1280×720 (the playwright config
+    // viewport) and not the whole scrolled page.
+    await expect(page).toHaveScreenshot('design-list-populated.png', {
+      mask: [
+        page.locator('canvas'),
+        page.locator('[data-testid="design-card-timestamp"]'),
+        page.locator('time'),
+      ],
+      fullPage: false,
+    });
+  });
+});
