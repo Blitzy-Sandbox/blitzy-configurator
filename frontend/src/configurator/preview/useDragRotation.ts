@@ -5,47 +5,63 @@
  *   - AAP §0.3.4 / §0.6.7 — "frontend/src/configurator/preview/useDragRotation.ts
  *     | Click-and-drag rotation; no snap-back; free rotation around all
  *     axes (ST-002)".
- *   - ST-002 acceptance criteria:
- *       AC1 Pressing and dragging the primary pointer rotates the ball
- *           in the direction of the drag.
- *       AC2 Rotation continues to follow the pointer with no perceptible
- *           input lag.
+ *   - ST-002 acceptance criteria (verbatim, see
+ *     `tickets/stories/ST-002-click-drag-rotation.md`):
+ *       AC1 Pressing and dragging the primary pointer inside the
+ *           preview area rotates the ball in the direction of the drag.
+ *       AC2 Rotation continues to follow the pointer for the duration
+ *           of the drag with no perceptible input lag.
  *       AC3 Releasing the pointer leaves the ball at its final rotated
- *           orientation without snapping back.
+ *           orientation without snapping back to a prior position.
  *       AC4 The ball can be rotated freely about any axis across the
- *           full range of motion.
- *   - QA Report Issue #5 — `useDragRotation.ts` MUST exist; the
- *     quaternion composition order is `autoRotationAccum.multiply(dragRotation)`
- *     so auto-rotation applies AFTER drag rotation (consumed by
- *     `useIdleAutoRotate.ts`).
+ *           full range of motion, with no unreachable viewing angles.
+ *   - ST-005-AC1 — "30 FPS sustained during drag rotation": this hook
+ *     stores the cumulative rotation in a `useRef`, never React state,
+ *     so the 60+ Hz pointer-event stream does NOT trigger React
+ *     re-renders that would compete with the rAF render loop.
  *
  * Responsibilities:
- *   1. Attach pointer event handlers to a referenced DOM element (the
- *      R3F <Canvas>'s underlying <canvas>) using passive listeners.
- *   2. Translate pointer pixel deltas into rotation around the world X
- *      and Y axes using small-angle quaternion rotations.
- *   3. Compose drag rotations into a persistent `dragRotation` quaternion
- *      ref that survives across renders without forcing React re-renders.
- *   4. Expose an `isDragging` boolean (also a ref-style setter to a
- *      Zustand-free local state) and an `onIdleResetRequested` notifier
- *      so `useIdleAutoRotate.ts` can detect interaction.
+ *   1. Attach `pointerdown`, `pointermove`, `pointerup`, and
+ *      `pointercancel` listeners to the DOM element pointed at by
+ *      `containerRef.current`.
+ *   2. Translate per-event pointer pixel deltas (dx, dy) into an
+ *      incremental "arcball-style" quaternion whose rotation axis lies
+ *      perpendicular to the drag direction in the screen plane —
+ *      satisfying ST-002-AC4 because a perpendicular axis can be ANY
+ *      axis in 3D space (depending on which way the user drags).
+ *   3. Left-multiply (`premultiply`) each incremental rotation onto a
+ *      cumulative `Quaternion` ref so subsequent rotations are
+ *      expressed in the camera's frame — drag-right always rotates the
+ *      ball right from the user's perspective, regardless of the ball's
+ *      current orientation.
+ *   4. NEVER reset the cumulative quaternion on pointer up / cancel
+ *      (ST-002-AC3 — no snap-back).
  *
  * Cross-cutting rules:
- *   - Rule R7 / C6: untouched. Drag rotation does not alter the
- *     texture, only the mesh's quaternion.
- *   - Rule R2: ZERO `console.*` calls.
- *   - Rule R3: no auth imports.
+ *   - Rule R7 / C6 (texture update order): UNTOUCHED — this hook does
+ *     not import, read, or mutate any Three.js texture or its
+ *     `needsUpdate` flag. Rotation composition lives entirely in the
+ *     mesh's quaternion at the consumer's `useFrame` callsite.
+ *   - Rule R2 (no credential material in logs): ZERO `console.*`
+ *     calls in this file.
+ *   - Rule R3 (Firebase Admin only): no auth imports — N/A on the
+ *     frontend.
+ *   - Rule R9 (no payment processing): no payment imports.
  *
  * Out of scope:
- *   - Touch / multi-touch gestures (the reference hardware profile per
- *     ST-002 is desktop with a primary pointer; pinch zoom and two-finger
- *     pan are not in ST-002's acceptance criteria).
- *   - Inertia / momentum on release (ST-002-AC3 explicitly requires the
- *     ball to stay at its final orientation, NOT continue spinning).
- *   - Camera controls (handled by R3F itself in `BallCanvas.tsx`).
+ *   - Touch-pinch zoom, multi-touch gestures (ST-002 specifies a
+ *     "primary pointer" only — secondary pointers are intentionally
+ *     ignored via `event.button` and `pointerId` tracking).
+ *   - Inertial / momentum continuation on release (ST-002-AC3
+ *     mandates the ball stay at its final orientation, NOT continue
+ *     spinning).
+ *   - Idle auto-rotation (owned by `useIdleAutoRotate.ts`).
+ *   - Camera framing or lens controls (owned by `BallCanvas.tsx`).
+ *   - Rendering / mesh updates (owned by `Sphere.tsx`'s `useFrame`).
  */
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
+import type { RefObject } from 'react';
 import { Quaternion, Vector3 } from 'three';
 
 // ---------------------------------------------------------------------------
@@ -53,294 +69,338 @@ import { Quaternion, Vector3 } from 'three';
 // ---------------------------------------------------------------------------
 
 /**
- * Optional notification callback invoked whenever the user starts a
- * drag interaction. Used by `useIdleAutoRotate.ts` to interrupt
- * auto-rotation immediately on user interaction (ST-003-AC2).
- */
-export type InteractionNotifier = () => void;
-
-/**
- * The hook's return surface. Components attach `attachRef` to the R3F
- * canvas's parent DOM node and read the `dragRotationRef` quaternion
- * inside their `useFrame` loop to compose the final mesh rotation:
+ * Read-only view of the cumulative drag-rotation quaternion. The
+ * `.current` field is the rotation that the user's drag gestures have
+ * accumulated since the hook was first mounted.
  *
- *     const finalQuat = autoRotationAccum.clone().multiply(dragRotationRef.current);
- *     mesh.quaternion.copy(finalQuat);
+ * Per ST-002-AC3, this quaternion is NEVER reset to identity on
+ * pointer release — only mutated during active drags. The ball stays
+ * exactly where the user left it.
  *
- * Composition order matters per QA Report Issue #5: auto-rotation
- * applies AFTER drag rotation, so drag-rotation is the right operand
- * of `autoRotationAccum.multiply(...)`.
+ * Consumers (e.g., `Sphere.tsx`) READ this quaternion inside their
+ * `useFrame` callback and apply it to their mesh's rotation. The ref
+ * object identity is stable across renders, so it can safely be
+ * passed as a prop or stored in a sibling component's state without
+ * causing churn.
+ *
+ * The interface is intentionally minimal — exposing only `.current`
+ * preserves the option of future internal refactoring (e.g., adding
+ * private bookkeeping fields) without breaking the public contract.
  */
-export interface DragRotationApi {
+export interface DragRotationRef {
   /**
-   * Attach this ref to the DOM element that should receive pointer
-   * events (typically the R3F <Canvas>'s wrapping <div> or the
-   * underlying <canvas> element).
+   * The cumulative rotation quaternion. Mutated in place by this hook
+   * while a drag is in progress. Consumers MUST NOT mutate this
+   * quaternion — treat it as read-only at the call site even though
+   * Three.js's `Quaternion` type does not enforce immutability at the
+   * type level.
+   *
+   * To compose with other rotations (e.g., auto-rotate accumulator),
+   * `.clone()` first so the cumulative drag rotation is not corrupted
+   * by intermediate operations.
    */
-  readonly attachRef: React.RefObject<HTMLElement>;
-
-  /**
-   * The accumulated drag rotation quaternion. Mutated in place across
-   * frames; consumers MUST `.clone()` before further composition so the
-   * accumulator itself is not corrupted by intermediate operations.
-   */
-  readonly dragRotationRef: React.MutableRefObject<Quaternion>;
-
-  /**
-   * Returns `true` while the primary pointer is down inside the canvas.
-   * Used by `useIdleAutoRotate.ts` to keep auto-rotation paused for the
-   * full duration of an interactive drag.
-   */
-  readonly isDraggingRef: React.MutableRefObject<boolean>;
-}
-
-/**
- * Configuration accepted by `useDragRotation`. Defaults are tuned for
- * the desktop reference hardware profile (1280×720 viewport, mouse
- * input).
- */
-export interface DragRotationOptions {
-  /**
-   * Pixel-to-radian sensitivity. The default `0.005` rad/px translates
-   * a 200-px horizontal drag to ≈1 radian (≈57°) of rotation, which
-   * matches the documented configurator UX of "approximately one full
-   * revolution per ~1200 px of horizontal drag". Lower values produce
-   * a more deliberate feel; higher values are jumpier.
-   */
-  readonly sensitivityRadPerPx?: number;
-
-  /**
-   * Optional callback fired the moment a drag begins. Used to interrupt
-   * auto-rotation per ST-003-AC2.
-   */
-  readonly onInteractionStart?: InteractionNotifier;
+  readonly current: Quaternion;
 }
 
 // ---------------------------------------------------------------------------
 // Module-level constants
 // ---------------------------------------------------------------------------
 
-/** Default pixel-to-radian sensitivity (rad/px). */
-const DEFAULT_SENSITIVITY_RAD_PER_PX = 0.005;
-
-/** Reusable axis vectors — avoid per-frame allocations. */
-const AXIS_X = new Vector3(1, 0, 0);
-const AXIS_Y = new Vector3(0, 1, 0);
+/**
+ * Rotation sensitivity in radians per pixel of pointer movement.
+ *
+ * 0.005 rad/px ≈ 0.286°/px. A 300-pixel horizontal drag produces
+ * ~86° of rotation, which feels natural across desktop and tablet
+ * inputs without requiring exaggerated motion. A horizontal drag
+ * across a 1280-pixel viewport produces ~6.4 radians ≈ 366° — roughly
+ * one full revolution per viewport-width drag, which matches the
+ * "turntable" mental model used in popular 3D model viewers
+ * (Sketchfab, Spline, Verge3D).
+ *
+ * Module-scoped so it is stable across renders and not reallocated
+ * per hook call. Adjust here if UX review reveals over- or under-
+ * sensitivity on the reference hardware profile.
+ */
+const DRAG_SENSITIVITY_RAD_PER_PX = 0.005;
 
 // ---------------------------------------------------------------------------
 // Hook implementation
 // ---------------------------------------------------------------------------
 
 /**
- * React hook that turns pointer drags inside the referenced DOM element
- * into accumulated quaternion rotations.
+ * Attach pointer-drag rotation listeners to the given container
+ * element and return a ref to the cumulative rotation quaternion.
  *
- * Usage:
+ * Behavior contract:
+ *   - `pointerdown` on the container starts a drag for the primary
+ *     pointer (`event.button === 0`). Secondary mouse buttons,
+ *     non-primary touches, and stylus secondary buttons are ignored.
+ *   - The pointer is captured (`element.setPointerCapture`) so
+ *     subsequent move events are delivered even if the pointer leaves
+ *     the container's bounding box. Without capture, fast drags that
+ *     overshoot the canvas would silently desync.
+ *   - `pointermove` while dragging computes a per-event quaternion
+ *     using the arcball-style algorithm (see Phase 5 of the
+ *     accompanying agent prompt for the full mathematical derivation)
+ *     and left-multiplies it onto the cumulative quaternion.
+ *   - `pointerup` and `pointercancel` end the drag. The cumulative
+ *     quaternion is NOT reset (ST-002-AC3).
+ *   - Listeners are added on mount and removed on unmount — including
+ *     the symmetric pair invoked by React StrictMode's intentional
+ *     double-mount in development. The hook is StrictMode-safe by
+ *     construction because the listener attach/detach is symmetric
+ *     within a single `useEffect` body and the cumulative quaternion
+ *     lives on a `useRef` that persists across the StrictMode
+ *     mount → unmount → mount cycle.
  *
- *     const { attachRef, dragRotationRef, isDraggingRef } = useDragRotation({
- *       sensitivityRadPerPx: 0.005,
- *       onInteractionStart: notifyInteraction,
- *     });
+ * Algorithm (per pointer move event):
  *
- *     return (
- *       <div ref={attachRef as React.RefObject<HTMLDivElement>}>
- *         <Canvas>...</Canvas>
- *       </div>
- *     );
+ *   1. Compute pixel delta: `dx = event.clientX - lastX`,
+ *      `dy = event.clientY - lastY`.
+ *   2. Compute rotation magnitude:
+ *      `angle = sqrt(dx² + dy²) * DRAG_SENSITIVITY_RAD_PER_PX`.
+ *   3. Choose rotation axis perpendicular to the drag direction in
+ *      the screen plane: `axis = (dy, dx, 0).normalize()`. (This is
+ *      the cross product of the drag vector `(dx, -dy, 0)` with the
+ *      camera-forward vector `(0, 0, -1)`, simplified.) Because the
+ *      axis varies with drag direction, ANY 3D axis can be reached
+ *      by some sequence of drags — satisfying ST-002-AC4 (free
+ *      rotation, no unreachable orientations).
+ *   4. Build the incremental quaternion:
+ *      `delta = Quaternion.setFromAxisAngle(axis, angle)`.
+ *   5. Left-multiply (`premultiply`) onto the cumulative quaternion:
+ *      `cumulative = delta * cumulative`. Left-multiply applies the
+ *      new rotation in the camera's coordinate frame — the user
+ *      perceives "drag right → ball rotates right from MY
+ *      perspective", regardless of the ball's current orientation.
+ *      Right-multiply (`multiply`) would apply the rotation in the
+ *      ball's body frame, which feels disorienting after compound
+ *      rotations.
  *
- * The hook installs `pointerdown`, `pointermove`, `pointerup`, and
- * `pointercancel` listeners on the referenced element. `pointerdown`
- * captures the pointer (`setPointerCapture`) so subsequent moves
- * outside the element still flow to our handlers — without this, a
- * drag that wandered off the canvas would silently desync.
- *
- * The drag rotation itself is computed by:
- *   1. Reading the per-frame pixel delta (dx, dy) from the pointermove
- *      event.
- *   2. Converting (dx, dy) to (yawRad, pitchRad) via the sensitivity.
- *   3. Building two small quaternions for yaw and pitch around the
- *      world Y and X axes respectively.
- *   4. Pre-multiplying both into `dragRotationRef.current` so the
- *      newest rotation applies on top of the existing accumulated drag.
- *
- * Releasing the pointer (`pointerup` / `pointercancel`) does NOT reset
- * the accumulator — the ball stays exactly where the user left it,
- * satisfying ST-002-AC3.
+ * @param containerRef Ref to the container DOM element (typically
+ *                     the wrapping `<div>` around the R3F `<Canvas>`)
+ *                     that should receive pointer events. The hook
+ *                     attaches listeners to `containerRef.current`
+ *                     during the effect's first run; if `.current`
+ *                     is `null` at that time (e.g., the parent has
+ *                     not yet mounted), the effect is a no-op and
+ *                     will be re-run only if the ref's identity
+ *                     changes (which it should not, by React
+ *                     convention).
+ * @returns A `DragRotationRef` whose `.current` is the cumulative
+ *          rotation quaternion. The ref object identity is stable
+ *          across renders.
  */
-export function useDragRotation(options: DragRotationOptions = {}): DragRotationApi {
-  const sensitivity = options.sensitivityRadPerPx ?? DEFAULT_SENSITIVITY_RAD_PER_PX;
-
-  // Capture `onInteractionStart` in a ref so the listener closure does
-  // not stale-close over an old callback if the consumer's render
-  // produces a fresh function reference each render.
-  const interactionNotifierRef = useRef<InteractionNotifier | undefined>(options.onInteractionStart);
-  useEffect(() => {
-    interactionNotifierRef.current = options.onInteractionStart;
-  }, [options.onInteractionStart]);
-
-  // The DOM element that receives pointer events (set by the consumer
-  // via the returned `attachRef`).
-  const attachRef = useRef<HTMLElement>(null);
-
-  // The drag rotation accumulator. Initialized as identity — no
-  // rotation. Persists across renders without triggering re-renders
-  // (useRef guarantees this).
-  const dragRotationRef = useRef<Quaternion>(new Quaternion());
-
-  // The "is currently dragging" flag, exposed as a ref so external
-  // hooks (`useIdleAutoRotate`) can read it without subscribing to
-  // React state.
-  const isDraggingRef = useRef<boolean>(false);
-
-  // Last known pointer position — used to compute per-event deltas
-  // since pointer events do NOT carry `movementX`/`movementY` in a
-  // browser-portable way (Safari/WebKit values can be unreliable).
-  const lastXRef = useRef<number>(0);
-  const lastYRef = useRef<number>(0);
-
-  // Active pointer ID — null when no drag is in progress. Used to
-  // ensure we only respond to events from the originating pointer
-  // (ignoring secondary pointers from a multi-pointer device).
-  const activePointerIdRef = useRef<number | null>(null);
-
-  // -----------------------------------------------------------------------
-  // Stable event handlers (memoized via useCallback — referenced by
-  // the addEventListener / removeEventListener pair).
-  // -----------------------------------------------------------------------
-
-  const handlePointerDown = useCallback((event: PointerEvent): void => {
-    // Only react to the primary pointer (mouse left button, primary
-    // touch, primary stylus). Secondary buttons and additional touches
-    // are intentionally ignored per ST-002-AC1 ("primary pointer").
-    if (!event.isPrimary) {
-      return;
-    }
-    // Prevent the browser's default text-selection / image-drag
-    // behavior on canvas/parent elements.
-    event.preventDefault();
-
-    const target = attachRef.current;
-    if (target === null) {
-      return;
-    }
-
-    activePointerIdRef.current = event.pointerId;
-    isDraggingRef.current = true;
-    lastXRef.current = event.clientX;
-    lastYRef.current = event.clientY;
-
-    // setPointerCapture ensures every subsequent move/up event for
-    // this pointer is delivered to our element, even if the pointer
-    // wanders outside its bounds.
-    try {
-      target.setPointerCapture(event.pointerId);
-    } catch {
-      // Some browsers throw if capture fails (e.g., synthetic events
-      // in tests). Failing here is non-fatal — events will still fire
-      // when the pointer is over the element.
-    }
-
-    // Notify auto-rotation that interaction began.
-    interactionNotifierRef.current?.();
-  }, []);
-
-  const handlePointerMove = useCallback(
-    (event: PointerEvent): void => {
-      if (!isDraggingRef.current) {
-        return;
-      }
-      if (event.pointerId !== activePointerIdRef.current) {
-        return;
-      }
-
-      // Compute pixel delta since the last move event.
-      const dx = event.clientX - lastXRef.current;
-      const dy = event.clientY - lastYRef.current;
-      lastXRef.current = event.clientX;
-      lastYRef.current = event.clientY;
-
-      // Map horizontal motion → yaw (rotation around world Y axis),
-      // vertical motion → pitch (rotation around world X axis). Sign
-      // matches user intuition: drag right → ball turns right (positive
-      // Y rotation in Three's right-handed coordinate system); drag
-      // down → ball tips down (positive X rotation).
-      const yawRad = dx * sensitivity;
-      const pitchRad = dy * sensitivity;
-
-      // Build small-angle quaternions for this frame's yaw and pitch.
-      // Reusing fresh Quaternions per event is cheap (each is 4 floats);
-      // hoisting them to module scope would cause race conditions
-      // between concurrent drag streams.
-      const yawQuat = new Quaternion().setFromAxisAngle(AXIS_Y, yawRad);
-      const pitchQuat = new Quaternion().setFromAxisAngle(AXIS_X, pitchRad);
-
-      // Compose: apply yaw, then pitch, on top of the existing drag
-      // accumulator. Using `premultiply` keeps the rotations expressed
-      // in the world frame so dragging right always turns the ball right
-      // regardless of its current orientation, satisfying ST-002-AC4
-      // ("free rotation about any axis across the full range of motion").
-      dragRotationRef.current.premultiply(yawQuat);
-      dragRotationRef.current.premultiply(pitchQuat);
-
-      // Notify auto-rotation that interaction is ongoing.
-      interactionNotifierRef.current?.();
-    },
-    [sensitivity],
-  );
-
-  const handlePointerUp = useCallback((event: PointerEvent): void => {
-    if (event.pointerId !== activePointerIdRef.current) {
-      return;
-    }
-
-    const target = attachRef.current;
-    if (target !== null) {
-      try {
-        target.releasePointerCapture(event.pointerId);
-      } catch {
-        // Harmless if no capture was active.
-      }
-    }
-
-    activePointerIdRef.current = null;
-    isDraggingRef.current = false;
-
-    // Per ST-002-AC3: do NOT reset `dragRotationRef.current` — the ball
-    // stays at the orientation the user dragged to.
-  }, []);
-
-  // -----------------------------------------------------------------------
-  // Listener installation / teardown
-  // -----------------------------------------------------------------------
+export function useDragRotation(
+  containerRef: RefObject<HTMLElement | null>,
+): DragRotationRef {
+  // Cumulative rotation quaternion. Initialized to identity (no
+  // rotation). Stored on a `useRef` so the 60+ Hz pointermove event
+  // stream mutates it in place without forcing React re-renders —
+  // critical for the ST-005-AC1 30 FPS budget under sustained drag.
+  const quaternionRef = useRef<Quaternion>(new Quaternion());
 
   useEffect(() => {
-    const target = attachRef.current;
-    if (target === null) {
+    // Capture the container element at effect-run time. Storing it in
+    // a local `const` (rather than re-reading `containerRef.current`
+    // inside each handler) ensures the cleanup function dereferences
+    // EXACTLY the same element that received the listeners — even if
+    // a future render assigns a different element to `containerRef`.
+    const element = containerRef.current;
+    if (element === null) {
+      // Container not yet mounted. No listeners to attach. The effect
+      // will not re-run automatically if `containerRef.current`
+      // becomes non-null later (refs do not trigger re-renders by
+      // design); however, by React's mounting order, the parent
+      // component sets the ref before this hook's effect runs, so in
+      // practice this branch only fires during the first render of a
+      // component that conditionally renders the container — at which
+      // point the container is genuinely absent.
       return undefined;
     }
 
-    // `passive: false` is needed on `pointerdown` only (the move/up
-    // handlers do not call `preventDefault`). Marking the others as
-    // passive is a perf optimization the browser may use to avoid
-    // blocking scroll/zoom on touch devices.
-    target.addEventListener('pointerdown', handlePointerDown, { passive: false });
-    target.addEventListener('pointermove', handlePointerMove, { passive: true });
-    target.addEventListener('pointerup', handlePointerUp, { passive: true });
-    target.addEventListener('pointercancel', handlePointerUp, { passive: true });
-    target.addEventListener('pointerleave', handlePointerUp, { passive: true });
+    // ---------------------------------------------------------------------
+    // Per-drag closure state. Reset on each effect run, which is
+    // correct behavior for StrictMode's double-mount (a re-mounted
+    // hook starts in the "not dragging" state).
+    // ---------------------------------------------------------------------
 
-    return () => {
-      target.removeEventListener('pointerdown', handlePointerDown);
-      target.removeEventListener('pointermove', handlePointerMove);
-      target.removeEventListener('pointerup', handlePointerUp);
-      target.removeEventListener('pointercancel', handlePointerUp);
-      target.removeEventListener('pointerleave', handlePointerUp);
+    /** Whether a primary-pointer drag is currently in progress. */
+    let isDragging = false;
+
+    /** The `pointerId` of the active drag, used to ignore secondary
+     *  pointers from multi-touch devices. `null` when not dragging. */
+    let activePointerId: number | null = null;
+
+    /** Last observed clientX coordinate (for delta computation). */
+    let lastX = 0;
+
+    /** Last observed clientY coordinate (for delta computation). */
+    let lastY = 0;
+
+    // ---------------------------------------------------------------------
+    // Reusable working objects. Allocated once per effect run rather
+    // than once per pointermove event so the 60+ Hz event stream does
+    // not churn the garbage collector. Both objects are mutated in
+    // place inside `onPointerMove` and have no observable state
+    // between events.
+    // ---------------------------------------------------------------------
+
+    /** Working axis vector — repopulated each pointermove. */
+    const axis = new Vector3();
+
+    /** Working delta quaternion — repopulated each pointermove. */
+    const delta = new Quaternion();
+
+    // ---------------------------------------------------------------------
+    // Event handlers
+    // ---------------------------------------------------------------------
+
+    const onPointerDown = (event: PointerEvent): void => {
+      // Only the primary pointer button (left-click for mouse;
+      // primary contact for touch / pen) initiates a drag. Right-click
+      // (button 2) and middle-click (button 1) intentionally do
+      // nothing — leaving them free for browser context menus and
+      // future use cases.
+      if (event.button !== 0) {
+        return;
+      }
+
+      isDragging = true;
+      activePointerId = event.pointerId;
+      lastX = event.clientX;
+      lastY = event.clientY;
+
+      // Capture the pointer so subsequent `pointermove` and
+      // `pointerup` events for THIS pointer flow to OUR element even
+      // when the cursor leaves the container's bounding box. Without
+      // capture, fast drags that overshoot the canvas would lose
+      // events and the rotation would stutter.
+      try {
+        element.setPointerCapture(event.pointerId);
+      } catch {
+        // `setPointerCapture` can throw `InvalidPointerId` if the
+        // element has been detached, or `InvalidStateError` in some
+        // synthetic-event harnesses. The drag still works via
+        // bubbled events when capture is unavailable; swallowing the
+        // exception is the correct fail-safe behavior here. (No
+        // `console.*` logging — Rule R2.)
+      }
     };
-  }, [handlePointerDown, handlePointerMove, handlePointerUp]);
 
-  return {
-    attachRef,
-    dragRotationRef,
-    isDraggingRef,
-  };
+    const onPointerMove = (event: PointerEvent): void => {
+      // Ignore moves not associated with the active drag. This guard
+      // covers two cases:
+      //   1. We are not currently dragging (`isDragging === false`).
+      //   2. Another pointer (e.g., a second touch) is moving while
+      //      our active pointer is also down — we want to ignore the
+      //      secondary pointer entirely.
+      if (!isDragging || event.pointerId !== activePointerId) {
+        return;
+      }
+
+      const dx = event.clientX - lastX;
+      const dy = event.clientY - lastY;
+      lastX = event.clientX;
+      lastY = event.clientY;
+
+      // Compute the rotation magnitude from total pointer
+      // displacement. Using `Math.sqrt` rather than `Math.hypot`
+      // because Math.hypot has a documented overflow-safety overhead
+      // that is wasted on small pixel deltas; for `dx, dy ∈ [0, ~50]`
+      // there is no risk of overflow.
+      const displacement = Math.sqrt(dx * dx + dy * dy);
+      if (displacement === 0) {
+        // Some trackpads and stylus drivers fire `pointermove` with
+        // zero movement (e.g., pressure changes). Normalizing a zero
+        // vector produces NaN, which would corrupt the cumulative
+        // quaternion. Bail out before any math runs.
+        return;
+      }
+      const angle = displacement * DRAG_SENSITIVITY_RAD_PER_PX;
+
+      // Rotation axis perpendicular to the drag direction in the
+      // screen plane. The unnormalized vector `(dy, dx, 0)` is
+      // perpendicular to the screen-space drag vector `(dx, -dy, 0)`
+      // (verify: their dot product is `dx*dy + dx*(-dy) = 0`).
+      // Normalize before passing to `setFromAxisAngle` because the
+      // quaternion math assumes a unit-length axis; otherwise the
+      // resulting rotation would scale by the axis's magnitude.
+      axis.set(dy, dx, 0).normalize();
+
+      // Build the incremental rotation for this pointer move.
+      delta.setFromAxisAngle(axis, angle);
+
+      // Left-multiply (`premultiply`) onto the cumulative quaternion.
+      // Mathematically: `quaternionRef.current = delta * quaternionRef.current`.
+      // This applies the new rotation in the CAMERA'S frame — the
+      // user perceives consistent "drag right → ball rotates right
+      // from my perspective" behavior even after many compound
+      // rotations. Right-multiply (`multiply`) would apply in the
+      // ball's body frame, producing disorienting wobble.
+      quaternionRef.current.premultiply(delta);
+    };
+
+    const onPointerUp = (event: PointerEvent): void => {
+      // Only end the drag if this is the same pointer that started
+      // it. A `pointerup` from a second touch on a multi-touch device
+      // must not terminate the primary drag.
+      if (event.pointerId !== activePointerId) {
+        return;
+      }
+
+      isDragging = false;
+      activePointerId = null;
+
+      try {
+        element.releasePointerCapture(event.pointerId);
+      } catch {
+        // `releasePointerCapture` can throw `InvalidPointerId` if
+        // capture was never set (e.g., the `setPointerCapture` call
+        // in `onPointerDown` threw). Safe to ignore — we have
+        // already cleared our local drag state.
+      }
+
+      // ST-002-AC3: do NOT mutate `quaternionRef.current` here. The
+      // ball remains at the orientation the user dragged to. Snap-
+      // back behavior is explicitly forbidden by the acceptance
+      // criterion.
+    };
+
+    const onPointerCancel = (event: PointerEvent): void => {
+      // `pointercancel` fires when the OS or browser interrupts the
+      // pointer (e.g., a notification banner steals focus, the user
+      // engages a system gesture). Treat it identically to
+      // `pointerup`: end the drag, keep the rotation. The user's
+      // expected mental model is "if I lifted my finger, I keep what
+      // I rotated to" — and an OS-level cancel is functionally
+      // equivalent to a finger-lift from the application's
+      // perspective.
+      onPointerUp(event);
+    };
+
+    // ---------------------------------------------------------------------
+    // Listener attachment
+    // ---------------------------------------------------------------------
+
+    element.addEventListener('pointerdown', onPointerDown);
+    element.addEventListener('pointermove', onPointerMove);
+    element.addEventListener('pointerup', onPointerUp);
+    element.addEventListener('pointercancel', onPointerCancel);
+
+    // ---------------------------------------------------------------------
+    // Cleanup — symmetric removal of all four listeners. React's
+    // StrictMode invokes this cleanup between the development-only
+    // double mount, ensuring no listener accumulates on the DOM
+    // element across the mount/unmount/remount cycle.
+    // ---------------------------------------------------------------------
+    return (): void => {
+      element.removeEventListener('pointerdown', onPointerDown);
+      element.removeEventListener('pointermove', onPointerMove);
+      element.removeEventListener('pointerup', onPointerUp);
+      element.removeEventListener('pointercancel', onPointerCancel);
+    };
+  }, [containerRef]);
+
+  return quaternionRef;
 }

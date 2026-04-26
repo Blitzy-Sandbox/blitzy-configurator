@@ -180,34 +180,34 @@ export function BallCanvas(props: BallCanvasProps): JSX.Element {
   // -----------------------------------------------------------------------
   // ST-002 — Drag rotation hook.
   //
-  // The `attachRef` returned here is bound to the wrapping <div> below.
+  // The hook accepts the wrapper <div>'s ref directly and attaches
+  // its pointer event listeners (pointerdown, pointermove, pointerup,
+  // pointercancel) to the underlying DOM element. It returns a
+  // `DragRotationRef` whose `.current` is the cumulative rotation
+  // quaternion mutated in place by drag gestures.
   //
-  // `onInteractionStart` is intentionally OMITTED here: the new
-  // `useIdleAutoRotate` self-detects activity via its own listeners
-  // on the same container element, so a redundant callback wiring is
-  // no longer required. ST-003-AC2 is satisfied because pointerdown
-  // on the container fires both useDragRotation's handler AND
-  // useIdleAutoRotate's handler (DOM event listeners are additive).
-  //
-  // `isDraggingRef` is destructured here SOLELY for the dev-only test
-  // bridge below. Production rendering does not consume the flag.
+  // ST-003-AC2 (auto-rotation pause on user interaction) is satisfied
+  // because `useIdleAutoRotate` self-detects activity via its OWN
+  // listeners on the same container element — pointerdown on the
+  // wrapper bubbles to BOTH hooks' listeners simultaneously (DOM
+  // event listeners are additive on a single element).
   // -----------------------------------------------------------------------
-  const { attachRef, dragRotationRef, isDraggingRef } = useDragRotation();
+  const dragRotationRef = useDragRotation(wrapperRef);
 
-  // Synchronize the wrapper ref with the drag hook's `attachRef`.
-  // `attachRef` is a `RefObject<HTMLElement>` whose `.current` is
-  // read-only at the type level, but mutable at runtime — React's
-  // own ref objects work this way. We assign through a small helper
-  // that performs the runtime mutation in a single place to keep
-  // the type-cast localized.
-  const setRefs = (node: HTMLDivElement | null): void => {
-    wrapperRef.current = node;
-    // The hook's `attachRef` is a `RefObject<HTMLElement>` whose
-    // `.current` is mutable at runtime. We assign through a
-    // type-localized cast that is safe because <div> implements
-    // HTMLElement.
-    (attachRef as React.MutableRefObject<HTMLElement | null>).current = node;
-  };
+  // -----------------------------------------------------------------------
+  // Dev-only "is dragging" tracking ref.
+  //
+  // Per the schema-defined `useDragRotation` API, the hook exposes
+  // ONLY the cumulative quaternion ref — it does not expose internal
+  // drag state. The Playwright test bridge below needs to verify
+  // that drag state cleared after release (preview.spec.ts uses this
+  // as a belt-and-braces check), so we maintain a local boolean ref
+  // that tracks the same primary-pointer drag lifecycle in this
+  // component. The tracking listeners are installed alongside the
+  // test bridge inside the dev-only `useEffect` further down — they
+  // are absent from production builds entirely.
+  // -----------------------------------------------------------------------
+  const isDraggingRef = useRef<boolean>(false);
 
   // -----------------------------------------------------------------------
   // Dev-only test bridge (Playwright integration tests).
@@ -237,13 +237,72 @@ export function BallCanvas(props: BallCanvasProps): JSX.Element {
     if (!import.meta.env.DEV) {
       return undefined;
     }
-    return installTestBridge({
+
+    // ---------------------------------------------------------------------
+    // Dev-only `isDraggingRef` tracking.
+    //
+    // We mirror `useDragRotation`'s primary-pointer drag lifecycle so
+    // the test bridge can answer `getIsDragging()` without the hook
+    // having to expose internal state. The listeners watch only the
+    // primary pointer (button === 0) and only flip the ref boolean;
+    // they do NOT touch any rotation state, capture pointers, or
+    // call `preventDefault`. They are install-once / cleanup-once
+    // alongside the test bridge itself.
+    // ---------------------------------------------------------------------
+    const target = wrapperRef.current;
+    const dragTrackingListeners: Array<{
+      type: 'pointerdown' | 'pointerup' | 'pointercancel';
+      handler: (event: PointerEvent) => void;
+    }> = [];
+    if (target !== null) {
+      let trackedPointerId: number | null = null;
+
+      const onPointerDown = (event: PointerEvent): void => {
+        if (event.button !== 0) {
+          return;
+        }
+        trackedPointerId = event.pointerId;
+        isDraggingRef.current = true;
+      };
+
+      const onPointerUp = (event: PointerEvent): void => {
+        if (event.pointerId !== trackedPointerId) {
+          return;
+        }
+        trackedPointerId = null;
+        isDraggingRef.current = false;
+      };
+
+      target.addEventListener('pointerdown', onPointerDown);
+      target.addEventListener('pointerup', onPointerUp);
+      target.addEventListener('pointercancel', onPointerUp);
+      dragTrackingListeners.push(
+        { type: 'pointerdown', handler: onPointerDown },
+        { type: 'pointerup', handler: onPointerUp },
+        { type: 'pointercancel', handler: onPointerUp },
+      );
+    }
+
+    const uninstallBridge = installTestBridge({
       dragRotationRef,
       autoRotationAccumRef,
       isDraggingRef,
       idleAutoRotateRef,
       wrapperRef,
     });
+
+    return () => {
+      // Symmetric cleanup so React StrictMode's double-mount leaves
+      // no listener accumulated on the wrapper element, and the
+      // `window.__strikeforge_test__` global is cleared first to
+      // avoid tests racing against a stale API instance.
+      uninstallBridge();
+      if (target !== null) {
+        for (const { type, handler } of dragTrackingListeners) {
+          target.removeEventListener(type, handler);
+        }
+      }
+    };
     // The five refs are stable `MutableRefObject` instances returned
     // from `useRef` / hooks built on top of `useRef`; their identity
     // does not change across renders, so an empty dep array correctly
@@ -264,7 +323,7 @@ export function BallCanvas(props: BallCanvasProps): JSX.Element {
   // -----------------------------------------------------------------------
   return (
     <div
-      ref={setRefs}
+      ref={wrapperRef}
       className={props.className}
       style={{
         width: '100%',
