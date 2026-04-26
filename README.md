@@ -71,8 +71,10 @@ cp .env.example .env
 
 Provide a value for every one of the following six variables:
 
-- `DATABASE_URL` — local value:
-  `postgres://postgres:postgres@127.0.0.1:5432/strikeforge`
+- `DATABASE_URL` — local TCP value:
+  `postgres://postgres:postgres@127.0.0.1:5432/strikeforge`. For the Cloud
+  SQL Unix-socket form used on Cloud Run (per C3 dual-path), see
+  `.env.example` (the `Cloud Run format` line in the `DATABASE_URL` block).
 - `FIREBASE_PROJECT_ID` — must match the emulator project id (e.g.,
   `strikeforge-local`).
 - `GCS_BUCKET_NAME` — any bucket name used by fake-gcs-server (e.g.,
