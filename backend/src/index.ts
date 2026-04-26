@@ -13,7 +13,7 @@ import { requireEnv, validateEnv } from './config/env';
 import { createLogger } from './logging/pino';
 import { correlationMiddleware, correlationStore } from './middleware/correlation';
 import { createHealthRoutes } from './routes/health';
-import { createMetrics } from './routes/metrics';
+import { createMetricsRoutes, metricsMiddleware } from './routes/metrics';
 
 /**
  * Pino mixin that reads the active `CorrelationContext` from the
@@ -119,12 +119,20 @@ function bootstrap(): Bootstrapped {
     mixin: pinoCorrelationMixin,
   });
 
-  // Step 3: build the Prometheus metrics bundle.
-  const metrics = createMetrics({
-    service: SERVICE_NAME,
-    environment: NODE_ENV,
-    version: SERVICE_VERSION,
-  });
+  // Step 3: the Prometheus metrics module is a singleton.
+  //
+  // The metrics module derives its `service`/`environment`/`version`
+  // labels from the SAME env vars that this composition root reads
+  // (`SERVICE_NAME` / `NODE_ENV` / `SERVICE_VERSION` with the same
+  // documented fallbacks), so the labels emitted on every metric are
+  // dimensionally identical to the ones used by `tracing.ts` for OTel
+  // span resource attributes — that's the cardinal property required
+  // for trace-metric correlation in dashboards (ST-048-AC2).
+  //
+  // The two consumers — `metricsMiddleware` (request-recording) and
+  // `createMetricsRoutes()` (the `/metrics` scrape endpoint) — share
+  // the SAME module-scoped `Registry` via closure, so a request
+  // counted by the middleware is observable in the next scrape.
 
   // Step 4: assemble the Express app and middleware chain.
   const app = express();
@@ -153,8 +161,9 @@ function bootstrap(): Bootstrapped {
   });
 
   // Metrics middleware: increments the request counter and records
-  // the duration histogram on every response.
-  app.use(metrics.middleware);
+  // the duration histogram on every response. The middleware is a
+  // direct (req, res, next) function, registered without invocation.
+  app.use(metricsMiddleware);
 
   // Step 5: construct the PostgreSQL connection pool.
   //
@@ -179,8 +188,10 @@ function bootstrap(): Bootstrapped {
   app.use(createHealthRoutes({ pool }));
 
   // Metrics endpoint — Prometheus scrapes /metrics every 30s by
-  // default; Cloud Monitoring and Grafana use the same path.
-  app.use(metrics.router);
+  // default; Cloud Monitoring and Grafana use the same path. The
+  // factory returns a router with a single `GET /metrics` route
+  // mounted at root.
+  app.use(createMetricsRoutes());
 
   // Step 6: 404 handler. Returns a small JSON envelope so clients
   // can distinguish between a server error and an unmatched route.
