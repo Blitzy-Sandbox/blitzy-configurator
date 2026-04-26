@@ -1,0 +1,257 @@
+/*
+ * =====================================================================
+ * Logo upload + position controls — shared styles (ST-014, ST-015,
+ * ST-016).
+ * =====================================================================
+ *
+ * Authority:
+ *   - AAP §0.3.4 / §0.6.7 — logo controls colocated under
+ *     `frontend/src/configurator/controls/logo/`.
+ *   - AAP §0.8.2 — uses brand tokens declared in `global.css`.
+ *
+ * Responsibilities:
+ *   1. Provide consistent section / heading / hint typography that
+ *      matches the color and pattern selectors.
+ *   2. Style the file-picker button as a brand-aligned drop target.
+ *   3. Style the position pad (a square draggable canvas representing
+ *      the [-1, 1] coordinate space) and the scale slider.
+ *   4. Provide visual feedback for the currently-selected logo file
+ *      (or an empty-state hint).
+ * =====================================================================
+ */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-lg);
+}
+
+.section__heading {
+  font-family: var(--ff-display);
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin: 0;
+  color: var(--blitzy-text);
+}
+
+.section__hint {
+  font-size: 0.75rem;
+  color: var(--blitzy-text-muted);
+  margin: 0;
+}
+
+/*
+ * Upload control
+ * --------------
+ * The native `<input type="file">` is hidden visually but kept in the
+ * DOM and tab order. A styled `<label>` acts as the click target.
+ */
+.uploader {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.uploader__field {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.uploader__input {
+  /*
+   * Visually hide the native input but keep it focusable: zero size
+   * with `opacity: 0` would also work, but `clip-path: inset(50%)`
+   * keeps the input precisely positioned over the label so OS-level
+   * focus rings still align.
+   */
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.uploader__label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  background: var(--blitzy-surface-0);
+  color: var(--blitzy-primary-dark);
+  border: 1px dashed var(--blitzy-primary);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  font-family: var(--ff-body);
+  font-weight: 600;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease-out,
+    border-color 120ms ease-out,
+    color 120ms ease-out;
+  pointer-events: auto;
+}
+
+.uploader__field:hover .uploader__label,
+.uploader__input:focus-visible + .uploader__label {
+  background: var(--blitzy-surface-2);
+  border-color: var(--blitzy-primary-dark);
+  color: var(--blitzy-primary-dark);
+}
+
+.uploader__input:focus-visible + .uploader__label {
+  outline: 3px solid var(--blitzy-primary-light);
+  outline-offset: 2px;
+}
+
+.uploader__filename {
+  font-family: var(--ff-mono);
+  font-size: 0.75rem;
+  color: var(--blitzy-text-muted);
+  word-break: break-all;
+}
+
+.uploader__clearButton {
+  align-self: flex-start;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: 1px solid var(--blitzy-border-soft);
+  border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-sm);
+  font-family: var(--ff-body);
+  font-size: 0.75rem;
+  color: var(--blitzy-text);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease-out,
+    border-color 120ms ease-out;
+}
+
+.uploader__clearButton:hover {
+  background: var(--blitzy-surface-2);
+  border-color: var(--blitzy-primary);
+}
+
+.uploader__clearButton:focus-visible {
+  outline: 3px solid var(--blitzy-primary-light);
+  outline-offset: 2px;
+}
+
+/*
+ * Position pad
+ * ------------
+ * 160px × 160px square representing the [-1, 1] x and y coordinate
+ * space. The crosshair lines mark the origin (0, 0). The dot
+ * indicates the current `logoPosition`. Clicking or dragging within
+ * the pad updates the position; touch / pointer events are handled
+ * by the component.
+ */
+.positioner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.positioner__pad {
+  position: relative;
+  width: 100%;
+  max-width: 200px;
+  aspect-ratio: 1 / 1;
+  background: var(--blitzy-surface-2);
+  border: 1px solid var(--blitzy-border-soft);
+  border-radius: var(--radius-md);
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.positioner__pad:focus-visible {
+  outline: 3px solid var(--blitzy-primary-light);
+  outline-offset: 2px;
+}
+
+.positioner__crosshairH,
+.positioner__crosshairV {
+  position: absolute;
+  background: var(--blitzy-border-soft);
+}
+
+.positioner__crosshairH {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  transform: translateY(-0.5px);
+}
+
+.positioner__crosshairV {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-0.5px);
+}
+
+.positioner__dot {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--blitzy-primary);
+  box-shadow: 0 0 0 3px rgba(91, 57, 243, 0.18);
+  /*
+   * The dot is positioned via inline `top` / `left` styles by the
+   * component; `transform: translate(-50%, -50%)` centers the dot on
+   * the computed point.
+   */
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.positioner__readout {
+  font-family: var(--ff-mono);
+  font-size: 0.75rem;
+  color: var(--blitzy-text-muted);
+}
+
+/*
+ * Scale slider
+ * ------------
+ * Native range input with brand-aligned track + thumb. Numeric
+ * readout below.
+ */
+.scale {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.scale__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.scale__input {
+  flex: 1;
+  accent-color: var(--blitzy-primary);
+  cursor: pointer;
+}
+
+.scale__input:focus-visible {
+  outline: 3px solid var(--blitzy-primary-light);
+  outline-offset: 2px;
+}
+
+.scale__readout {
+  font-family: var(--ff-mono);
+  font-size: 0.75rem;
+  color: var(--blitzy-text);
+  min-width: 36px;
+  text-align: right;
+}

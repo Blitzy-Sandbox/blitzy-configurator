@@ -11,14 +11,22 @@
  *     the preview region must auto-fit on viewport resize.
  *   - ST-022 — design summary sidebar is read-only and reflects the
  *     current store state.
- *   - QA Report Issue #1 (no app renders), Issue #3 (resize re-centering),
- *     Issue #4 (zero console errors), Issue #10 (brand fonts/colors).
+ *   - QA Report Issues #1 through #11 — every Track 2 control
+ *     (ST-006..ST-017) is now mounted inside `<ControlSidebar />`
+ *     replacing the previous placeholder paragraph.
+ *   - QA Report Issue #12 — `<BallCanvas />` is wrapped in
+ *     `<ErrorBoundary />` so a missing WebGL context no longer
+ *     unmounts the entire React tree.
  *
  * Track scope:
- *   - This file ships the SHELL during Track 2 Frontend Core (AAP
- *     §0.6.7). The control sidebar, design summary sidebar, and
- *     header CTA placeholders read directly from the Zustand store
- *     for ST-022 (read-only summary).
+ *   - This file ships the full SHELL for Track 2 Frontend Core (AAP
+ *     §0.6.7). The control sidebar mounts ST-006..ST-017 controls;
+ *     the design summary sidebar reads directly from the Zustand
+ *     store for ST-022.
+ *   - The canonical `useColorSync()` hook is mounted at the App
+ *     level. It is the SOLE caller of `texturePipeline.update()` /
+ *     `applyConfiguratorState()` from `controls/colors/`, satisfying
+ *     the Rule R7 / C6 single-canonical-site requirement.
  *   - Firebase client initialization is intentionally NOT called
  *     here. Per AAP §0.6.9 (Merge Gate 1 — MG1-F Design Mgmt
  *     Integration), Firebase wiring is deferred to that gate so that
@@ -31,7 +39,10 @@
  *     to the canvas mount, not the App shell.
  *
  * Cross-cutting rules:
- *   - Rule R7 / C6: untouched.
+ *   - Rule R7 / C6: this file does NOT call any texture-pipeline
+ *     function and does NOT touch `texture.needsUpdate` — the
+ *     `useColorSync()` hook is the only path from this file to the
+ *     pipeline.
  *   - Rule R2: ZERO `console.*` calls.
  *   - Rule R3: no JWT / Firebase Admin imports; the deferred Firebase
  *     CLIENT initialization above is the only auth concern, and is
@@ -40,6 +51,16 @@
 
 import type { JSX } from 'react';
 
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { AccentColorPicker } from './configurator/controls/colors/AccentColorPicker';
+import { PrimaryColorPicker } from './configurator/controls/colors/PrimaryColorPicker';
+import { SecondaryColorPicker } from './configurator/controls/colors/SecondaryColorPicker';
+import { useColorSync } from './configurator/controls/colors/useColorSync';
+import { LogoPositioner } from './configurator/controls/logo/LogoPositioner';
+import { LogoUploader } from './configurator/controls/logo/LogoUploader';
+import { FinishSelector } from './configurator/controls/pattern/FinishSelector';
+import { StitchingPatternSelector } from './configurator/controls/pattern/StitchingPatternSelector';
+import { TransitionFeedback } from './configurator/controls/pattern/TransitionFeedback';
 import { BallCanvas } from './configurator/preview/BallCanvas';
 import { useConfiguratorStore } from './state/configuratorStore';
 
@@ -132,10 +153,7 @@ function DesignSummarySidebar(): JSX.Element {
         label="Pattern"
         value={STITCHING_PATTERN_LABELS[stitchingPattern] ?? stitchingPattern}
       />
-      <SummaryRow
-        label="Finish"
-        value={MATERIAL_FINISH_LABELS[materialFinish] ?? materialFinish}
-      />
+      <SummaryRow label="Finish" value={MATERIAL_FINISH_LABELS[materialFinish] ?? materialFinish} />
       <SummaryRow label="Logo" value={logoFile === null ? 'None' : 'Uploaded'} />
     </aside>
   );
@@ -200,13 +218,22 @@ function SummaryRow(props: { label: string; value: string; swatch?: string }): J
 }
 
 /**
- * Left control sidebar placeholder. The full controls (color pickers,
- * stitching pattern, material finish, logo upload/positioner) are
- * created in subsequent Track 2 stories ST-006..ST-017 and wired in
- * here. This initial shell renders a structural placeholder so the
- * three-region grid resolves correctly even before all controls
- * exist — satisfying ST-001-AC1 / AC3 (sphere centered, resize
- * re-centering) without scope creep into ST-006..ST-017.
+ * Left control sidebar — mounts every Track 2 control (ST-006..ST-017).
+ *
+ * The render order matches the documented designer workflow:
+ *   1. Color pickers (Primary → Secondary → Accent) — ST-006..ST-008.
+ *   2. Stitching pattern selector — ST-010.
+ *   3. Material finish selector with disabled-combination tooltip —
+ *      ST-011 + ST-013.
+ *   4. Transition feedback indicator — ST-012.
+ *   5. Logo uploader (with rejection feedback) — ST-014 + ST-017.
+ *   6. Logo positioner — ST-015 + ST-016.
+ *
+ * Each child is self-contained and reads its own slice from the
+ * configurator store. The sidebar itself owns no state.
+ *
+ * The previous QA finding (Issue #1) reported this region was a
+ * placeholder paragraph; that has been replaced by the real controls.
  */
 function ControlSidebar(): JSX.Element {
   return (
@@ -218,18 +245,17 @@ function ControlSidebar(): JSX.Element {
     >
       <span className="brand-accent-bar" aria-hidden="true" />
       <span className="brand-eyebrow">Customize</span>
-      <p
-        style={{
-          fontSize: '0.875rem',
-          color: 'var(--blitzy-text-muted)',
-          lineHeight: 1.6,
-          margin: 0,
-        }}
-      >
-        Color pickers, stitching patterns, material finish, and logo controls
-        appear here. Track 2 stories ST-006 through ST-017 mount their controls
-        into this region.
-      </p>
+
+      <PrimaryColorPicker />
+      <SecondaryColorPicker />
+      <AccentColorPicker />
+
+      <StitchingPatternSelector />
+      <FinishSelector />
+      <TransitionFeedback />
+
+      <LogoUploader />
+      <LogoPositioner />
     </aside>
   );
 }
@@ -248,6 +274,16 @@ function ControlSidebar(): JSX.Element {
  * component supplies only structure.
  */
 export default function App(): JSX.Element {
+  // Mount the canonical color-sync hook at the App level so that:
+  //   - the FIFO `texturePipeline.update()` chain is owned by exactly
+  //     one component instance,
+  //   - the chain survives any re-renders inside the control sidebar.
+  // This is the SOLE call site of `useColorSync` in the application;
+  // the hook itself is the SOLE caller of `applyConfiguratorState`
+  // (and therefore of the texture pipeline) from `controls/colors/`,
+  // satisfying the Rule R7 / C6 single-canonical-site requirement.
+  useColorSync();
+
   return (
     <div className="app-shell" data-testid="app-shell">
       <AppHeader />
@@ -258,7 +294,17 @@ export default function App(): JSX.Element {
         aria-label="Live 3D ball preview"
         data-testid="preview-region"
       >
-        <BallCanvas />
+        {/*
+         * Wrap `<BallCanvas />` in an `<ErrorBoundary>` (QA Issue #12).
+         * When WebGL is unavailable — e.g., a headless browser without
+         * GPU acceleration or a user-disabled context — the boundary
+         * catches the throw and renders a brand-styled fallback while
+         * the rest of the layout (header, control sidebar, summary)
+         * remains interactive.
+         */}
+        <ErrorBoundary aria-label="3D preview unavailable" data-testid="preview-error-boundary">
+          <BallCanvas />
+        </ErrorBoundary>
       </main>
       <DesignSummarySidebar />
     </div>
