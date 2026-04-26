@@ -40,38 +40,56 @@ The five acceptance criteria, restated in plain operational language:
 
 This folder is initially empty (with a `.gitkeep` placeholder and this README)
 until the first run of `--update-snapshots`. Once populated by Playwright, the
-folder contains a per-spec-file subdirectory tree of PNG snapshots, with
+folder mirrors the relative path from `testDir` (`./tests`) to each spec file
+and adds a per-spec `-snapshots` subdirectory holding the PNG captures, with
 per-project (chromium, webkit) and per-platform (linux, darwin, win32)
 suffixes appended automatically by Playwright at snapshot capture time.
 
-Expected layout AFTER the first `--update-snapshots` run on Linux CI:
+For each call site of the form
+`await expect(page).toHaveScreenshot('<name>.png')` inside a test under
+`frontend/tests/visual/`, Playwright writes a baseline at:
+
+```text
+frontend/visual-baselines/visual/<spec-file-name>-snapshots/<name>-<project>-<platform>.png
+```
+
+Expected layout AFTER the visual suite has been fully populated on Linux CI
+under both `chromium` and `webkit` projects:
 
 ```text
 frontend/visual-baselines/
   .gitkeep
   README.md
-  configurator.spec.ts/
-    configurator-default-state-1-chromium-linux.png
-    configurator-default-state-1-webkit-linux.png
-    configurator-customized-state-1-chromium-linux.png
-    configurator-customized-state-1-webkit-linux.png
-  design-list.spec.ts/
-    design-list-empty-1-chromium-linux.png
-    design-list-empty-1-webkit-linux.png
-    design-list-populated-1-chromium-linux.png
-    design-list-populated-1-webkit-linux.png
-  cart.spec.ts/
-    cart-with-items-1-chromium-linux.png
-    cart-with-items-1-webkit-linux.png
-  order-confirmation.spec.ts/
-    order-confirmation-1-chromium-linux.png
-    order-confirmation-1-webkit-linux.png
+  visual/
+    configurator.spec.ts-snapshots/
+      configurator-default-chromium-linux.png
+      configurator-default-webkit-linux.png
+      configurator-customized-chromium-linux.png
+      configurator-customized-webkit-linux.png
+    design-list.spec.ts-snapshots/
+      design-list-empty-chromium-linux.png
+      design-list-empty-webkit-linux.png
+      design-list-populated-chromium-linux.png
+      design-list-populated-webkit-linux.png
+    cart.spec.ts-snapshots/
+      cart-with-items-chromium-linux.png
+      cart-with-items-webkit-linux.png
+    order-confirmation.spec.ts-snapshots/
+      order-confirmation-chromium-linux.png
+      order-confirmation-webkit-linux.png
 ```
 
-The per-spec subdirectory (e.g., `configurator.spec.ts/`) and the
-`-{project}-{platform}.png` suffix are added automatically by Playwright; you
-do NOT manually create these subdirectories or filenames. Playwright derives
-the platform segment from `process.platform`, so:
+The `visual/` parent (mirroring `tests/visual/`), the `-snapshots`
+subdirectory suffix on each spec name, and the `-{project}-{platform}.png`
+filename suffix are all added automatically by Playwright; you do NOT
+manually create these subdirectories or filenames. The leading
+`<name>` portion of each PNG is taken from the string argument passed to
+`toHaveScreenshot()` in the spec file. If a spec calls
+`toHaveScreenshot()` without an explicit name, Playwright synthesizes one
+from the test title and an auto-incrementing index — which is harder to
+review, so the visual specs always pass an explicit name argument.
+
+Playwright derives the platform segment from `process.platform`, so:
 
 - **CI runs on Linux**, so committed baselines are typically `*-linux.png`.
 - Developers regenerating locally on macOS produce `*-darwin.png` files;
