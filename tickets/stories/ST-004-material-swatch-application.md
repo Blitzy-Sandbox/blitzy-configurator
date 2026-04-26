@@ -13,7 +13,7 @@ As an end user, I want the ball preview to reflect the material swatch I pick, s
 
 ## Acceptance Criteria
 
-- [ ] Selecting a material swatch in the control sidebar updates the ball preview to display that material within the documented latency budget.
-- [ ] The previously applied material is replaced, so only the currently selected material is visible on the ball at any time.
-- [ ] The chosen swatch remains visually marked as active in the sidebar after selection.
-- [ ] Switching materials does not reset the current rotation or any unrelated selections (color, pattern, logo).
+- [x] Selecting a material swatch in the control sidebar updates the ball preview to display that material within the documented latency budget.
+- [x] The previously applied material is replaced, so only the currently selected material is visible on the ball at any time.
+- [x] The chosen swatch remains visually marked as active in the sidebar after selection.
+- [x] Switching materials does not reset the current rotation or any unrelated selections (color, pattern, logo).
