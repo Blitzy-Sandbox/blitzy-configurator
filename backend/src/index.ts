@@ -43,6 +43,113 @@ function pinoCorrelationMixin(): Record<string, string> {
   return fields;
 }
 
+// ---------------------------------------------------------------------------
+// Body-parser error handling — Rule R2 / ST-047-AC4
+// ---------------------------------------------------------------------------
+
+/**
+ * Shape of an error thrown by the body-parser ecosystem (the
+ * `body-parser` and `http-errors` packages used by `express.json()`,
+ * `express.urlencoded()`, etc.).
+ *
+ * When JSON parsing fails, body-parser's `read.js:128` calls:
+ *   next(createError(400, err, { body: str, type: err.type ||
+ *                                'entity.parse.failed' }))
+ *
+ * `createError` (from the `http-errors` package) attaches the
+ * provided `body` (the RAW REQUEST BODY STRING) and `type` fields to
+ * the wrapped error, plus `statusCode` (400) and `expose` (true).
+ *
+ * The `body` field is the QA-discovered Rule R2 leak surface: an
+ * adversary or a buggy client that sends `{"password":"SECRET","bad`
+ * causes the credential to be attached to the error verbatim. Without
+ * the defense in this file, `logger.error({ err })` would serialize
+ * the body verbatim into the log record.
+ *
+ * The `type` discriminants we recognise here are body-parser's stable
+ * named identifiers documented at:
+ *   https://www.npmjs.com/package/body-parser#errors
+ *
+ *   - 'entity.parse.failed'   — JSON parse failure
+ *   - 'entity.too.large'      — request larger than `limit`
+ *   - 'request.aborted'       — connection closed before parsing
+ *   - 'encoding.unsupported'  — Content-Encoding not supported
+ *   - 'charset.unsupported'   — text charset not supported
+ *   - 'request.size.invalid'  — Content-Length mismatch
+ *   - 'entities.bytes'        — internal bytes mismatch
+ *   - 'parameters.too.many'   — querystring parameters > limit
+ *   - 'stream.encoding.set'   — stream had encoding set
+ *   - 'stream.not.readable'   — stream was unreadable
+ */
+interface BodyParserError extends Error {
+  type?: string;
+  body?: unknown;
+  status?: number;
+  statusCode?: number;
+  expose?: boolean;
+}
+
+/**
+ * Returns true when `err` is a body-parser–origin error.
+ *
+ * The check uses the `type` discriminant (always set by body-parser
+ * via `createError`'s third argument) AND verifies it begins with one
+ * of the known body-parser type prefixes (`entity.`, `request.`,
+ * `encoding.`, `charset.`, `parameters.`, `stream.`). The prefix
+ * check defends against accidentally matching unrelated errors that
+ * happen to define a `type` field of their own.
+ *
+ * The narrowing predicate guarantees that the caller's `delete err.body`
+ * is type-safe — the QA report's exact CRITICAL leak path.
+ */
+function isBodyParserError(err: unknown): err is BodyParserError {
+  if (!(err instanceof Error)) {
+    return false;
+  }
+  const candidate = err as BodyParserError;
+  if (typeof candidate.type !== 'string') {
+    return false;
+  }
+  // Body-parser type names always start with one of these prefixes.
+  // Validating the prefix prevents accidental matches against unrelated
+  // libraries that set `err.type` for their own purposes.
+  return (
+    candidate.type.startsWith('entity.') ||
+    candidate.type.startsWith('request.') ||
+    candidate.type.startsWith('encoding.') ||
+    candidate.type.startsWith('charset.') ||
+    candidate.type.startsWith('parameters.') ||
+    candidate.type.startsWith('stream.')
+  );
+}
+
+/**
+ * Sanitise a body-parser error in place by deleting the `body` field
+ * BEFORE the error reaches any logger or downstream middleware.
+ *
+ * This is the BELT in the belt-and-suspenders defense: even though the
+ * pino `err` serializer in `./logging/pino.ts` strips `err.body` at
+ * serialization time, removing the field at the very first opportunity
+ * (at `express.json()`'s next(err) callback) ensures that no future
+ * code path — middleware, error handler, library — can possibly
+ * observe the raw body string. The serializer remains as the
+ * SUSPENDERS for any library that bypasses this pre-processing.
+ *
+ * Also strips `expose` for symmetry with the err serializer (it's
+ * `http-errors` housekeeping with no debugging value).
+ *
+ * The sanitisation is in-place because `next(err)` requires the same
+ * error reference to flow through Express's error middleware chain;
+ * cloning would lose stack-trace fidelity in some debuggers.
+ */
+function sanitiseBodyParserError(err: BodyParserError): void {
+  // `delete` on an own-enumerable property is the canonical way to
+  // remove a field; the property is permanently gone for any
+  // subsequent JSON.stringify or property enumeration.
+  delete err.body;
+  delete err.expose;
+}
+
 /**
  * Application entry point.
  *
@@ -55,6 +162,9 @@ function pinoCorrelationMixin(): Record<string, string> {
  * The middleware chain order matches AAP §0.5.6 verbatim:
  *   1. (already done) `import './tracing'` — auto-instrumentations
  *   2. express.json()                       — body parsing
+ *   2a. body-parser sanitiser              — strips err.body BEFORE
+ *                                             the error propagates
+ *                                             (Rule R2 / ST-047-AC4)
  *   3. correlationMiddleware                — C5 AsyncLocalStorage
  *   4. pino-http (via app-level logger)     — request logging
  *   5. metrics.middleware                   — request counter
@@ -142,6 +252,46 @@ function bootstrap(): Bootstrapped {
   // logo uploads use multipart/form-data and a separate parser.
   app.use(express.json({ limit: '1mb' }));
 
+  // ────────────────────────────────────────────────────────────────────
+  // Body-parser error sanitiser — Rule R2 / ST-047-AC4 (CRITICAL).
+  // ────────────────────────────────────────────────────────────────────
+  //
+  // QA-discovered Issue 3: when `express.json()` fails to parse a
+  // malformed JSON body, the body-parser library throws a SyntaxError
+  // wrapped via `createError(400, err, { body: str, ... })`. The
+  // resulting error has `err.body` set to the RAW REQUEST BODY STRING
+  // — which can contain credentials embedded in malformed JSON (e.g.
+  // `{"password":"SENTINEL_99","bad`). Path-based pino redaction
+  // CANNOT match credentials embedded inside a string value, so any
+  // subsequent `logger.error({ err })` would leak the credential
+  // verbatim into the log record.
+  //
+  // This 4-arg error middleware runs IMMEDIATELY after `express.json()`
+  // in the middleware chain. Express's error-routing semantics: when
+  // `express.json()` calls `next(err)`, Express walks forward through
+  // the chain SKIPPING all 3-arg middleware until it finds a 4-arg
+  // (error) middleware — which is THIS one. We strip the `body` field
+  // (and `expose`) BEFORE the error propagates anywhere else, then
+  // call `next(err)` to let the regular error-handling chain emit the
+  // response and the (now-safe) log record.
+  //
+  // The pino `err` serializer in `./logging/pino.ts` provides
+  // belt-and-suspenders: even if a future code path BYPASSES this
+  // sanitiser, the serializer will still strip `err.body` at log
+  // emission time. Both layers are mandatory.
+  //
+  // We DO NOT respond from this handler — we delegate to the terminal
+  // error handler below, which already sets the correct response
+  // shape and HTTP status. Centralising error responses in one place
+  // keeps the response contract consistent (every error response is
+  // `{ error: '<code>' }`) regardless of error origin.
+  app.use((err: Error, _req: Request, _res: Response, next: NextFunction): void => {
+    if (isBodyParserError(err)) {
+      sanitiseBodyParserError(err);
+    }
+    next(err);
+  });
+
   // Correlation ID middleware. Stamps every inbound request with a
   // UUID v4 (or preserves the inbound x-correlation-id) and pushes
   // the value into AsyncLocalStorage so the pino mixin and outbound
@@ -181,6 +331,51 @@ function bootstrap(): Bootstrapped {
   // reports `503 not_ready` until the DB is available.
   const pool = new Pool({ connectionString: requireEnv('DATABASE_URL') });
 
+  // ────────────────────────────────────────────────────────────────────
+  // Pool error handler — QA Issue 2 (MINOR) defense.
+  // ────────────────────────────────────────────────────────────────────
+  //
+  // The `pg` Pool emits an `'error'` event when an IDLE client (a
+  // connection sitting in the pool not currently servicing a query)
+  // encounters an error — most commonly when PostgreSQL terminates
+  // the connection (e.g. `terminating connection due to administrator
+  // command` after `docker compose stop postgres`).
+  //
+  // Without this listener, the error becomes an UNHANDLED EventEmitter
+  // 'error' event. Node's documented behaviour for an unhandled
+  // 'error' event is: throw the error as an uncaught exception. With
+  // ts-node-dev's `--exit-child` flag (used by `npm run dev` in
+  // development), the dev container's child process then exits, and
+  // the dev container becomes unresponsive until the orchestrator
+  // restarts it (~5–10 seconds of blackout).
+  //
+  // Production behaviour: the production multi-stage Dockerfile uses
+  // `node dist/index.js` (no ts-node-dev wrapper), so the unhandled
+  // pg pool error would crash the production process directly — even
+  // worse than the dev-environment behaviour. Adding the listener is
+  // therefore not just a dev-experience fix but a production
+  // correctness fix.
+  //
+  // The handler logs at WARN (not ERROR) because:
+  //   - The pool will automatically attempt to re-establish lost
+  //     connections on the next `pool.query()` call (pg's documented
+  //     resilience behaviour).
+  //   - Treating expected reconnect-on-DB-restart as an ERROR would
+  //     produce alarm fatigue; readiness probe degradation already
+  //     covers operator visibility for actual DB outages.
+  //
+  // The `event` field is fixed (`db.pool.error`) so dashboard panels
+  // can filter on it directly.
+  pool.on('error', (err: Error) => {
+    logger.warn(
+      {
+        err,
+        event: 'db.pool.error',
+      },
+      'PostgreSQL pool encountered an error on an idle client',
+    );
+  });
+
   // Health probes — /healthz never queries the DB (cheap liveness
   // check); /readyz runs `SELECT 1` against the pool with a bounded
   // timeout. The router itself is fully encapsulated; this composition
@@ -201,9 +396,57 @@ function bootstrap(): Bootstrapped {
 
   // Step 7: terminal error handler. Logs every unhandled error via
   // the redacting pino logger so credentials never leak.
+  //
+  // Status code resolution (Rule R8 — fail-closed semantics):
+  //   1. If the error carries an explicit `statusCode` or `status`
+  //      field (the http-errors / Boom convention), honour it. This
+  //      ensures body-parser errors propagate as 400 (their stated
+  //      status) rather than being masked as 500.
+  //   2. Only valid HTTP status codes (100-599) are honoured; other
+  //      values fall back to 500 to avoid emitting nonsensical codes.
+  //   3. The default is 500 — the canonical "we don't know what
+  //      happened" response.
+  //
+  // Response body is intentionally MINIMAL — never include the err
+  // message in the response payload, because err messages can include
+  // operationally sensitive data (file paths, stack frames, internal
+  // state). Operators get the full detail in the log; clients get a
+  // stable error code.
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction): void => {
+    // The err serializer in `./logging/pino.ts` strips err.body and
+    // other dangerous fields. Combined with the body-parser sanitiser
+    // earlier in the chain, this produces a credential-safe log record
+    // even for malformed JSON requests. Rule R2 / ST-047-AC4.
     logger.error({ err }, 'unhandled_error');
-    res.status(500).json({ error: 'internal_server_error' });
+
+    // Resolve status code from err.statusCode || err.status || 500,
+    // bounded to a valid HTTP status code range. The bounded check
+    // defends against malformed http-errors usage (e.g. statusCode of
+    // -1 or 99999) which would otherwise produce protocol errors.
+    const candidateStatus =
+      (err as { statusCode?: number }).statusCode ?? (err as { status?: number }).status ?? 500;
+    const status =
+      typeof candidateStatus === 'number' &&
+      Number.isInteger(candidateStatus) &&
+      candidateStatus >= 100 &&
+      candidateStatus <= 599
+        ? candidateStatus
+        : 500;
+
+    // Stable error-code envelope. Body-parser errors carry a `type`
+    // field we can surface as a stable code; other errors get the
+    // generic `internal_server_error` code.
+    let errorCode = 'internal_server_error';
+    if (status >= 400 && status < 500) {
+      // Client-side error: prefer body-parser's `type` discriminant
+      // when present (e.g. `entity.parse.failed` becomes a stable
+      // contract clients can switch on), otherwise the generic 4xx
+      // code.
+      const bpType = (err as BodyParserError).type;
+      errorCode =
+        typeof bpType === 'string' && bpType.length > 0 ? bpType : 'bad_request';
+    }
+    res.status(status).json({ error: errorCode });
   });
 
   // Step 8: bind the listening socket. PORT is validated above.
