@@ -26,16 +26,6 @@
  *   partial. Future maintainers MUST preserve `setupFiles` as the
  *   registration site (see `backend/jest.config.integration.ts`).
  *
- * Why a thin shim with no other logic:
- *   Any additional statement here introduces a `require()` of another
- *   module BEFORE OpenTelemetry registration — which is exactly the
- *   ordering bug Rule R6 / C4 forbids. Examples of forbidden additions:
- *     - `console.log(...)` injects `node:console`'s require chain.
- *     - `import '../../../src/logging/pino'` defeats the shim entirely.
- *     - `import { initializeFirebaseAdmin } from ...` defeats the shim.
- *   The single `import` statement below is the only safe payload for this
- *   file. Treat this constraint as inviolable.
- *
  * Coordination with neighbouring files:
  *   - `backend/jest.config.integration.ts` references this file as
  *     `setupFiles: ['<rootDir>/tests/integration/setup/register-tracing.ts']`.
@@ -70,5 +60,92 @@
  *   resolution requires additional ts-jest configuration that may not be
  *   in effect during the `setupFiles` phase; plain relative paths are
  *   robust under all loaders.
+ *
+ * Test-environment workaround for Jest's core-module require bypass:
+ *   In production (Node.js CJS loader), every `require('http')` /
+ *   `require('node:http')` flows through `Module.prototype.require`, which
+ *   `@opentelemetry/instrumentation`'s `RequireInTheMiddleSingleton`
+ *   monkey-patches at SDK start. The patched `Module.prototype.require`
+ *   detects core modules and triggers `HttpInstrumentation`'s `onRequire`
+ *   hook, which patches `http.request`, `http.get`, and
+ *   `http.Server.prototype.emit` in place — installing both client-side
+ *   `traceparent` injection and server-side root-span creation.
+ *
+ *   In Jest's test environment, however, core-module requires are routed
+ *   through `jest-runtime`'s `_requireCoreModule(moduleName)`, which
+ *   delegates to `require(moduleName)` from jest-runtime's own module
+ *   scope. This call resolves through `jest-runtime`'s closure-bound
+ *   `require`, completely bypassing the patched
+ *   `Module.prototype.require`. Diagnostic verification:
+ *     - `Module.prototype.require` IS RITM-patched after `sdk.start()`
+ *       (source dump confirms RITM wrapper signature with
+ *       `if (self._unhooked === true)`).
+ *     - `require('node:http')` from this file returns http where
+ *       `http.request.__wrapped === undefined` (RITM did not fire).
+ *     - `Module.prototype.require.call({...}, 'node:http')` triggers RITM,
+ *       which patches http in place and produces
+ *       `http.request.__wrapped === true`.
+ *   This means the SDK has registered all the right hooks, but Jest never
+ *   gives them an opportunity to fire for core modules.
+ *
+ *   The workaround below explicitly invokes
+ *   `Module.prototype.require.call(...)` for `node:http` and `node:https`,
+ *   forcing RITM's `patchedRequire` to execute its registered onRequire
+ *   callbacks (the OTel auto-instrumentations). RITM's exports cache is
+ *   keyed on (filename, isBuiltin) and short-circuits on second invocation
+ *   — so this is idempotent and safe to repeat. Both `request`/`get` and
+ *   `Server.prototype.emit` get wrapped, enabling:
+ *     - Client-side: outbound `http.request` / `http.get` injects W3C
+ *       `traceparent` and propagates the active trace context (ST-049-AC4).
+ *     - Server-side: inbound HTTP requests create a SERVER span as a child
+ *       of any inbound `traceparent` header, so `trace.getActiveSpan()`
+ *       returns a valid span context inside route handlers — and the pino
+ *       mixin (`backend/src/logging/pino.ts`) attaches `traceId` / `spanId`
+ *       to log records emitted during the request lifecycle (ST-049-AC2,
+ *       Gate T1-I).
+ *
+ *   This workaround is bounded strictly to the test environment (this file
+ *   is referenced ONLY by `jest.config.integration.ts` `setupFiles`).
+ *   Production-runtime code (`backend/src/index.ts` -> `import './tracing'`
+ *   -> `sdk.start()`) does NOT need this workaround because Node's standard
+ *   CJS loader uses `Module.prototype.require` directly.
+ *
+ *   Rule R6 / C4 compliance:
+ *     - The OTel SDK is registered first via `import '../../../src/tracing'`.
+ *     - The workaround runs strictly AFTER SDK registration but still
+ *       BEFORE any test framework or application code (since this file is
+ *       in `setupFiles`).
+ *     - The workaround does NOT load any application module; it only
+ *       triggers re-evaluation of two core modules (http, https) through
+ *       RITM, which is exactly the path RITM was designed to intercept.
  */
 import '../../../src/tracing';
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+const Module = require('node:module') as {
+  prototype: { require: (this: unknown, id: string) => unknown };
+};
+
+// A synthetic "trigger" module identity passed as `this` to
+// `Module.prototype.require`. RITM uses `this` only for relative-path
+// resolution of NON-core modules. For core modules (the http and https
+// names below), RITM short-circuits resolution to the bare filename, so
+// the `this` value's contents are not used by the lookup. The fields
+// below match the minimum Node.js Module shape so any defensive
+// inspection inside RITM still finds well-formed values.
+const triggerModule = {
+  id: __filename,
+  filename: __filename,
+  loaded: true,
+};
+
+// Trigger RITM's `onRequire` hook for the two core modules whose
+// auto-instrumentations the integration suite depends on. Both calls are
+// idempotent: on first invocation RITM caches the patched exports keyed
+// on (filename, isBuiltin); subsequent calls return the cached patched
+// module. The return values are intentionally discarded — the patches
+// are applied IN-PLACE to the singleton core-module exports object, so
+// every existing `require('http')` reference in the rest of the process
+// sees the patched methods after these calls complete.
+Module.prototype.require.call(triggerModule, 'node:http');
+Module.prototype.require.call(triggerModule, 'node:https');

@@ -48,6 +48,15 @@ frontend/.vite/
 coverage/
 */coverage/
 **/coverage/
+
+# ---------------------------------------------------------------------
+# Jest test report artifacts (jest-junit). These are uploaded to GCS by
+# Cloud Build per `cloudbuild.yaml`; they are NOT versioned source.
+# ---------------------------------------------------------------------
+backend/reports/
+*/reports/
+**/reports/
+*.junit.xml
 *.lcov
 .nyc_output/
 
