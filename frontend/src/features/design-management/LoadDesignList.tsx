@@ -139,14 +139,19 @@
  *   - Rule R2 (no credentials in logs): ZERO `console.*` calls. ALL
  *     user-visible error copy is hard-coded by HTTP status code; never
  *     `error.message` or `error.body`. Server-supplied error bodies are
- *     not rendered, logged, or re-thrown.
+ *     not rendered, logged, or re-thrown. The Firebase `User` object
+ *     received via {@link onAuthStateChanged} is reduced to a boolean
+ *     at the earliest possible moment — the user's email, UID, display
+ *     name, photo URL, and any claims are NEVER stored, rendered, or
+ *     logged by this component.
  *
  *   - Rule R3 (Firebase Admin SDK only on backend): this component does
  *     NOT decode, parse, or inspect the Firebase ID token. Token
  *     attachment is delegated to `request()` in `../../api/client` which
  *     forwards the raw token to the backend; the backend's session
  *     middleware calls `admin.auth().verifyIdToken()` as the SOLE
- *     authority on validity.
+ *     authority on validity. The frontend uses only the browser-safe
+ *     `firebase` JS SDK via `onAuthStateChanged` from `firebase-client`.
  *
  *   - Rule R9 (no payment processing): Loading a design is a read-side
  *     hydration action; no checkout, payment, charge, intent, or
@@ -163,6 +168,38 @@
  *     coordinator (registered in App.tsx via useColorSync()) to
  *     re-render in the correct fabric-then-three order. This component
  *     itself does NOT touch the texture pipeline.
+ *
+ * ============================================================================
+ * Accessibility — non-modal dialog popover
+ * ============================================================================
+ *
+ *   The panel is implemented as a non-modal dialog popover per the
+ *   WAI-ARIA Authoring Practices:
+ *
+ *     - The trigger has `aria-haspopup="dialog"`, `aria-expanded`, and
+ *       `aria-controls` pointing at the panel's id.
+ *     - The panel has `role="dialog"`, `aria-modal="false"` (the rest
+ *       of the page remains interactive; focus is NOT trapped), and
+ *       `aria-label="Saved designs"`.
+ *     - When the panel is open, Escape closes it and restores focus to
+ *       the trigger; clicking outside the panel (and outside the
+ *       trigger) also closes it.
+ *     - The trigger is `disabled` when the user is not authenticated,
+ *       and a screen-reader-only describer ("Sign in to view and load
+ *       your saved designs.") is referenced via `aria-describedby` so
+ *       assistive technology explains why the button is disabled.
+ *
+ *   Auth-state coupling:
+ *
+ *     - {@link onAuthStateChanged} is consumed via a useEffect-mounted
+ *       subscription that fires on mount and on every auth transition.
+ *     - The User object is reduced to a boolean (`user !== null`) and
+ *       stored as `isAuthenticated` (Rule R2 — no PII).
+ *     - On sign-out, the panel is proactively closed and the in-memory
+ *       designs list is purged so a subsequent sign-in starts clean.
+ *     - The configurator store is NOT touched on auth transitions —
+ *       the user's loaded design is preserved across sign-out / sign-in
+ *       transitions.
  *
  * ============================================================================
  * Cross-layer wire-to-store mapping (the load-side counterpart of
@@ -261,7 +298,7 @@
  * ============================================================================
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 
 import { ApiError } from '../../api/client';
@@ -270,7 +307,12 @@ import {
   getSharedDesign,
   listDesigns,
 } from '../../api/designs';
-import type { DesignSummary, SharedDesignView } from '../../api/designs';
+import type {
+  DesignSummary,
+  ListDesignsResponse,
+  SharedDesignView,
+} from '../../api/designs';
+import { onAuthStateChanged } from '../../auth/firebase-client';
 import {
   type LoadedDesignPayload,
   type MaterialFinish,
@@ -672,6 +714,81 @@ export function LoadDesignList(): JSX.Element {
    */
   const [recentlyLoadedId, setRecentlyLoadedId] = useState<string | null>(null);
 
+  /**
+   * Whether the Firebase auth session currently holds an authenticated
+   * user. Derived from {@link onAuthStateChanged} — see the auth
+   * subscription effect below. Used to enable/disable the panel-open
+   * trigger so unauthenticated users get a clear disabled affordance
+   * (with a screen-reader-only describer) rather than an unhelpful 401
+   * error after they click.
+   *
+   * IMPORTANT (Rule R2): the Firebase `User` object is reduced to a
+   * boolean at the earliest possible moment — the user's email, UID,
+   * display name, photo URL, and any claims are NEVER stored in this
+   * component. Only the boolean derived flag is held in state.
+   */
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+
+  // -------------------------------------------------------------------------
+  // DOM refs — used for focus restoration and outside-click detection.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Ref to the panel-open trigger button. Used to programmatically
+   * restore focus to the trigger when the panel closes (Escape key,
+   * outside click, or the in-panel Close button) so keyboard users
+   * land on a sensible focus target rather than the document body.
+   */
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+
+  /**
+   * Ref to the panel container. Used by the outside-click handler to
+   * decide whether a mousedown event landed inside the panel (ignore)
+   * or outside it (close the panel).
+   */
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  // -------------------------------------------------------------------------
+  // Effect — subscribe to Firebase auth state.
+  //
+  // Per Rule R2, the Firebase `User` object passed to the callback is
+  // reduced to a boolean (`user !== null`) at the earliest opportunity.
+  // The User object is NEVER rendered, logged, or stored verbatim.
+  //
+  // On sign-out we proactively close the panel and clear the in-memory
+  // designs list so a subsequent sign-in doesn't show stale data from
+  // the previous user. On sign-in we leave the list `idle` so the next
+  // panel open triggers a fresh fetch for the new user.
+  //
+  // The returned unsubscribe function is invoked from the effect
+  // cleanup to prevent leaks. `onAuthStateChanged` returns a no-op
+  // unsubscribe when Firebase is not initialized (e.g., in tests),
+  // so the cleanup is always safe to call.
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged((user) => {
+      const authed = user !== null;
+      setIsAuthenticated(authed);
+      if (!authed) {
+        // Sign-out — close the panel and purge in-memory list so the
+        // next sign-in starts clean. Do NOT touch the configurator
+        // store; loadDesign / store-mutation is a separate concern
+        // governed by the user's own actions, not by sign-out.
+        setIsOpen(false);
+        setItems([]);
+        setNextCursor(null);
+        setListState('idle');
+        setListError(null);
+        setRowError(null);
+        setRowLoad(null);
+        setRecentlyLoadedId(null);
+      }
+    });
+    return (): void => {
+      unsubscribe();
+    };
+  }, []);
+
   // -------------------------------------------------------------------------
   // Effect — fetch the first page when the panel opens for the first time.
   // The dependency on `isOpen` ensures we fetch only when the user has
@@ -698,7 +815,11 @@ export function LoadDesignList(): JSX.Element {
       setListState('loading');
       setListError(null);
       try {
-        const page = await listDesigns({});
+        // Annotate the response with the schema-mandated
+        // `ListDesignsResponse` type so a future refactor of the
+        // `listDesigns` return type triggers a compile-time error
+        // here rather than silently breaking the component.
+        const page: ListDesignsResponse = await listDesigns({});
         if (cancelled) {
           return;
         }
@@ -732,20 +853,43 @@ export function LoadDesignList(): JSX.Element {
 
   /**
    * onClick for the panel-open trigger. Toggles the open state. When
-   * closing, clears the per-row feedback so a future open starts clean.
+   * closing, clears the per-row feedback so a future open starts clean
+   * AND restores focus to the trigger itself so keyboard users do not
+   * lose their place.
+   *
+   * The synchronous `triggerRef.current?.focus()` call is safe before
+   * the re-render: the trigger button is always in the DOM (it lives
+   * outside the conditionally-rendered panel), so React preserves
+   * focus across the re-render that hides the panel.
    */
   const handleToggleOpen = useCallback(() => {
     setIsOpen((prev) => {
-      const next = !prev;
-      if (!next) {
-        // Closing — clear transient row-level feedback. Keep the list
-        // cache so a re-open is instant.
+      if (prev) {
+        // Was open — closing. Clear transient row-level feedback.
+        // Keep the list cache so a re-open is instant.
         setRowError(null);
         setRowLoad(null);
         setRecentlyLoadedId(null);
+        // Synchronously restore focus to the trigger.
+        triggerRef.current?.focus();
+        return false;
       }
-      return next;
+      return true;
     });
+  }, []);
+
+  /**
+   * Programmatic close — used by the Escape key handler, the
+   * outside-click handler, and the in-panel Close button. Always
+   * transitions to closed (no-op when already closed) and restores
+   * focus to the trigger so keyboard users stay anchored.
+   */
+  const handleClose = useCallback(() => {
+    setIsOpen(false);
+    setRowError(null);
+    setRowLoad(null);
+    setRecentlyLoadedId(null);
+    triggerRef.current?.focus();
   }, []);
 
   /**
@@ -760,7 +904,7 @@ export function LoadDesignList(): JSX.Element {
     setRecentlyLoadedId(null);
     setNextCursor(null);
     try {
-      const page = await listDesigns({});
+      const page: ListDesignsResponse = await listDesigns({});
       setItems(page.items);
       setNextCursor(page.nextCursor);
       setListState('success');
@@ -794,7 +938,9 @@ export function LoadDesignList(): JSX.Element {
     setListState('loading');
     setListError(null);
     try {
-      const page = await listDesigns({ cursor: nextCursor });
+      const page: ListDesignsResponse = await listDesigns({
+        cursor: nextCursor,
+      });
       setItems((prev) => [...prev, ...page.items]);
       setNextCursor(page.nextCursor);
       setListState('success');
@@ -884,22 +1030,114 @@ export function LoadDesignList(): JSX.Element {
   }, []);
 
   // -------------------------------------------------------------------------
+  // Effect — close-on-Escape and close-on-outside-click.
+  //
+  // Both listeners are registered on `document` (not on the popover or
+  // trigger) so they fire regardless of where the focused element lives
+  // when the user presses Escape or clicks. The effect is gated on
+  // `isOpen` so the listeners exist ONLY while the panel is open —
+  // attaching them unconditionally would slow down every keystroke and
+  // mousedown anywhere on the page.
+  //
+  // Escape: closes the panel and restores focus to the trigger via
+  // `handleClose`. This matches the WAI-ARIA Authoring Practices for
+  // a non-modal dialog popover.
+  //
+  // Mousedown outside: if the click target is not within the popover
+  // and not within the trigger, close the panel. The trigger check
+  // is necessary so a click ON the trigger (which would otherwise
+  // close-then-open in rapid succession) is left alone — `handleToggleOpen`
+  // on the trigger already handles that case.
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isOpen) {
+      return undefined;
+    }
+
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        handleClose();
+      }
+    };
+
+    const onMouseDown = (event: MouseEvent): void => {
+      const target = event.target as Node | null;
+      if (target === null) {
+        return;
+      }
+      if (popoverRef.current?.contains(target) === true) {
+        return;
+      }
+      if (triggerRef.current?.contains(target) === true) {
+        return;
+      }
+      // The mousedown landed outside both the popover and the trigger
+      // — close the panel. We do NOT call handleClose() because the
+      // user did not initiate the close from a keyboard interaction;
+      // restoring focus to the trigger here would steal focus from
+      // whatever element the user is interacting with. Instead, just
+      // close the panel and clear transient state.
+      setIsOpen(false);
+      setRowError(null);
+      setRowLoad(null);
+      setRecentlyLoadedId(null);
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('mousedown', onMouseDown);
+
+    return (): void => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('mousedown', onMouseDown);
+    };
+  }, [isOpen, handleClose]);
+
+  // -------------------------------------------------------------------------
   // Inline styles — co-located so the component remains self-contained.
   // The values match the Blitzy brand tokens used by SaveDesignCta and
   // DesignSummarySidebar siblings.
   // -------------------------------------------------------------------------
 
-  /** Style for the panel-open trigger button. */
+  /**
+   * Style for the panel-open trigger button. Visual treatment varies
+   * with `isAuthenticated`:
+   *
+   *   - Authenticated: brand-purple outline button (matches the
+   *     SaveDesignCta and ShareDesignAction siblings).
+   *   - Unauthenticated: subdued grey treatment with a wait/disallowed
+   *     cursor so the user understands the affordance is unavailable.
+   *     The companion screen-reader-only describer (rendered alongside
+   *     the trigger) explains why.
+   */
   const triggerButtonStyle: React.CSSProperties = {
     padding: '0.625rem 1rem',
-    backgroundColor: 'transparent',
-    color: '#5B39F3',
-    border: '1px solid #5B39F3',
+    backgroundColor: isAuthenticated ? 'transparent' : '#F5F5F5',
+    color: isAuthenticated ? '#5B39F3' : '#999999',
+    border: isAuthenticated ? '1px solid #5B39F3' : '1px solid #D9D9D9',
     borderRadius: '0.375rem',
     fontSize: '0.875rem',
     fontWeight: 500,
-    cursor: 'pointer',
+    cursor: isAuthenticated ? 'pointer' : 'not-allowed',
     width: '100%',
+  };
+
+  /**
+   * Visually-hidden style — keeps the screen-reader-only describer in
+   * the accessibility tree without showing it to sighted users. Uses
+   * the canonical "sr-only" pattern (1×1px clip) so screen readers
+   * still announce the help text when the trigger is described by it.
+   */
+  const srOnlyStyle: React.CSSProperties = {
+    position: 'absolute',
+    width: '1px',
+    height: '1px',
+    padding: 0,
+    margin: '-1px',
+    overflow: 'hidden',
+    clip: 'rect(0, 0, 0, 0)',
+    whiteSpace: 'nowrap',
+    border: 0,
   };
 
   /** Style for the panel container when open. */
@@ -1049,27 +1287,70 @@ export function LoadDesignList(): JSX.Element {
        * Panel-open trigger — always visible. When the panel is open it
        * toggles back to closed. The aria-expanded reflects state so
        * assistive technology announces the disclosure correctly.
+       *
+       * ARIA disclosure pattern (per WAI-ARIA Authoring Practices for
+       * a non-modal dialog popover):
+       *
+       *   - `aria-haspopup="dialog"` declares that activating the
+       *     trigger reveals a non-modal dialog (the panel below).
+       *   - `aria-expanded={isOpen}` reflects the open/closed state so
+       *     screen readers announce the transition.
+       *   - `aria-controls` points to the popover's id so assistive
+       *     technology can navigate from trigger to popover.
+       *
+       * Disabled-state semantics:
+       *   - When the user is not authenticated, the button is
+       *     `disabled` (HTML attribute) so it cannot be activated.
+       *   - `aria-describedby` points to a screen-reader-only span
+       *     that explains WHY the button is disabled (so blind users
+       *     know "Sign in to view your saved designs" rather than
+       *     hearing only "button, dimmed").
        */}
       <button
+        ref={triggerRef}
         type="button"
         data-testid="load-design-trigger"
+        aria-haspopup="dialog"
         aria-expanded={isOpen}
         aria-controls="load-design-list-panel"
+        aria-describedby={
+          isAuthenticated ? undefined : 'load-design-trigger-disabled-help'
+        }
+        disabled={!isAuthenticated}
         onClick={handleToggleOpen}
         style={triggerButtonStyle}
       >
         {isOpen ? 'Hide saved designs' : 'Load saved design'}
       </button>
+      {!isAuthenticated && (
+        <span id="load-design-trigger-disabled-help" style={srOnlyStyle}>
+          Sign in to view and load your saved designs.
+        </span>
+      )}
 
       {/*
        * Panel — shown only when the user has opened it. The panel
        * contains the list, optional Load More, and the (separate) row
        * error banner.
+       *
+       * The panel is rendered with `role="dialog"` and
+       * `aria-modal="false"` per the WAI-ARIA Authoring Practices for
+       * a non-modal dialog popover:
+       *
+       *   - `role="dialog"` advertises the panel as a discrete dialog
+       *     region with its own labelled affordances (header + list).
+       *   - `aria-modal="false"` clarifies that the rest of the page
+       *     remains interactive — keyboard users are NOT trapped inside
+       *     the panel; Tab moves naturally and Escape dismisses.
+       *   - `aria-label="Saved designs"` provides the accessible name.
+       *   - The `popoverRef` is consumed by the outside-click effect.
        */}
       {isOpen && (
         <div
+          ref={popoverRef}
           id="load-design-list-panel"
-          role="region"
+          role="dialog"
+          aria-modal="false"
           aria-label="Saved designs"
           style={panelStyle}
         >
@@ -1093,7 +1374,7 @@ export function LoadDesignList(): JSX.Element {
               <button
                 type="button"
                 data-testid="load-design-list-close"
-                onClick={handleToggleOpen}
+                onClick={handleClose}
                 aria-label="Close saved designs panel"
                 style={headerSecondaryButtonStyle}
               >
