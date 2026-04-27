@@ -132,6 +132,20 @@ services:
       PORT: '3000'
       SERVICE_NAME: strikeforge-backend
       SERVICE_VERSION: 0.1.0
+      # CORS configuration — QA Issue #10 fix. Comma-separated list of
+      # origins permitted to issue cross-origin requests against the
+      # backend. The Vite dev server runs on port 5173 by default. In
+      # production, set this to the deployed frontend origin (e.g.,
+      # https://strikeforge.app). Optional: when unset, the backend
+      # falls back to localhost:5173 for developer ergonomics.
+      CORS_ALLOWED_ORIGINS: 'http://localhost:5173'
+      # Share-link base URL — QA Issue #5 fix. Used by the share-link
+      # route to construct fully-qualified URLs returned in the
+      # response payload. The frontend writes this URL to the user's
+      # clipboard verbatim. In production, set to the deployed
+      # frontend origin (e.g., https://strikeforge.app). Optional:
+      # when unset, the backend falls back to http://localhost:5173.
+      SHARE_BASE_URL: 'http://localhost:5173'
     ports:
       - '3000:3000'
     volumes:

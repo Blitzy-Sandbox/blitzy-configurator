@@ -1550,7 +1550,7 @@ describe('handleRouteError — additional branch coverage', () => {
     // call would reach handleRouteError's structural ZodError check.
     // We construct a synthetic ZodError-shaped value by leveraging Zod
     // itself to produce a real ZodError instance.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires -- Synthetic ZodError construction; require() is the most direct path inside this isolated test case.
     const { z } = require('zod');
     let zodErr: unknown;
     try {

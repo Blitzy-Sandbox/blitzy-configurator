@@ -140,6 +140,17 @@ import type { CreateOrderInput, Order } from '../../api/orders';
 import { useConfiguratorStore } from '../../state/configuratorStore';
 import type { StitchingPattern, MaterialFinish } from '../../state/configuratorStore';
 
+// Sibling action components mounted inline inside this sidebar per
+// ST-022-AC5 ("the design summary sidebar hosts Save Design and
+// Add-to-Cart inline"). The QA Report Issue #6 noted that the
+// previously-shipped App.tsx rendered only the Add-to-Cart action and
+// kept SaveDesignCta as a separate sibling that the App layout never
+// mounted; mounting them inline here closes that gap while keeping
+// each action's lifecycle and accessibility patterns owned by its own
+// dedicated component file.
+import { SaveDesignCta } from './SaveDesignCta';
+import { ShareDesignAction } from './ShareDesignAction';
+
 // ============================================================================
 // Module-scope helpers (defined outside the component for reference stability)
 // ============================================================================
@@ -631,12 +642,22 @@ export function DesignSummarySidebar(): JSX.Element {
 
       {/*
        * CTA section — visually separated by a top border so users can see
-       * where the readout ends and the action affordance begins. Hosts the
-       * Add-to-Cart button and the success/error banners. The Save Design
-       * CTA is NOT rendered here; it's a sibling component (`SaveDesignCta`)
-       * rendered alongside this component by the App layout per AAP §0.6.14
-       * — together they preserve single-viewport access to the design summary
-       * AND its primary actions per ST-022-AC5.
+       * where the readout ends and the action affordance begins. Per
+       * ST-022-AC5 the design summary sidebar HOSTS both the Save Design
+       * and Add-to-Cart CTAs inline. The Share Design action is mounted
+       * here as well so that all design-management affordances live in
+       * the same single-viewport region (AAP §0.6.14).
+       *
+       * Render order, top to bottom:
+       *   1. SaveDesignCta — primary action (most users save before any
+       *      other action).
+       *   2. Add-to-Cart — secondary action; gated on a saved design.
+       *   3. ShareDesignAction — tertiary action; also gated on a saved
+       *      design.
+       *
+       * Each child component owns its own lifecycle (state machine,
+       * error copy, ARIA roles); this CTA section is purely a layout
+       * shell that stacks them with consistent spacing.
        */}
       <div
         style={{
@@ -647,7 +668,15 @@ export function DesignSummarySidebar(): JSX.Element {
           gap: '0.625rem',
         }}
       >
-        {/* Add to Cart button */}
+        {/*
+         * Save Design CTA (ST-018) — primary save affordance. The
+         * component owns its own title-input form, request lifecycle,
+         * and success/error banners. Mounting it here satisfies
+         * ST-022-AC5 ("the sidebar hosts Save Design inline").
+         */}
+        <SaveDesignCta />
+
+        {/* Add to Cart button (ST-032) */}
         <button
           type="button"
           data-testid="add-to-cart-cta"
@@ -803,6 +832,14 @@ export function DesignSummarySidebar(): JSX.Element {
             </button>
           </div>
         )}
+
+        {/*
+         * Share Design action (ST-021) — tertiary affordance. The
+         * component owns its own request lifecycle, clipboard write,
+         * and success/error banners. Disabled when there's no saved
+         * design to share, with sr-only help text explaining why.
+         */}
+        <ShareDesignAction />
       </div>
     </section>
   );

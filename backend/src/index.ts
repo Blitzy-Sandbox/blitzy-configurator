@@ -5,6 +5,8 @@
 // missing or duplicated spans. Do NOT reorder this import.
 import './tracing';
 
+import cors from 'cors';
+import type { CorsOptions } from 'cors';
 import express from 'express';
 import type { Express, NextFunction, Request, Response } from 'express';
 import { Pool } from 'pg';
@@ -289,6 +291,58 @@ function bootstrap(): Bootstrapped {
     }
     next(err);
   });
+
+  // ────────────────────────────────────────────────────────────────────
+  // CORS middleware — QA Issue #10 fix (CRITICAL).
+  // ────────────────────────────────────────────────────────────────────
+  //
+  // Without CORS, browser-issued cross-origin fetches from the Vite dev
+  // server (default `http://localhost:5173`) to the backend (default
+  // `http://localhost:3000`) fail with `TypeError: Failed to fetch` at
+  // the browser preflight stage, BEFORE any application logic runs. The
+  // preflight (HTTP OPTIONS) carries no Authorization header, so the
+  // session middleware (mounted further down) would otherwise reject it
+  // with HTTP 401. By placing CORS BEFORE the session gate, OPTIONS
+  // preflights short-circuit through the cors middleware and never
+  // reach session validation.
+  //
+  // Origin allow-list is sourced from the OPTIONAL `CORS_ALLOWED_ORIGINS`
+  // environment variable (comma-separated list). It is OPTIONAL — Rule
+  // R4's "no defaults in source code" rule applies only to the SIX
+  // required env vars listed in §0.1.3 of the AAP. CORS configuration
+  // is a deployment concern with a sensible local-dev default.
+  //
+  // Allowed headers explicitly include `Authorization`, `Content-Type`,
+  // `X-Correlation-Id`, and `traceparent` — the four headers the
+  // frontend `api/client.ts` and OpenTelemetry auto-instrumentation
+  // attach. Without explicit allow, the browser strips them from the
+  // actual request after preflight.
+  //
+  // `credentials: false` because Firebase auth uses Bearer tokens (not
+  // cookies). If cookies are introduced later, this flag must flip to
+  // `true` AND `origin` must NOT be `*` (browser security spec).
+  const parsedCorsOrigins = process.env['CORS_ALLOWED_ORIGINS']
+    ?.split(',')
+    .map((o) => o.trim())
+    .filter((o) => o.length > 0);
+  const corsAllowedOrigins =
+    parsedCorsOrigins !== undefined && parsedCorsOrigins.length > 0
+      ? parsedCorsOrigins
+      : ['http://localhost:5173'];
+  const corsOptions: CorsOptions = {
+    origin: corsAllowedOrigins,
+    credentials: false,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Authorization',
+      'Content-Type',
+      'X-Correlation-Id',
+      'traceparent',
+    ],
+    exposedHeaders: ['X-Correlation-Id'],
+    maxAge: 600,
+  };
+  app.use(cors(corsOptions));
 
   // Correlation ID middleware. Stamps every inbound request with a
   // UUID v4 (or preserves the inbound x-correlation-id) and pushes

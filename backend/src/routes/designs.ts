@@ -187,6 +187,45 @@ const logoSchema = z
   .strict();
 
 /**
+ * Canonical pattern enum (ST-010 — six stitching patterns).
+ *
+ * QA Issue #11 (MAJOR): the previous schema declared
+ * `pattern: z.string().min(1)`, which silently accepted ANY non-empty
+ * string — including misspellings, typos, and adversary-supplied values.
+ * The frontend's `StitchingPattern` union (in
+ * `frontend/src/state/configuratorStore.ts`) restricts the type to the
+ * six canonical patterns; the backend MUST mirror that restriction so
+ * the cross-layer contract is enforced server-side (defense-in-depth
+ * per AAP §0.5.6 "Cross-Cutting Middleware Order" + the project's
+ * "validation at TWO layers" posture).
+ *
+ * Adding a new pattern requires an update in BOTH places:
+ *   - frontend `configuratorStore.ts` `StitchingPattern` union
+ *   - this `PATTERN_VALUES` tuple
+ * The `as const` assertion turns this into a readonly tuple of literal
+ * string types, which is what `z.enum(...)` consumes.
+ *
+ * Order matches the frontend order for consistency in error messages.
+ */
+const PATTERN_VALUES = [
+  'classic',
+  'hexagonal',
+  'diamond',
+  'spiral',
+  'star',
+  'grid',
+] as const;
+
+/**
+ * Canonical finish enum (ST-011 — three material finishes).
+ *
+ * QA Issue #11 (MAJOR): mirror `PATTERN_VALUES` rationale — the
+ * frontend's `MaterialFinish` union has three values and the backend
+ * MUST reject any other value.
+ */
+const FINISH_VALUES = ['matte', 'glossy', 'metallic'] as const;
+
+/**
  * Design payload schema (ST-027-AC1, ST-027-AC3).
  *
  * The configurator persists three required fields (primaryColor,
@@ -201,14 +240,26 @@ const logoSchema = z
  * to clear an existing logo sends `logo: null` rather than omitting
  * the field. The service's normalization treats `null` and absent
  * identically (both result in no `logo` key on the persisted JSONB).
+ *
+ * QA Issue #11 fix: `pattern` and `finish` are now `z.enum(...)` over
+ * the canonical tuples, so any non-matching string produces a 400 with
+ * a per-field error attribution rather than being silently accepted.
  */
 const designPayloadSchema = z
   .object({
     primaryColor: z.string().min(1, 'payload.primaryColor must be a non-empty string'),
     secondaryColor: z.string().min(1).optional(),
     accentColor: z.string().min(1).optional(),
-    pattern: z.string().min(1, 'payload.pattern must be a non-empty string'),
-    finish: z.string().min(1, 'payload.finish must be a non-empty string'),
+    pattern: z.enum(PATTERN_VALUES, {
+      errorMap: () => ({
+        message: `payload.pattern must be one of: ${PATTERN_VALUES.join(', ')}`,
+      }),
+    }),
+    finish: z.enum(FINISH_VALUES, {
+      errorMap: () => ({
+        message: `payload.finish must be one of: ${FINISH_VALUES.join(', ')}`,
+      }),
+    }),
     logo: z.union([logoSchema, z.null()]).optional(),
   })
   .strict();
@@ -703,7 +754,35 @@ async function runIssueShareLink(
     // ST-029-AC2: response includes `token`, `designId`, `ownerUid`,
     // `issuedAt`, `expiresAt`, `revokedAt`. Date fields are serialized
     // to ISO 8601 by `res.json` automatically.
-    res.status(200).json(shareLink);
+    //
+    // QA Issue #5 (MAJOR) fix: the frontend `ShareLink` interface
+    // (`frontend/src/api/designs.ts` lines 457-484) declares `url` as
+    // a REQUIRED string — the value the user copies to clipboard
+    // (ST-021-AC1: `navigator.clipboard.writeText(shareLink.url)`).
+    // Previously the backend returned the bare `ShareLink` object
+    // without `url`, so the clipboard wrote `undefined`. We compute
+    // the canonical share URL here at the route boundary so the
+    // service layer remains pure (just issuing the token).
+    //
+    // `SHARE_BASE_URL` is OPTIONAL (not in Rule R4's six required
+    // env vars). When unset, we fall back to the local-dev frontend
+    // origin `http://localhost:5173` so the dev workflow does not
+    // require yet another configuration step. In production the
+    // env var is set to the canonical frontend origin (e.g.
+    // `https://strikeforge.app`) by the deploy pipeline.
+    //
+    // The path component `/share/:token` mirrors the frontend's
+    // share-view route (see `frontend/src/features/design-management/
+    // ShareDesignAction.tsx`); when a recipient opens the URL the
+    // frontend reads `:token` from the path and calls the backend's
+    // `GET /api/share/:token` companion endpoint.
+    const shareBaseUrl =
+      process.env['SHARE_BASE_URL'] !== undefined &&
+      process.env['SHARE_BASE_URL'] !== ''
+        ? process.env['SHARE_BASE_URL']
+        : 'http://localhost:5173';
+    const url = `${shareBaseUrl.replace(/\/$/, '')}/share/${encodeURIComponent(shareLink.token)}`;
+    res.status(200).json({ ...shareLink, url });
   } catch (err) {
     handleRouteError(err, req, res, next);
   }

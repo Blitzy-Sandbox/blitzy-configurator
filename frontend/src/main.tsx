@@ -4,23 +4,32 @@
  * Authority:
  *   - AAP §0.3.4 / §0.6.7 — "frontend/src/main.tsx | React 18
  *     `createRoot` bootstrap".
- *   - QA Report Issue #1 — Without this file, `index.html`'s
- *     `<script type="module" src="/src/main.tsx">` tag returns HTTP
- *     404 and the React module loader fails, leaving the
- *     `<div id="root">` empty (the documented blank-viewport
- *     symptom). This file is the entry that resolves Issue #1 and
- *     unblocks every downstream Track 2 finding.
+ *   - AAP §0.6.9 (Merge Gate 1, Step F — Design Management Integration):
+ *     Firebase JS SDK; signInWithEmailAndPassword, getIdToken().
+ *   - QA Report Issue #7 (CRITICAL) — `initializeFirebaseClient()` is
+ *     never called, causing `getIdToken()` to return null and the
+ *     `Authorization: Bearer ${idToken}` header to never be attached.
+ *     Without auth, every authenticated API call (POST /api/designs,
+ *     GET /api/designs, POST /api/designs/:id/share-link, GET /api/cart,
+ *     POST /api/orders) returns 401. The fix below calls
+ *     `initializeFirebaseClient()` exactly once at module top-level
+ *     BEFORE `ReactDOM.createRoot().render()`. The call is idempotent
+ *     and StrictMode-safe (firebase-client.ts has both a
+ *     module-private guard and a defense-in-depth `getApps()` check).
  *   - ST-001-AC4 — ZERO console errors during initial render. The
- *     bootstrap below is intentionally minimal (no error-prone side
- *     effects, no Firebase init at this scope) so the first render
- *     has a clean console.
+ *     bootstrap remains minimal — `initializeFirebaseClient()` is
+ *     synchronous, throws ONLY when required `VITE_FIREBASE_*`
+ *     variables are missing (which is a developer configuration
+ *     issue, not a runtime user-facing concern), and emits no logs.
  *
  * Cross-cutting rules:
- *   - Rule R7 / C6: untouched.
+ *   - Rule R7 / C6: untouched (texture pipeline is unaffected by
+ *     Firebase init).
  *   - Rule R2: ZERO `console.*` calls.
- *   - Rule R3: no auth imports here. Firebase client initialization
- *     is the responsibility of MG1-F (per AAP §0.6.9), not Track 2's
- *     application bootstrap.
+ *   - Rule R3: this file imports ONLY the JS SDK wrapper
+ *     (`./auth/firebase-client`) which itself uses ONLY the
+ *     browser-safe `firebase` package — never `firebase-admin`,
+ *     `jsonwebtoken`, `jose`, or `jwt-decode`.
  *
  * StrictMode:
  *   We wrap `<App />` in `<React.StrictMode>` so that React 18's
@@ -29,14 +38,47 @@
  *   effect in this codebase has been authored to be StrictMode-safe;
  *   the `performance.ts` instrumentation is the most sensitive
  *   surface, and its module-level helpers explicitly handle the
- *   mount → cleanup → mount sequence.
+ *   mount → cleanup → mount sequence. `initializeFirebaseClient()`
+ *   is also StrictMode-safe via its module-private idempotency guard.
+ *
+ * Why init at main.tsx scope rather than in <App />'s useEffect:
+ *   Calling init at module top-level (synchronously, BEFORE
+ *   `createRoot().render()`) means:
+ *     1. The Firebase SDK is fully ready by the time the FIRST render
+ *        runs, so children that call `getIdToken()` during their
+ *        initial render do not race against init.
+ *     2. Errors (missing `VITE_FIREBASE_*` config) surface BEFORE
+ *        React mounts — the developer sees a clear "Firebase config
+ *        is incomplete" error in the dev console rather than a
+ *        cascade of downstream undefined-token failures.
+ *     3. There is exactly ONE call site, eliminating the StrictMode
+ *        double-invocation concern entirely (synchronous module-top
+ *        code does not double-execute).
  */
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 
 import App from './App';
+import { initializeFirebaseClient } from './auth/firebase-client';
 import './styles/global.css';
+
+// ---------------------------------------------------------------------------
+// Firebase client SDK initialization — QA Issue #7 fix (CRITICAL).
+// ---------------------------------------------------------------------------
+//
+// Synchronous, idempotent, called exactly once before any React render.
+// Reads `VITE_FIREBASE_*` from `import.meta.env` (Vite-injected at build
+// time). Connects to the Firebase Auth emulator in dev mode
+// (`import.meta.env.DEV === true`) — production builds tree-shake the
+// emulator branch.
+//
+// Throws synchronously if any required `VITE_FIREBASE_*` variable is
+// missing. The throw is intentional: it surfaces a developer-facing
+// configuration error in the browser console BEFORE React attempts to
+// mount, making the fix obvious. See frontend/.env.example for the
+// required variables.
+initializeFirebaseClient();
 
 // ---------------------------------------------------------------------------
 // Mount point lookup
