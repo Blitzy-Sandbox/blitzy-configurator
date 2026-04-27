@@ -24,14 +24,17 @@
  *   subscribes to BOTH `materialFinish` and `stitchingPattern` slices
  *   so it can render the disabled state for incompatible
  *   combinations. The decision is delegated to
- *   `isCombinationDisabled` from `patternCatalog.ts` so the rule lives
- *   in a single, easily-tested module.
+ *   `isFinishDisabledForPattern` from `DisabledCombinationTooltip.tsx`
+ *   so the rule lives in a single, easily-tested module that also owns
+ *   the user-facing tooltip copy via `getDisabledFinishReason`.
  *
  *   Disabled options:
  *     - have `aria-disabled="true"` (NOT `disabled`, which would
  *       remove them from the tab order — ST-013 explicitly requires
  *       keyboard focusability),
- *     - reference a per-option tooltip via `aria-describedby`,
+ *     - reference a per-option tooltip via `aria-describedby` only
+ *       while the tooltip is mounted (mount/unmount visibility model
+ *       per the AAP, so the ARIA reference never dangles),
  *     - render the tooltip on hover OR focus (managed locally via
  *       `useState<MaterialFinish | null>` for the actively-revealed
  *       finish),
@@ -57,9 +60,12 @@ import type { JSX } from 'react';
 import type { MaterialFinish } from '../../../state/configuratorStore';
 import { useConfiguratorStore } from '../../../state/configuratorStore';
 
-import { DisabledCombinationTooltip } from './DisabledCombinationTooltip';
+import {
+  DisabledCombinationTooltip,
+  getDisabledFinishReason,
+  isFinishDisabledForPattern,
+} from './DisabledCombinationTooltip';
 import { MATERIAL_FINISHES } from './finishCatalog';
-import { isCombinationDisabled } from './patternCatalog';
 import styles from './pattern.module.css';
 
 /**
@@ -104,9 +110,17 @@ export function FinishSelector(_props: FinishSelectorProps = {}): JSX.Element {
       <ul role="radiogroup" aria-label="Material finish options" className={styles.selector__group}>
         {MATERIAL_FINISHES.map((entry) => {
           const isSelected = entry.value === materialFinish;
-          const disabled = isCombinationDisabled(stitchingPattern, entry.value);
+          const disabled = isFinishDisabledForPattern(entry.value, stitchingPattern);
           const tooltipId = `${tooltipIdPrefix}-${entry.value}`;
           const tooltipVisible = disabled && revealedFinish === entry.value;
+          // The reason copy is computed by the disabled-combination
+          // module so the wording stays in lockstep with the matrix.
+          // It is `null` when the combination is supported, in which
+          // case the tooltip is also unmounted and aria-describedby is
+          // unset.
+          const tooltipReason = tooltipVisible
+            ? getDisabledFinishReason(entry.value, stitchingPattern)
+            : null;
 
           // Compose the visible class list. Disabled and selected are
           // mutually exclusive at runtime — a disabled option cannot
@@ -133,7 +147,13 @@ export function FinishSelector(_props: FinishSelectorProps = {}): JSX.Element {
                 aria-label={`${entry.label} finish${isSelected ? ' (selected)' : ''}${
                   disabled ? ' (unavailable for current pattern)' : ''
                 }. ${entry.description}`}
-                aria-describedby={disabled ? tooltipId : undefined}
+                // Reference the tooltip only while it is mounted —
+                // dangling aria-describedby IDs are valid HTML but
+                // misleading to assistive tech. Tooltips appear on
+                // hover or focus, so screen readers receive the
+                // description at exactly the moment focus reaches the
+                // disabled button.
+                aria-describedby={tooltipReason !== null ? tooltipId : undefined}
                 title={entry.label}
                 data-selected={isSelected ? 'true' : 'false'}
                 data-disabled={disabled ? 'true' : 'false'}
@@ -163,12 +183,10 @@ export function FinishSelector(_props: FinishSelectorProps = {}): JSX.Element {
                 }}
               >
                 <span className={styles.option__label}>{entry.label}</span>
-                {disabled ? (
+                {tooltipReason !== null ? (
                   <DisabledCombinationTooltip
                     id={tooltipId}
-                    visible={tooltipVisible}
-                    pattern={stitchingPattern}
-                    finish={entry.value}
+                    reason={tooltipReason}
                     data-testid={`finish-tooltip-${entry.value}`}
                   />
                 ) : null}
