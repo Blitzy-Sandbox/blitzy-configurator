@@ -9,11 +9,29 @@ import express from 'express';
 import type { Express, NextFunction, Request, Response } from 'express';
 import { Pool } from 'pg';
 
+import { initializeFirebaseAdmin } from './auth/firebase-admin';
+import { createSignInWithPassword } from './auth/firebase-rest';
 import { requireEnv, validateEnv } from './config/env';
 import { logger } from './logging/pino';
 import { correlationMiddleware } from './middleware/correlation';
+import { sessionMiddleware } from './middleware/session';
+import { createDesignRepository } from './repositories/design.repository';
+import { createOrderRepository } from './repositories/order.repository';
+import { createSessionRepository } from './repositories/session.repository';
+import { createShareLinkRepository } from './repositories/share-link.repository';
+import { createUserRepository } from './repositories/user.repository';
+import { createAuthRoutes } from './routes/auth';
+import { createCartRoutes } from './routes/cart';
+import { createDesignRoutes } from './routes/designs';
 import { createHealthRoutes } from './routes/health';
 import { createMetricsRoutes, metricsMiddleware } from './routes/metrics';
+import { createOrderRoutes } from './routes/orders';
+import { createShareRoutes } from './routes/share';
+import { createDesignService } from './services/design.service';
+import { createGcsService } from './services/gcs.service';
+import { createOrderService } from './services/order.service';
+import { createSessionService } from './services/session.service';
+import { createShareLinkService } from './services/share-link.service';
 
 // The pino mixin that reads `correlationStore` (and the active OTel span)
 // is now defined inside `./logging/pino` itself; the imported `logger`
@@ -367,6 +385,202 @@ function bootstrap(): Bootstrapped {
   // factory returns a router with a single `GET /metrics` route
   // mounted at root.
   app.use(createMetricsRoutes());
+
+  // ────────────────────────────────────────────────────────────────────
+  // Step 5a: API surface composition — QA Issue #1 fix.
+  // ────────────────────────────────────────────────────────────────────
+  //
+  // Per AAP §0.5.2 (Newly Introduced Wiring) and §0.6.4 (Group 2 — Track
+  // 1 Backend API), the composition root assembles repositories →
+  // services → route factories explicitly. This block satisfies QA Gate
+  // T1-C: every authenticated API endpoint required by ST-023 through
+  // ST-029 and ST-032 through ST-034 is reachable here at runtime.
+  //
+  // Order is significant — see AAP §0.5.6 ("Cross-Cutting Middleware
+  // Order") and the in-line comments at each `app.use(...)` site.
+  //
+  // The "session-middleware-sandwich pattern" used here:
+  //   (a) Public auth (POST /api/auth/register, POST /api/auth/login)
+  //       and public share read (GET /api/share/:token) MUST be mounted
+  //       BEFORE `sessionMiddleware`. Mounting them after would gate
+  //       the public sign-up flow behind a session that does not yet
+  //       exist (chicken-and-egg).
+  //   (b) `sessionMiddleware({ sessionService })` mounted at `/api`
+  //       gates EVERY subsequent route under `/api/*`. The middleware
+  //       extracts the Authorization Bearer header, calls
+  //       `firebaseAuth.verifyIdToken(rawBearerToken)` (Rule R3 / C2),
+  //       cross-references the `sessions.revoked_at` revocation marker,
+  //       and attaches `req.uid` for downstream handlers.
+  //   (c) Protected routes (POST /api/auth/logout, POST /api/designs,
+  //       GET /api/designs, POST /api/designs/:id/share-link, GET
+  //       /api/cart, POST /api/orders, POST /api/orders/:id/finalize)
+  //       are mounted AFTER `sessionMiddleware`. They can safely assume
+  //       a populated `req.uid`.
+  //
+  // The mount order also dictates the QA-verified status-code semantics:
+  //   - Unauthenticated POST `/api/designs` → 401 (the session
+  //     middleware rejects before the route handler sees the request).
+  //     Per the QA report's "USER EXAMPLE: unauthenticated GET
+  //     /api/designs expects 401", this is the contractually correct
+  //     behaviour for Gate T1-C.
+  //   - GET `/api/share/:token` (no Bearer) → 200/404 based on token
+  //     validity (the public share router is mounted BEFORE the
+  //     session middleware, so it never sees the gate).
+
+  // Step 5a-i: construct repositories. Each takes the `pool` directly;
+  // there is no factory composition between repositories. Order does
+  // not matter at this layer — repositories are independent.
+  const userRepository = createUserRepository(pool);
+  const sessionRepository = createSessionRepository(pool);
+  const designRepository = createDesignRepository(pool);
+  const orderRepository = createOrderRepository(pool);
+  const shareLinkRepository = createShareLinkRepository(pool);
+
+  // Step 5a-ii: construct the Firebase auth surface.
+  //
+  // `initializeFirebaseAdmin()` is idempotent (its module-level
+  // singleton state guarantees a single SDK initialization per Node
+  // process). The same Auth instance flows into the SessionService and
+  // is consumed by every authenticated request via the session
+  // middleware.
+  //
+  // `createSignInWithPassword()` is a factory that returns a function
+  // closure; the returned function reads `FIREBASE_AUTH_EMULATOR_HOST`
+  // and (in production) `FIREBASE_API_KEY` lazily on every invocation,
+  // so the env-var contract honours operator runtime changes without
+  // restart. Per Rule R3, this adapter is the SOLE password-verification
+  // path; the Firebase Admin SDK does not verify passwords directly.
+  const firebaseAuth = initializeFirebaseAdmin();
+  const signInWithPassword = createSignInWithPassword();
+
+  // Step 5a-iii: construct services. Order matters here: each service's
+  // dependencies must be constructed before the service itself.
+  //
+  // Note `createGcsService()` takes NO deps argument — it reads its
+  // own configuration internally via `env.GCS_BUCKET_NAME` and
+  // `env.GCS_EMULATOR_HOST`. This is unique among the service factories
+  // (all others require deps); see `services/gcs.service.ts` for the
+  // architectural rationale.
+  const sessionService = createSessionService({
+    sessionRepository,
+    userRepository,
+    firebaseAuth,
+    signInWithPassword,
+  });
+  const gcsService = createGcsService();
+  const designService = createDesignService({
+    designRepository,
+    gcsService,
+  });
+  const orderService = createOrderService({
+    orderRepository,
+    designRepository,
+  });
+  const shareLinkService = createShareLinkService({
+    shareLinkRepository,
+    designRepository,
+  });
+
+  // Step 5a-iv: construct route routers. Each factory returns an
+  // Express Router (or in the auth case, a pair of Routers). The
+  // `createAuthRoutes` factory returns BOTH a public router (register/
+  // login) and an authenticated router (logout) so the composition
+  // root can mount each on the correct side of the session gate.
+  const { publicAuthRouter, authenticatedAuthRouter } = createAuthRoutes({
+    sessionService,
+  });
+  const shareRouter = createShareRoutes({ shareLinkService });
+  const designsRouter = createDesignRoutes({ designService, shareLinkService });
+  const cartRouter = createCartRoutes({ orderService });
+  const ordersRouter = createOrderRoutes({ orderService });
+
+  // Step 5a-v: PUBLIC ROUTES (mounted BEFORE the session gate).
+  //
+  //   - `app.use('/api/auth', publicAuthRouter)` exposes
+  //     POST /api/auth/register and POST /api/auth/login. Per ST-023
+  //     and ST-024, these endpoints are unauthenticated by definition
+  //     (a user cannot "log in" if a session is required to log in).
+  //
+  //   - `app.use(shareRouter)` mounts the share router AT THE ROOT —
+  //     the router internally declares its routes at full paths (e.g.,
+  //     `/api/share/:token`) so no path prefix is supplied here. Per
+  //     ST-029-AC3, GET /api/share/:token is unauthenticated so a
+  //     recipient can view the shared design without an account.
+  //
+  // Mount order between these two does not matter (each router's
+  // internal route table is non-overlapping).
+  app.use('/api/auth', publicAuthRouter);
+  app.use(shareRouter);
+
+  // Step 5a-vi: SESSION GATE.
+  //
+  // `sessionMiddleware({ sessionService })` is mounted AT `/api` so
+  // every subsequent `/api/*` route is gated. Routes already mounted
+  // (publicAuthRouter on `/api/auth`, shareRouter on `/api/share`)
+  // are NOT affected — Express middleware order is strict and the
+  // earlier `app.use(...)` calls have already consumed those paths.
+  //
+  // The middleware:
+  //   (a) Extracts the `rawBearerToken` from the
+  //       `Authorization: Bearer <token>` header.
+  //   (b) Calls `firebaseAuth.verifyIdToken(rawBearerToken)` (via the
+  //       service's `verifyToken` method) — Rule R3 / Constraint C2
+  //       — to cryptographically validate the JWT.
+  //   (c) Cross-references the `sessions.revoked_at` column to ensure
+  //       the session has not been logged out.
+  //   (d) Attaches `req.uid = decodedToken.uid` for downstream
+  //       handlers, then calls `next()`.
+  //   (e) On any failure path (missing header, malformed token,
+  //       expired token, revoked session), responds with HTTP 401 and
+  //       a stable `{ error: { code, message } }` envelope.
+  //
+  // This single mount satisfies ST-026 verbatim and the QA report's
+  // "401 enforcement" verification (USER EXAMPLE Gate T1-C).
+  app.use('/api', sessionMiddleware({ sessionService }));
+
+  // Step 5a-vii: PROTECTED ROUTES (mounted AFTER the session gate).
+  //
+  // Each `app.use(...)` below is reached only when the session
+  // middleware has already populated `req.uid`. The route factories'
+  // handlers therefore assume `req.uid` is present and surface a
+  // structured 401 response when it is not (defense-in-depth — the
+  // middleware would have rejected the request before reaching
+  // here, but the handler-level check guards against composition-root
+  // bugs).
+  //
+  //   - POST /api/auth/logout (authenticatedAuthRouter, ST-025)
+  //     Idempotent revocation of the session row identified by the
+  //     Bearer token. Returns 204 No Content on the first AND every
+  //     subsequent invocation per ST-025-AC3.
+  //
+  //   - POST /api/designs (designsRouter, ST-027)
+  //     Creates a server-assigned UUID design with the supplied title
+  //     and payload, then returns the persisted Design.
+  //
+  //   - GET /api/designs (designsRouter, ST-028)
+  //     Lists the caller's designs, paginated with limit ≤ 100 and
+  //     deterministic ordering (most-recently-modified first).
+  //
+  //   - POST /api/designs/:id/share-link (designsRouter, ST-029)
+  //     Issues a time-limited share token for a design the caller
+  //     owns; rejects with 404 (DESIGN_NOT_FOUND) on cross-user
+  //     attempts to preserve the anti-enumeration posture.
+  //
+  //   - GET /api/cart (cartRouter, ST-033)
+  //     Returns the caller's cart contents. An empty cart is a
+  //     successful 200 response (not 404) per ST-033-AC1.
+  //
+  //   - POST /api/orders (ordersRouter, ST-032)
+  //     Creates a non-terminal order from the supplied cart items;
+  //     no payment processing per Rule R9.
+  //
+  //   - POST /api/orders/:id/finalize (ordersRouter, ST-034)
+  //     Transitions the order to a non-terminal `finalized` state;
+  //     idempotent rejection of double-finalize per ST-034-AC3.
+  app.use('/api/auth', authenticatedAuthRouter);
+  app.use('/api/designs', designsRouter);
+  app.use('/api/cart', cartRouter);
+  app.use('/api/orders', ordersRouter);
 
   // Step 6: 404 handler. Returns a small JSON envelope so clients
   // can distinguish between a server error and an unmatched route.
