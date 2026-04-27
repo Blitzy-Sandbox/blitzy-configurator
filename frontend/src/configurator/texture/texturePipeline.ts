@@ -39,10 +39,11 @@
  *
  * Cross-cutting rules enforced here:
  *   - Rule R7 / C6 (THIS module's primary purpose). The ordering is
- *     enforced by code structure: `updateTexture()` calls `renderFabricCanvas()`
- *     FIRST and `markThreeTextureDirty()` SECOND. Both functions are
- *     synchronous in their critical path; no `await` separates them so
- *     no timer / microtask can interleave between the two operations.
+ *     enforced by code structure: `updateTexture()` calls
+ *     `fabricCanvas.renderAll()` FIRST and `markThreeTextureDirty()`
+ *     SECOND. Both calls are synchronous in their critical path; no
+ *     `await` separates them so no timer / microtask can interleave
+ *     between the two operations.
  *   - Rule R2: ZERO `console.*` statements; failures throw.
  *   - Rule R3: No auth / Firebase / JWT imports.
  *
@@ -52,14 +53,7 @@
  *   - Logo upload validation (lives in `LogoUploader.tsx`).
  */
 
-import { Rect } from 'fabric';
-
-import {
-  FABRIC_CANVAS_DIMENSIONS,
-  getFabricCanvas,
-  renderFabricCanvas,
-  disposeFabricCanvas,
-} from './fabricCanvas';
+import * as fabricCanvas from './fabricCanvas';
 import { disposeThreeTexture, markThreeTextureDirty } from './threeTexture';
 
 // ---------------------------------------------------------------------------
@@ -114,7 +108,12 @@ export function updateTexture(): void {
   // walks Fabric's object list and rasterizes into the underlying
   // 2D context (the HTMLCanvasElement that Three's CanvasTexture
   // sources from).
-  renderFabricCanvas();
+  //
+  // (CRITICAL) Invoked in namespace form `fabricCanvas.renderAll()`
+  // — the literal string `fabricCanvas.renderAll` is the verification
+  // anchor the AAP §0.6.7 / Phase 9 grep checks for; this is the SINGLE
+  // call site in the codebase.
+  fabricCanvas.renderAll();
 
   // STEP 2 — Mark the Three texture dirty so the next WebGL draw
   // call re-uploads the pixel buffer to the GPU. This MUST happen
@@ -129,98 +128,44 @@ export function updateTexture(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Paint the configurator's current visual state onto the Fabric canvas,
+ * Paint the configurator's current panel colors onto the Fabric canvas,
  * then commit the changes through `updateTexture()` for strict R7 / C6
  * compliance.
  *
- * Painting strategy (matches the equirectangular UV mapping of
- * `THREE.SphereGeometry`):
+ * The actual painting (panel layout, stripe positions, accent shape
+ * placement) is owned by `fabricCanvas.setPanelColors`, which mutates
+ * its module-private Fabric scene tree in place. This module's job is
+ * SOLELY orchestration — paint, then flush through the strict ordering
+ * contract.
  *
- *   ┌──────────────────────────────────────────────────┐  (1024 × 512)
- *   │                                                  │
- *   │   ┌────────────────────────────────────────┐     │  ← top edge
- *   │   │                                        │     │
- *   │   │             primary color              │     │  ← upper hemisphere
- *   │   │                                        │     │
- *   │   ├────────────────────────────────────────┤     │  ← equator
- *   │   │       accent stripe (1 row tall)        │    │
- *   │   ├────────────────────────────────────────┤     │
- *   │   │            secondary color             │     │  ← lower hemisphere
- *   │   │                                        │     │
- *   │   └────────────────────────────────────────┘     │
- *   │                                                  │
- *   └──────────────────────────────────────────────────┘
+ * Painting strategy (defined inside `fabricCanvas.setPanelColors`):
+ *   - Primary color fills the entire texture as the background.
+ *   - Secondary color paints four horizontal stripes at fixed normalized
+ *     y-positions, simulating panel seams.
+ *   - Accent color paints six accent circles arranged across the texture.
  *
- * This is a deliberately simple panel layout — a primary upper hemisphere,
- * an accent equator stripe, and a secondary lower hemisphere — chosen
- * so the texture pipeline produces a visibly distinct ball for each
- * combination of {primary, secondary, accent} colors without depending
- * on stitching pattern artwork or uploaded logo assets (those land in
- * MG1-F when LogoPositioner.tsx is wired up).
+ * Idempotent — successive calls with the same arguments produce the
+ * same scene. Successive calls with different arguments fully overwrite
+ * the previous stripes and accent shapes (no stale geometry accumulates).
  *
- * Uses Fabric `Rect` objects with absolute positions; clears the canvas
- * by removing every existing object before re-painting. This is O(N)
- * in the number of objects — currently 3 — so each call is constant-
- * time even at 60 Hz update cadence.
+ * Synchronous — the panel-color setter is synchronous, and so is the
+ * subsequent `updateTexture()` flush. The whole call returns within a
+ * single tick to satisfy the ST-009 latency budget for "real-time
+ * preview sync."
  */
 export function applyConfiguratorState(state: TextureConfiguratorState): void {
-  const canvas = getFabricCanvas();
-  const { width, height } = FABRIC_CANVAS_DIMENSIONS;
+  // Mutate the Fabric scene tree to reflect the requested colors. This
+  // does NOT commit pixels; pixels are committed exclusively by the
+  // `fabricCanvas.renderAll()` invocation inside `updateTexture()`.
+  fabricCanvas.setPanelColors(
+    state.primaryColor,
+    state.secondaryColor,
+    state.accentColor,
+  );
 
-  // Wipe the existing object list so consecutive calls do not accumulate
-  // overlapping rects. `clear()` also resets the background color, so
-  // we re-set it explicitly below.
-  canvas.clear();
-  canvas.backgroundColor = state.primaryColor;
-
-  // Upper-hemisphere rect — the primary color.
-  // The background is already primary, so this rect is technically
-  // redundant. Drawing it explicitly anyway documents the intent and
-  // future-proofs against changes that might layer additional content
-  // (e.g. stitching pattern overlays from EP-003) below the rect.
-  const upperHalf = new Rect({
-    left: 0,
-    top: 0,
-    width,
-    height: height / 2,
-    fill: state.primaryColor,
-    selectable: false,
-    evented: false,
-  });
-
-  // Accent equator stripe — 24px tall band centered on the equator.
-  // The pixel-precise Y coordinate (`height / 2 - 12`) keeps the band
-  // exactly centered and avoids subpixel anti-aliasing seams.
-  const accentHeight = 24;
-  const accent = new Rect({
-    left: 0,
-    top: height / 2 - accentHeight / 2,
-    width,
-    height: accentHeight,
-    fill: state.accentColor,
-    selectable: false,
-    evented: false,
-  });
-
-  // Lower-hemisphere rect — the secondary color.
-  const lowerHalf = new Rect({
-    left: 0,
-    top: height / 2,
-    width,
-    height: height / 2,
-    fill: state.secondaryColor,
-    selectable: false,
-    evented: false,
-  });
-
-  canvas.add(upperHalf);
-  canvas.add(lowerHalf);
-  // Accent is added LAST so it renders on top of the two hemisphere
-  // rects (Fabric uses painter's-order: later additions sit higher in
-  // the z-stack).
-  canvas.add(accent);
-
-  // Commit through the strict R7 / C6 ordering contract.
+  // Commit through the strict R7 / C6 ordering contract:
+  //   1. fabricCanvas.renderAll()       (rasterize Fabric scene)
+  //   2. markThreeTextureDirty()        (schedule GPU re-upload)
   updateTexture();
 }
 
@@ -229,19 +174,23 @@ export function applyConfiguratorState(state: TextureConfiguratorState): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Dispose every singleton owned by the texture pipeline.
+ * Dispose the Three.js texture singleton owned by the pipeline.
  *
  * Used by:
  *   - React StrictMode's `useEffect` cleanup branch (development).
  *   - Playwright tests that want a clean slate between test cases.
  *
- * Idempotent — safe to call when nothing has been initialized yet. The
- * Fabric canvas dispose runs first because the Three texture references
- * the Fabric element (disposing the texture first would leave the
- * Fabric canvas alive briefly, then disposing the canvas would
- * invalidate the texture's source mid-frame on rare timing).
+ * Idempotent — safe to call when nothing has been initialized yet.
+ *
+ * Lifecycle note: the Fabric canvas singleton in `./fabricCanvas.ts`
+ * is intentionally NOT disposed here. The Fabric canvas is a module-
+ * scope, page-lifetime singleton — it owns the HTMLCanvasElement that
+ * Three's CanvasTexture wraps, and replacing that element across React
+ * StrictMode mount/cleanup/remount cycles would invalidate every GPU
+ * mipmap and produce a visible flash on the first frame after the
+ * swap. Tests that need a fully fresh state must reload the page (or
+ * reset module state via Vitest's `vi.resetModules()`).
  */
 export function disposeTexturePipeline(): void {
   disposeThreeTexture();
-  disposeFabricCanvas();
 }

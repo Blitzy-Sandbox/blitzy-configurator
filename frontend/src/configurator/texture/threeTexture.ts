@@ -7,8 +7,8 @@
  *   - AAP C6 / Rule R7 — texture update ordering. This module owns the
  *     SOLE call site that mutates `THREE.Texture#needsUpdate`. Every
  *     other module that wants to mark the texture dirty MUST go through
- *     `texturePipeline.update()`, which calls `renderFabricCanvas()`
- *     first and then `markThreeTextureDirty()`.
+ *     `texturePipeline.updateTexture()`, which calls
+ *     `fabricCanvas.renderAll()` first and then `markThreeTextureDirty()`.
  *   - QA Report Issue #9 — texture pipeline files MUST exist and the
  *     ordering contract MUST be enforceable.
  *
@@ -25,7 +25,7 @@
  *   - Rule R7 / C6: `markThreeTextureDirty()` is the SOLE function in
  *     the codebase that sets `texture.needsUpdate = true`. Sphere.tsx
  *     MUST NOT touch `needsUpdate` directly. The texture pipeline
- *     orchestrates ordering by calling `renderFabricCanvas()` first
+ *     orchestrates ordering by calling `fabricCanvas.renderAll()` first
  *     and `markThreeTextureDirty()` second.
  *   - Rule R2: ZERO `console.*` statements.
  *   - Rule R3: No auth imports.
@@ -38,7 +38,7 @@
 
 import { CanvasTexture, RepeatWrapping, SRGBColorSpace, type Texture } from 'three';
 
-import { getFabricElement } from './fabricCanvas';
+import { getElement } from './fabricCanvas';
 
 // ---------------------------------------------------------------------------
 // Module-private singleton state.
@@ -63,10 +63,10 @@ let threeTexture: CanvasTexture | null = null;
  * Return the singleton Three.js texture, creating it on first call.
  *
  * The texture is constructed from the Fabric HTMLCanvasElement returned
- * by `getFabricElement()`. Three.js's `CanvasTexture` automatically
- * sets `needsUpdate = true` once when constructed (per the official
- * Three.js docs), so the first frame after creation always sees the
- * Fabric content uploaded to the GPU without any extra coordination.
+ * by `getElement()`. Three.js's `CanvasTexture` automatically sets
+ * `needsUpdate = true` once when constructed (per the official Three.js
+ * docs), so the first frame after creation always sees the Fabric
+ * content uploaded to the GPU without any extra coordination.
  *
  * Texture configuration:
  *   - `colorSpace = SRGBColorSpace`: pixel values authored in the
@@ -96,7 +96,7 @@ export function getThreeTexture(): CanvasTexture {
     return threeTexture;
   }
 
-  const fabricElement = getFabricElement();
+  const fabricElement = getElement();
   threeTexture = new CanvasTexture(fabricElement);
 
   // Color space: Fabric writes sRGB hex colors; the texture must be
@@ -128,8 +128,8 @@ export function getThreeTexture(): CanvasTexture {
  *
  * (CRITICAL — Rule R7 / C6) This is the SOLE call site in the codebase
  * that is permitted to set `texture.needsUpdate = true`. The texture
- * pipeline coordinator (`texturePipeline.update()`) MUST call
- * `renderFabricCanvas()` FIRST and `markThreeTextureDirty()` SECOND.
+ * pipeline coordinator (`texturePipeline.updateTexture()`) MUST call
+ * `fabricCanvas.renderAll()` FIRST and `markThreeTextureDirty()` SECOND.
  * Any other call ordering produces a one-frame stale texture flicker
  * that is visible in Playwright visual-regression baselines.
  *
