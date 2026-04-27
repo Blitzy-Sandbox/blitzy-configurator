@@ -1,353 +1,494 @@
 /**
- * Pino logger with serializer-driven redaction.
+ * Pino Structured Logger with Serializer Allow-List — Rule R2 / C5 / ST-047 / ST-049-AC2.
  *
- * Per Rule R2 (NON-NEGOTIABLE): log records MUST NOT contain
- * passwords, bearer tokens, session tokens, or API keys. Enforcement
- * is via two complementary layers — applied at logger construction so
- * every record (including those from pino-http, child loggers, and
- * request-scoped binders) is scrubbed of credentials regardless of the
- * call-site discipline of the caller:
+ * Authority (verbatim from the Agent Action Plan):
+ *   - §0.3.3 "New Files to Create — Backend":
+ *       "backend/src/logging/pino.ts | Pino logger with redaction allow-list
+ *        per Rule R2; serializer drops password, Authorization, credential,
+ *        bearer-token-pattern fields"
+ *   - §0.6.5 Track 1 Backend Observability (T1-D):
+ *       "CREATE | backend/src/logging/pino.ts | Pino logger with serializer
+ *        allow-list dropping password, Authorization, credential, bearer-pattern
+ *        fields per Rule R2"
+ *   - §0.8.1 Rule R2 (verbatim):
+ *       "No credential material in logs. Log records MUST NOT contain
+ *        passwords, bearer tokens, session tokens, or API keys. MUST enforce
+ *        via pino serializer allow-list, not per-call discipline."
+ *   - §0.2.2 C5 (verbatim):
+ *       "Log records MUST contain only correlationId and uid as identity
+ *        fields — passwords, bearer tokens, session tokens, and API keys
+ *        MUST NEVER appear in any log record, enforced by a pino serializer
+ *        allow-list (Rule R2) rather than ad-hoc per-call discipline."
+ *   - ST-047-AC1: structured records carry timestamp, severity (debug|info|
+ *       warn|error|fatal), event name, service identifier, correlation
+ *       identifier in machine-parseable format.
+ *   - ST-049-AC2: trace records include trace identifier, span identifier,
+ *       and the correlation identifier from the structured logging contract.
  *
- *   1. PATH-BASED REDACTION (`redact.paths`) — pino's built-in
- *      allow-list of structured field paths whose values are replaced
- *      with the censor string. Matches occur on TYPED VALUES (the
- *      property at that path is replaced wholesale), so this layer
- *      defends against credentials passed in as STRUCTURED fields
- *      (e.g. `{ password: 'secret' }` inside `req.body`).
+ * Design — Belt-and-Suspenders:
+ *   1. PATH-BASED REDACTION (`redact.paths`) — pino's built-in path matcher
+ *      replaces named credential fields with `[REDACTED]` so the field
+ *      remains visible to debuggers (operationally useful for detecting
+ *      attempts to log credentials) but the raw value never escapes.
+ *   2. REQUEST-SERIALIZER ALLOW-LIST (`req` serializer) — total filter that
+ *      drops every header NOT on the allow-list, defending against vendor-
+ *      specific credential headers (e.g. x-firebase-auth, x-api-key) that
+ *      may not be on the redact path list. This is the PRIMARY defense
+ *      against header leakage.
  *
- *   2. CUSTOM `err` SERIALIZER — overrides pino's default
- *      `stdSerializers.err` to strip body-parser–attached fields that
- *      may contain credentials embedded INSIDE STRING VALUES (which
- *      path-based redaction cannot reach). The body-parser package
- *      attaches the RAW REQUEST BODY STRING to `err.body` when JSON
- *      parsing fails; that string can contain credentials embedded
- *      within otherwise-malformed JSON (e.g. `{"password":"..","bad`).
- *      The serializer removes `body` (and other body-parser
- *      housekeeping fields like `expose`) before the record is
- *      emitted.
- *
- * Together these layers prevent credential leaks via:
- *   - Authentication request bodies (path: `password`, `body.password`,
- *     `req.body.password`, `request.body.password`, `*.password`)
- *   - Authorization headers (path: `Authorization`, `headers.authorization`,
- *     `req.headers.authorization`, `request.headers.authorization`)
- *   - Cookies / session tokens (path: `cookie`, `headers.cookie`,
- *     `headers["set-cookie"]`)
- *   - Generic credential containers (path: `credential`, `*.credential`,
- *     `apiKey`, `*.apiKey`, `idToken`, `*.idToken`, `sessionToken`,
- *     `*.sessionToken`, `bearer`, `*.bearer`, `token`, `*.token`,
- *     `access_token`, `*.access_token`)
- *   - body-parser SyntaxError raw-body leaks (custom err serializer
- *     strips `err.body`; redact path `err.body` provides
- *     belt-and-suspenders defense)
- *
- * The Rule R2 user-supplied SENTINEL test ("SENTINEL_CRED_99" inside
- * a JSON `password` field MUST not appear in the logs) is satisfied
- * because:
- *   - Well-formed JSON: `password` path matches both the top-level
- *     and the nested `req.body.password` locations → redacted.
- *   - Malformed JSON (the QA-discovered leak path): the custom err
- *     serializer strips `err.body` before serialization → eliminated.
+ * Forbidden patterns (per Agent Action Plan Phase 13):
+ *   - DO NOT add `pino-pretty` as a runtime dependency — production logs are
+ *     JSON consumed by Cloud Logging; local pretty printing is achieved via
+ *     `npm run dev | pino-pretty` if desired.
+ *   - DO NOT add per-call redaction (e.g. `logger.info({ password: '***' })`)
+ *     — Rule R2 mandates redaction is a documented serializer property, not
+ *     per-call discipline.
+ *   - DO NOT add `hostname` or `pid` to `base` — `service` is sufficient
+ *     identity and matches the OTel resource `service.name` and the prom-
+ *     client `service` label.
+ *   - DO NOT perform database lookups, async calls, or expensive computation
+ *     inside the mixin — it runs per log record and MUST be fast.
+ *   - DO NOT import from `./index`, any route, service, or repository —
+ *     circular-dependency hazard. Imports limited to: `pino`,
+ *     `@opentelemetry/api`, and `../middleware/correlation` (correlationStore).
+ *   - DO NOT initialize the OTel SDK here — that lives in
+ *     `backend/src/tracing.ts` (Rule R6).
+ *   - DO NOT export `logger as default` — named export only.
+ *   - DO NOT pass a custom `destination` in production — the default stdout
+ *     destination integrates correctly with Cloud Run's log collector and
+ *     `docker compose logs`.
  */
 
-import pino from 'pino';
-import type { Logger, LoggerOptions, SerializerFn } from 'pino';
+import pino, { type LoggerOptions } from 'pino';
+import { trace, isSpanContextValid } from '@opentelemetry/api';
+
+import { correlationStore } from '../middleware/correlation';
+
+// ---------------------------------------------------------------------------
+// Service-identity constants
+// ---------------------------------------------------------------------------
 
 /**
- * Optional fields that the caller can attach to every record via the
- * pino `mixin` hook (e.g. AsyncLocalStorage-derived correlationId).
+ * The `service` field value emitted on every log record.
+ *
+ * MUST equal:
+ *   - The OTel resource `service.name` set in `backend/src/tracing.ts`
+ *     (currently `'strikeforge-backend'`), so traces and logs share a
+ *     dimension.
+ *   - The prom-client `service` label set in `backend/src/routes/metrics.ts`
+ *     (ST-048-AC2), so metrics and logs share a dimension.
+ *
+ * Cross-pillar correlation (trace → log → metric) breaks if these three
+ * values diverge. Do NOT parameterize this — a single service identity is
+ * intended for the StrikeForge backend.
  */
-export interface CreateLoggerOptions {
-  service: string;
-  environment: string;
-  version: string;
-  /**
-   * Optional pino mixin function. Called at every record emission;
-   * the returned object is merged into the record so dynamic fields
-   * such as the current correlation ID can be added without manual
-   * threading. The application-level mixin is defined in
-   * `backend/src/index.ts`, where it reads the active
-   * `correlationStore` (`AsyncLocalStorage` from
-   * `./middleware/correlation`) and emits `correlationId` (and `uid`
-   * when authenticated) on every log record.
-   */
-  mixin?: () => Record<string, unknown>;
+const SERVICE_NAME = 'strikeforge-backend';
+
+/** Default log level when NODE_ENV=production. */
+const DEFAULT_LOG_LEVEL_PROD = 'info';
+
+/** Default log level for dev / test / CI environments. */
+const DEFAULT_LOG_LEVEL_DEV = 'debug';
+
+// ---------------------------------------------------------------------------
+// Log level resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the active log level from the `LOG_LEVEL` environment variable
+ * with a sensible default.
+ *
+ * `LOG_LEVEL` is intentionally NOT one of the six required env vars (Rule R4
+ * — AAP §0.1.3); it has a documented safe default so the logger works even
+ * when the variable is unset, and omitting it never triggers the fail-fast
+ * startup path. The logger is a foundational primitive that needs to be
+ * available BEFORE `validateEnv()` runs (so a Rule R4 failure can be logged).
+ *
+ * @returns A pino-recognized level token ('trace'|'debug'|'info'|'warn'|
+ *   'error'|'fatal'|'silent'), or the operator-supplied override.
+ */
+function resolveLogLevel(): string {
+  const override = process.env['LOG_LEVEL'];
+  if (typeof override === 'string' && override.length > 0) {
+    return override;
+  }
+  return process.env['NODE_ENV'] === 'production'
+    ? DEFAULT_LOG_LEVEL_PROD
+    : DEFAULT_LOG_LEVEL_DEV;
 }
 
 // ---------------------------------------------------------------------------
-// Custom err serializer — Rule R2 / ST-047-AC4 hardening
+// Request-header allow-list — primary defense against header leakage
 // ---------------------------------------------------------------------------
 
 /**
- * Set of error properties that body-parser, http-errors, and similar
- * Express ecosystem libraries attach to thrown errors but which can
- * contain credential material verbatim. These properties are stripped
- * from every serialized error record before it reaches the logger
- * output stream.
+ * Allow-list of request header keys that MAY appear in log records.
  *
- * Why an allow-LIST of fields-to-DROP rather than an allow-list of
- * fields-to-KEEP:
- *   The default `pino.stdSerializers.err` already produces a small
- *   structured shape (`type`, `message`, `stack`, `cause`) and spreads
- *   any additional enumerable error properties. The vast majority of
- *   those additional properties (e.g. `code`, `errno`, `syscall`,
- *   `address`, `port` from Node networking errors; `statusCode`,
- *   `status` from HTTP errors) are SAFE and operationally useful for
- *   debugging. Only the small named set below is dangerous, so a
- *   targeted strip-list preserves debuggability while closing the
- *   credential leak.
+ * Matching is case-insensitive (HTTP headers are case-insensitive per RFC
+ * 7230 §3.2). All headers NOT on this list are DROPPED ENTIRELY by the
+ * `req` serializer below — even if they are not on `redact.paths`.
  *
- * The set:
- *   - `body`    — the RAW REQUEST BODY STRING attached by body-parser
- *                 when JSON parsing fails. This is the QA-discovered
- *                 leak surface (`{"password":"<CREDENTIAL>","bad`).
- *                 Stripping unconditionally because it can NEVER
- *                 contain credential-free content useful for debugging
- *                 (the original bytes are inherently unredactable, and
- *                 the actual error message — `"Unexpected token at
- *                 position N"` — already conveys the parse position).
- *   - `expose`  — `http-errors`' "should this be sent to client" flag.
- *                 Operational metadata of no debugging value; included
- *                 here so the serialized err object stays compact.
- *   - `headers` — some HTTP-aware error libraries attach response or
- *                 request headers to the error. Headers can contain
- *                 `Authorization`, `Cookie`, etc. — high-leak-risk.
- *   - `config`  — axios-style error config with potentially full
- *                 request data including auth headers. We don't use
- *                 axios in the backend (Firebase Admin SDK uses its
- *                 own HTTP client), but stripping defensively prevents
- *                 future regression if a library is added later.
- *   - `request` — http.ClientRequest object reference; can serialize
- *                 to a wall of bytes including the full request body
- *                 if the consumer .toString()s it.
- *   - `response`— same risk as `request` for the response side.
- *   - `req`     — body-parser's own attachment of the inbound request
- *                 (the entire Express Request object). Pino's `req`
- *                 serializer would handle a top-level `req`, but a
- *                 NESTED `req` inside an `err` bypasses it.
- *   - `res`     — same as `req` for the response side.
+ * This set is deliberately minimal: only headers needed for debugging,
+ * correlation, distributed tracing, and content negotiation. Any header
+ * that could carry credential material (Authorization, Cookie, X-Api-Key,
+ * X-Firebase-*, Proxy-Authorization, etc.) MUST NEVER be added here.
+ *
+ * Adding a new entry requires explicit Rule R2 review: the proposed header
+ * MUST be a documented standard header carrying no credential or PII payload.
  */
-const STRIPPED_ERR_PROPERTIES: ReadonlySet<string> = new Set([
-  'body',
-  'expose',
-  'headers',
-  'config',
-  'request',
-  'response',
-  'req',
-  'res',
+const REQUEST_HEADER_ALLOW_LIST: ReadonlySet<string> = new Set([
+  'accept',
+  'accept-encoding',
+  'accept-language',
+  'content-length',
+  'content-type',
+  'host',
+  'origin',
+  'referer',
+  'traceparent',
+  'tracestate',
+  'user-agent',
+  'x-correlation-id',
+  'x-forwarded-for',
+  'x-forwarded-proto',
+  'x-request-id',
 ]);
 
 /**
- * Custom err serializer that wraps `pino.stdSerializers.err` and
- * strips body-parser–attached and HTTP-library–attached fields that
- * may contain credential material.
+ * Return a new object containing ONLY headers on the allow-list.
  *
- * This serializer is the PRIMARY defense against the QA-discovered
- * Issue 3: body-parser's `createError(400, err, { body: str, ... })`
- * call (in `node_modules/body-parser/lib/read.js`) attaches the raw
- * request body string to the SyntaxError. Because path-based redaction
- * cannot match credentials embedded INSIDE A STRING VALUE, eliminating
- * the field at serialization time is the only complete fix.
+ * Exported so unit tests can verify the filter directly without going
+ * through the full pino pipeline. The `ReadonlySet` provides O(1)
+ * membership checking on the request hot path.
  *
- * Behaviour:
- *   - `null` / `undefined` / non-Error inputs: returned unchanged so
- *     the standard serializer's edge-case handling is preserved.
- *   - `Error` instances: passed through `pino.stdSerializers.err` to
- *     get the canonical { type, message, stack, ... } shape, then
- *     fields in `STRIPPED_ERR_PROPERTIES` are removed from the result.
- *   - Always returns a NEW object — the input err is never mutated, so
- *     downstream consumers (e.g. an Express error handler that calls
- *     `next(err)` after logging) receive an unchanged error.
- *
- * Per AAP §0.5.6 the err serializer is composed from `pino.stdSerializers.err`
- * (not a from-scratch serializer) so the canonical output shape stays
- * compatible with any external log-aggregation tooling that expects
- * pino's standard format. We only SUBTRACT dangerous fields; we never
- * ADD non-standard ones.
+ * @param headers The full request headers map (possibly undefined when
+ *   `pino-http` serializes a request with no headers, or when the test
+ *   harness invokes the serializer with a malformed shape).
+ * @returns A shallow clone containing only allow-listed keys, with the
+ *   original case preserved (Express normalizes inbound headers to
+ *   lowercase, but Node's `http` server may emit either form depending
+ *   on the source).
  */
-const safeErrSerializer: SerializerFn = function safeErrSerializer(err: unknown): unknown {
-  // Edge case: explicit null/undefined. Matches the behaviour of pino's
-  // standard serializer (which returns the input unchanged in these
-  // cases).
-  if (err === null || err === undefined) {
-    return err;
+export function allowListHeaders(
+  headers: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (headers === undefined || headers === null) {
+    return {};
   }
-
-  // Edge case: non-Error value passed (e.g. a string thrown via
-  // `throw 'oops'`). pino's stdSerializers.err handles this by wrapping
-  // in a pseudo-error shape; we delegate identically.
-  if (!(err instanceof Error)) {
-    // Preserve pino's own non-Error handling. The `stdSerializers.err`
-    // signature accepts `Error` but at runtime tolerates other values
-    // — we cast through `unknown` to satisfy TypeScript without losing
-    // strictness in callers.
-    return pino.stdSerializers.err(err as Error);
-  }
-
-  // Standard path: serialize via pino's canonical serializer, then
-  // subtract dangerous fields.
-  const serialized = pino.stdSerializers.err(err);
-  if (typeof serialized !== 'object' || serialized === null) {
-    return serialized;
-  }
-
-  // Build a fresh object so we never mutate pino's returned reference.
-  // Iterate explicitly so we drop only the named dangerous fields and
-  // preserve all other enumerable error metadata (statusCode, code,
-  // errno, syscall, etc.) that operators rely on for debugging.
-  const sanitized: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(serialized as Record<string, unknown>)) {
-    if (STRIPPED_ERR_PROPERTIES.has(key)) {
-      continue;
+  const result: Record<string, unknown> = {};
+  for (const key of Object.keys(headers)) {
+    if (REQUEST_HEADER_ALLOW_LIST.has(key.toLowerCase())) {
+      result[key] = headers[key];
     }
-    sanitized[key] = value;
   }
-  return sanitized;
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Redact paths — secondary defense against named credential field leakage
+// ---------------------------------------------------------------------------
+
+/**
+ * Paths redacted in every log record. Pino replaces the value at each
+ * matching path with the censor string (`[REDACTED]`); the field itself
+ * remains in the record so debuggers can still see that it was present.
+ *
+ * Wildcards cover ONE level of nesting only: `*.password` matches
+ * `user.password` but NOT `user.auth.password`. For deeply nested request
+ * headers, the `req` serializer's allow-list provides total filtering
+ * regardless of depth.
+ *
+ * Both lowercase and TitleCase variants of HTTP header field names are
+ * included because Node's `http` module sometimes preserves the original
+ * casing (Express normalizes inbound, but res.setHeader / res.getHeaders
+ * returns whatever case the application set).
+ *
+ * Adding a new path requires explicit Rule R2 review: every entry below
+ * is documented as a known credential-bearing field name observed in
+ * popular libraries, custom code, or the user-prompt threat model.
+ */
+const REDACT_PATHS: readonly string[] = [
+  // Generic credential material — top-level (root) keys.
+  'password',
+  'passwordHash',
+  'token',
+  'sessionToken',
+  'idToken',
+  'accessToken',
+  'refreshToken',
+  'firebaseToken',
+  'apiKey',
+  'api_key',
+  'credential',
+  'credentialDigest',
+  'secret',
+  'bearer',
+
+  // Generic credential material — one level deep (e.g. `user.password`,
+  // `body.token`, `payload.apiKey`). The wildcard matcher walks ONE level
+  // of nesting; deeper structures rely on the `req` serializer or on
+  // explicit per-call discipline at the call site (which Rule R2 says
+  // is not a substitute for serializer-level enforcement).
+  '*.password',
+  '*.passwordHash',
+  '*.token',
+  '*.sessionToken',
+  '*.idToken',
+  '*.accessToken',
+  '*.refreshToken',
+  '*.firebaseToken',
+  '*.apiKey',
+  '*.api_key',
+  '*.credential',
+  '*.credentialDigest',
+  '*.secret',
+  '*.bearer',
+
+  // HTTP header field names emitted directly (e.g. when a caller writes
+  // `logger.info({ authorization: req.headers.authorization })` —
+  // discouraged but defended). Note: pino redact paths require bracket
+  // notation for keys containing hyphens (e.g. `set-cookie`); pino's
+  // path validator rejects bare hyphenated identifiers.
+  'authorization',
+  'Authorization',
+  'cookie',
+  'Cookie',
+  '["set-cookie"]',
+  '["Set-Cookie"]',
+  '*.authorization',
+  '*.Authorization',
+  '*.cookie',
+  '*.Cookie',
+
+  // pino-http populates `req.headers` and `res.headers`. The req serializer
+  // below defangs `req.headers`, but explicit redact paths cover `res.headers`
+  // and provide belt-and-suspenders defense for `req.headers` in case a
+  // future refactor weakens or removes the serializer.
+  'req.headers.authorization',
+  'req.headers.Authorization',
+  'req.headers.cookie',
+  'req.headers.Cookie',
+  'headers.authorization',
+  'headers.Authorization',
+  'headers.cookie',
+  'headers.Cookie',
+  'res.headers["set-cookie"]',
+  'res.headers["Set-Cookie"]',
+];
+
+// ---------------------------------------------------------------------------
+// Pino options — exported for test parity
+// ---------------------------------------------------------------------------
+
+/**
+ * Pino configuration applied to the application-wide `logger` constant.
+ *
+ * Exported so unit tests in `pino.test.ts` (and ad-hoc verification
+ * harnesses) can build a capturing logger with the EXACT same redaction,
+ * mixin, serializer, and formatter behaviour as production. Any drift
+ * between test and production behaviour would leave Rule R2 verification
+ * gaps; sharing the literal options object eliminates the drift surface.
+ *
+ * Members (per the file's export schema):
+ *   - level         resolved by `resolveLogLevel()` from `LOG_LEVEL` env var
+ *   - timestamp     ISO 8601 UTC via `pino.stdTimeFunctions.isoTime`
+ *   - base          replaces pino's default `{ pid, hostname }` with `{ service }`
+ *   - mixin         per-record dynamic fields: correlationId, uid, traceId, spanId
+ *   - redact        path-based censoring of named credential fields
+ *   - serializers   `req` allow-list filter, `res` minimal projection, `err` standard
+ *   - formatters    string-token level output (debug|info|warn|error|fatal)
+ */
+export const pinoOptions: LoggerOptions = {
+  // Active log level — see `resolveLogLevel()`.
+  level: resolveLogLevel(),
+
+  // ISO 8601 UTC timestamps. ST-047-AC1 requires a "machine-parseable
+  // format"; ISO 8601 is the canonical choice for pino in production
+  // (the default is epoch milliseconds, which is harder to eyeball
+  // during incident response).
+  timestamp: pino.stdTimeFunctions.isoTime,
+
+  // `base` REPLACES pino's default `{ pid, hostname }`. Only `service` is
+  // emitted as a base field; it matches the OTel resource `service.name`
+  // (set in tracing.ts) and the prom-client `service` label (set in
+  // routes/metrics.ts) so cross-pillar correlation works without
+  // dimensional drift. `pid` and `hostname` are intentionally omitted —
+  // they add noise without improving debuggability in a containerized
+  // single-process deployment (Cloud Run launches one process per
+  // container instance; the container ID is sufficient host identity).
+  base: {
+    service: SERVICE_NAME,
+  },
+
+  /**
+   * Dynamic fields merged into every log record.
+   *
+   * Pino calls this mixin function ONCE per record before the record is
+   * serialized. The function MUST be fast and allocation-conservative —
+   * any latency here multiplies by the request log volume.
+   *
+   * Fields emitted:
+   *   - `correlationId` — read from `correlationStore.getStore()`
+   *     (AsyncLocalStorage populated by `middleware/correlation.ts` per
+   *     Rule C5). Present on every record emitted DURING a request; absent
+   *     during application startup (before the first request) and during
+   *     background timers / signal handlers that have not entered an ALS
+   *     frame.
+   *   - `uid` — read from the same ALS store after `middleware/session.ts`
+   *     mutates the in-place `{ correlationId }` object to add `.uid`
+   *     post-`verifyIdToken`. Per ST-047-AC3 the authenticated request
+   *     flow's logs carry the user identifier; per Rule R2 / C5 it is the
+   *     ONLY identity field beyond `correlationId`.
+   *   - `traceId` / `spanId` — read from the active OTel span via
+   *     `trace.getActiveSpan()`. ST-049-AC2 mandates that traces and logs
+   *     share trace and span identifiers so they can be joined by an
+   *     observability backend (Cloud Trace, Tempo, Jaeger, etc.). Emitted
+   *     ONLY when the span context is valid — `isSpanContextValid()`
+   *     rejects the OTel no-op all-zeros context that would otherwise
+   *     produce useless `'00000000000000000000000000000000'` traceId
+   *     strings during application startup before OTel auto-instrumentation
+   *     opens the first span.
+   *
+   * Field set is INTENTIONALLY MINIMAL per Rule R2 / C5: ONLY
+   * `correlationId`, `uid`, `traceId`, `spanId`. No IP address, no
+   * user-agent, no request route, no headers, no request ID beyond the
+   * correlation ID. Any future field addition MUST be reviewed against
+   * Rule R2 and the Observability Rule.
+   */
+  mixin: () => {
+    const merged: Record<string, string> = {};
+
+    // Correlation context — present during requests, absent during
+    // startup and background timers. The optional-chain access avoids a
+    // throw when the ALS frame is not active.
+    const store = correlationStore.getStore();
+    if (store !== undefined) {
+      if (typeof store.correlationId === 'string' && store.correlationId.length > 0) {
+        merged['correlationId'] = store.correlationId;
+      }
+      if (typeof store.uid === 'string' && store.uid.length > 0) {
+        merged['uid'] = store.uid;
+      }
+    }
+
+    // OpenTelemetry trace context — emitted only when the span context
+    // is valid (rejects the OTel no-op all-zeros context). The
+    // auto-instrumentation in tracing.ts opens spans on every inbound
+    // HTTP request, so this is populated for every request log record;
+    // it is absent for records emitted before the first request span
+    // opens or after the last span closes.
+    const activeSpan = trace.getActiveSpan();
+    if (activeSpan !== undefined) {
+      const spanContext = activeSpan.spanContext();
+      if (isSpanContextValid(spanContext)) {
+        merged['traceId'] = spanContext.traceId;
+        merged['spanId'] = spanContext.spanId;
+      }
+    }
+
+    return merged;
+  },
+
+  /**
+   * Path-based redaction (Rule R2 — secondary defense layer).
+   *
+   * Pino walks each path on every log record and, on a match, replaces
+   * the value at that path with the censor string. Wildcards (`*.x`)
+   * cover one level of nesting only.
+   *
+   * `remove: false` is INTENTIONAL: keeping the field with a `[REDACTED]`
+   * marker (rather than deleting it) preserves operationally useful
+   * evidence that a credential field was present. An auditor can grep
+   * for `[REDACTED]` to find code paths that attempted to log
+   * credentials and remediate the call site. The trade-off is slightly
+   * larger log payloads in pathological cases — acceptable in exchange
+   * for the auditability gain.
+   */
+  redact: {
+    paths: [...REDACT_PATHS],
+    censor: '[REDACTED]',
+    remove: false,
+  },
+
+  /**
+   * Per-type serializers.
+   *
+   * `req` — PRIMARY DEFENSE against header leakage. Returns a NEW object
+   * containing ONLY `method`, `url`, and the allow-listed subset of
+   * `headers`. Any header not on the allow-list is dropped entirely
+   * (not just redacted) — this defends against vendor-specific
+   * credential headers (e.g. x-firebase-auth, x-api-key) that may not
+   * be on the redact path list. Notably, the request BODY, PARAMS, and
+   * QUERY are NOT serialized: they routinely carry credentials
+   * (password, token, apiKey) that the structured-redact layer cannot
+   * reliably catch through nested wildcards.
+   *
+   * `res` — minimal projection: only `statusCode` is emitted. Response
+   * headers (which can carry `Set-Cookie`) and response bodies are
+   * dropped entirely.
+   *
+   * `err` — pino's standard error serializer. The body-parser
+   * `err.body` leak surface (raw JSON request body attached when
+   * parsing fails) is handled UPSTREAM in `backend/src/index.ts` via
+   * the `sanitiseBodyParserError` middleware that runs before any
+   * error reaches the logger. Using `pino.stdSerializers.err` here
+   * keeps the serialized error shape compatible with downstream
+   * tooling (Cloud Logging, Sentry-compatible parsers, etc.).
+   */
+  serializers: {
+    req: (req: { method?: string; url?: string; headers?: Record<string, unknown> }) => ({
+      method: req.method,
+      url: req.url,
+      headers: allowListHeaders(req.headers),
+    }),
+    res: (res: { statusCode?: number }) => ({
+      statusCode: res.statusCode,
+    }),
+    err: pino.stdSerializers.err,
+  },
+
+  /**
+   * Format the level as a string token rather than pino's default
+   * integer (10|20|30|40|50|60). ST-047-AC1 requires the severity be
+   * "one of the enumerated tokens debug, info, warn, error, or fatal";
+   * pino's default integer encoding violates this AC.
+   *
+   * Also serves dashboards / log aggregators that filter on the
+   * literal level string (e.g. `severity:error`).
+   */
+  formatters: {
+    level: (label) => ({ level: label }),
+  },
 };
 
-/**
- * Public re-export of the safe err serializer for use in unit tests.
- * Tests can import this and assert that a body-parser–style error with
- * an attached `body` field has the field stripped at serialization
- * time. The export name is prefixed with an underscore to signal that
- * it is internal-to-tests and not part of the application API.
- */
-export const _safeErrSerializer = safeErrSerializer;
+// ---------------------------------------------------------------------------
+// Application logger instance
+// ---------------------------------------------------------------------------
 
 /**
- * Creates the application-wide pino logger with the redaction
- * allow-list applied. Returns a real Logger instance — there is no
- * mocking / no-op logger; per the user-provided Observability Rule
- * the logger is part of the Phase A foundation.
+ * The single pino logger used throughout the StrikeForge backend.
+ *
+ * Usage conventions:
+ *   - Every module that logs imports this `logger` directly:
+ *       import { logger } from '../logging/pino';
+ *   - `pino-http` (in `backend/src/index.ts`) wraps this logger to
+ *     attach a request-scoped child at `req.log` on every Express
+ *     request. INSIDE A REQUEST HANDLER, prefer `req.log` over this
+ *     module-level reference so the correlation ID is captured
+ *     automatically by the mixin running on the child.
+ *   - Callers MUST provide an `event` field as the FIRST object key so
+ *     dashboard panels and alert rules can filter on a stable
+ *     identifier:
+ *
+ *       logger.info({ event: 'auth.login.success', uid }, 'User logged in');
+ *       logger.error({ event: 'db.pool.error', err }, 'Pool error');
+ *
+ * The `event` field is the ST-047-AC1 "event name" requirement; it is
+ * the operator-facing equivalent of an OTel span name and is how
+ * incident-response dashboards group related records.
+ *
+ * No default export — named import is the documented pattern. The
+ * Phase 13 anti-pattern list explicitly forbids a default export to
+ * keep grep-ability high (`grep "import { logger }"` is unambiguous).
  */
-export function createLogger(options: CreateLoggerOptions): Logger {
-  const opts: LoggerOptions = {
-    // Use ISO timestamps so log aggregation systems can sort
-    // chronologically without bespoke parsers.
-    timestamp: pino.stdTimeFunctions.isoTime,
-    // Default level falls back to "info" so production-like
-    // verbosity is the baseline; LOG_LEVEL=debug enables verbose
-    // diagnostics without source changes.
-    level: process.env['LOG_LEVEL'] ?? 'info',
-    // Base fields stamped on every record — these align with the
-    // service / environment / version labels required by the
-    // Prometheus metrics endpoint (ST-048-AC2) so log+metric joins
-    // are straightforward.
-    base: {
-      service: options.service,
-      environment: options.environment,
-      version: options.version,
-      pid: process.pid,
-    },
-    // Mixin hook for AsyncLocalStorage-derived fields (correlationId,
-    // uid). When `options.mixin` is undefined, no extra fields are
-    // emitted — but an undefined mixin is itself rejected by pino, so
-    // we only attach the property when defined.
-    ...(options.mixin !== undefined ? { mixin: options.mixin } : {}),
-    // Custom serializers — wraps pino's built-in serializers and
-    // overrides the `err` serializer with our credential-stripping
-    // implementation. Per Rule R2 (ST-047-AC4): this is the PRIMARY
-    // defense against body-parser SyntaxError → err.body credential
-    // leaks (path-based redaction cannot match substrings inside
-    // string values, but a custom serializer can simply drop the
-    // dangerous field).
-    serializers: {
-      // Spread pino's standard serializers (req, res, err defaults)
-      // first, then OVERRIDE the err serializer with our hardened
-      // version. The req/res serializers are kept as defaults because
-      // they are well-tested and our redact paths cover their known
-      // credential-bearing fields (headers.authorization, etc.).
-      ...pino.stdSerializers,
-      err: safeErrSerializer,
-    },
-    // Redaction allow-list. Pino redacts paths via the `paths` array
-    // and replaces matching values with "[Redacted]" by default; the
-    // `censor` option below sets a more explicit masked value so the
-    // operator can tell at a glance that a credential WAS present in
-    // the source object but was sanitised before emission.
-    // Pino path syntax: bare keys MUST be valid identifiers; keys
-    // containing hyphens or other special characters MUST use bracket
-    // notation (e.g. `headers["set-cookie"]`). Top-level hyphenated
-    // keys (such as a literal `set-cookie` field) are addressed via
-    // `["set-cookie"]`. The wildcard `*.password` matches any
-    // immediate child key named `password`.
-    redact: {
-      paths: [
-        'password',
-        '*.password',
-        'req.body.password',
-        'request.body.password',
-        'body.password',
-        'req.headers.authorization',
-        'req.headers.Authorization',
-        'request.headers.authorization',
-        'request.headers.Authorization',
-        'headers.authorization',
-        'headers.Authorization',
-        'Authorization',
-        'authorization',
-        'req.headers.cookie',
-        'request.headers.cookie',
-        'headers.cookie',
-        'cookie',
-        'res.headers["set-cookie"]',
-        'response.headers["set-cookie"]',
-        'headers["set-cookie"]',
-        '["set-cookie"]',
-        'credential',
-        '*.credential',
-        'credentials',
-        '*.credentials',
-        'apiKey',
-        '*.apiKey',
-        'api_key',
-        '*.api_key',
-        'idToken',
-        '*.idToken',
-        'sessionToken',
-        '*.sessionToken',
-        'bearer',
-        '*.bearer',
-        'token',
-        '*.token',
-        'access_token',
-        '*.access_token',
-        // ── ST-047-AC4 / Rule R2 — body-parser leak path defense.
-        // The custom `err` serializer above strips `body` from every
-        // serialized error object. These redact paths provide
-        // belt-and-suspenders defense in case (a) a future code path
-        // logs an error WITHOUT going through the err serializer
-        // (e.g. logger.error({ payload: { body: "..." } })), or (b)
-        // a downstream library spreads err properties into a different
-        // top-level field. Pino's path matcher replaces the entire
-        // value at the path with the censor — for a string field,
-        // that means the whole string becomes "[Redacted]" rather
-        // than leaking partial content.
-        'err.body',
-        'err.expose',
-        'error.body',
-        'error.expose',
-        '*.err.body',
-        '*.error.body',
-      ],
-      censor: '[Redacted]',
-      remove: false,
-    },
-    // Pretty-print only in development. JSON in production / CI so
-    // log aggregation can parse without a transformer.
-    transport:
-      process.env['NODE_ENV'] === 'development' && process.stdout.isTTY
-        ? {
-            target: 'pino-pretty',
-            options: {
-              colorize: true,
-              translateTime: 'SYS:standard',
-              ignore: 'pid,hostname',
-            },
-          }
-        : undefined,
-  };
-
-  return pino(opts);
-}
+export const logger = pino(pinoOptions);

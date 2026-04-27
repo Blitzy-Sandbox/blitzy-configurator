@@ -10,38 +10,18 @@ import type { Express, NextFunction, Request, Response } from 'express';
 import { Pool } from 'pg';
 
 import { requireEnv, validateEnv } from './config/env';
-import { createLogger } from './logging/pino';
-import { correlationMiddleware, correlationStore } from './middleware/correlation';
+import { logger } from './logging/pino';
+import { correlationMiddleware } from './middleware/correlation';
 import { createHealthRoutes } from './routes/health';
 import { createMetricsRoutes, metricsMiddleware } from './routes/metrics';
 
-/**
- * Pino mixin that reads the active `CorrelationContext` from the
- * `correlationStore` AsyncLocalStorage and emits its `correlationId`
- * (and `uid` when present) on every log record.
- *
- * This function is defined HERE (not in `./middleware/correlation`)
- * because the correlation module is the FOUNDATIONAL layer and must
- * not import from `./logging/pino` (which would create a circular
- * dependency). The mixin is a pure consumer of the exported
- * `correlationStore` and has no other dependencies.
- *
- * Per Rule R2 / Rule C5 the only identity fields ever returned are
- * `correlationId` and `uid`. The pino redaction allow-list in
- * `./logging/pino.ts` provides defence-in-depth against any other
- * field accidentally appearing in a log record.
- */
-function pinoCorrelationMixin(): Record<string, string> {
-  const ctx = correlationStore.getStore();
-  if (ctx === undefined) {
-    return {};
-  }
-  const fields: Record<string, string> = { correlationId: ctx.correlationId };
-  if (ctx.uid !== undefined) {
-    fields['uid'] = ctx.uid;
-  }
-  return fields;
-}
+// The pino mixin that reads `correlationStore` (and the active OTel span)
+// is now defined inside `./logging/pino` itself; the imported `logger`
+// constant comes pre-configured with that mixin so every record emitted
+// during a request automatically carries `correlationId`, `uid`, `traceId`,
+// and `spanId` per Rule C5 / ST-049-AC2. This composition root no longer
+// needs to construct the logger or wire a mixin function — keeping the
+// logger configuration centralized in one auditable file (Rule R2).
 
 // ---------------------------------------------------------------------------
 // Body-parser error handling — Rule R2 / ST-047-AC4
@@ -197,17 +177,19 @@ function bootstrap(): Bootstrapped {
   validateEnv();
 
   // Step 1a: read non-required operational identity vars with
-  // documented safe defaults. These (SERVICE_NAME, SERVICE_VERSION,
-  // NODE_ENV, PORT) intentionally do NOT belong to Rule R4's required
-  // six (see `backend/src/config/env.ts` for the canonical list);
-  // they have sensible operational defaults so a missing value does
-  // not block startup. The fallbacks here MUST stay in lockstep with
-  // the same fallbacks in `backend/src/tracing.ts` so traces and
-  // metrics are dimensioned by identical service/environment/version
-  // labels (cardinal property for ST-048-AC2 trace-metric
-  // correlation).
+  // documented safe defaults. `SERVICE_NAME` and `NODE_ENV` are
+  // surfaced in the `backend_listening` log record below for
+  // operational visibility; the metrics module reads its own copies
+  // (including `SERVICE_VERSION`) with the same documented fallbacks
+  // at module load time. None of these vars belong to Rule R4's
+  // required six (see `backend/src/config/env.ts`); they have
+  // sensible operational defaults so a missing value does not block
+  // startup. The fallbacks here MUST stay in lockstep with the same
+  // fallbacks in `backend/src/tracing.ts` and
+  // `backend/src/routes/metrics.ts` so traces and metrics are
+  // dimensioned by identical service / environment / version labels
+  // (cardinal property for ST-048-AC2 trace-metric correlation).
   const SERVICE_NAME = process.env['SERVICE_NAME'] ?? 'strikeforge-backend';
-  const SERVICE_VERSION = process.env['SERVICE_VERSION'] ?? process.env['COMMIT_SHA'] ?? '0.1.0';
   const NODE_ENV = process.env['NODE_ENV'] ?? 'development';
   const portRaw = process.env['PORT'] ?? '3000';
   const PORT = Number.parseInt(portRaw, 10);
@@ -215,19 +197,17 @@ function bootstrap(): Bootstrapped {
     throw new Error(`PORT must be a valid TCP port (1-65535); got "${portRaw}".`);
   }
 
-  // Step 2: build the application logger. Rule R2 redaction is
-  // applied at logger construction so every record (including those
+  // Step 2: the application logger is imported from `./logging/pino`
+  // pre-configured with Rule R2 redaction, the correlationStore mixin,
+  // and the OTel trace-context mixin. Every record (including those
   // from pino-http, child loggers, and request-scoped binders) is
-  // scrubbed of credentials. The `pinoCorrelationMixin` reads the
-  // current AsyncLocalStorage context so every log record emitted
-  // during a request automatically carries the correlation ID
-  // (Constraint C5).
-  const logger = createLogger({
-    service: SERVICE_NAME,
-    environment: NODE_ENV,
-    version: SERVICE_VERSION,
-    mixin: pinoCorrelationMixin,
-  });
+  // scrubbed of credentials before emission, and every record emitted
+  // during a request automatically carries `correlationId`, `uid`,
+  // `traceId`, and `spanId` (Rule C5 / ST-049-AC2). The logger emits
+  // `service` (matching the OTel resource `service.name`) on every
+  // record via the `base` option in `pinoOptions`; the
+  // `service`/`environment`/`version` operational labels on every
+  // metric are emitted by `routes/metrics.ts` (ST-048-AC2).
 
   // Step 3: the Prometheus metrics module is a singleton.
   //
