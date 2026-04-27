@@ -11,8 +11,9 @@
  *   - ST-002 / ST-003 — drag and idle auto-rotation are composed into
  *     the mesh's quaternion using the documented order:
  *       finalQuat = autoRotation.clone().multiply(dragRotation)
- *   - ST-004 — material parameters (roughness, metalness, envMapIntensity)
- *     come from `useMaterialSwatch(currentFinish)`.
+ *   - ST-004 — material parameters (roughness, metalness) come from
+ *     the parameterless `useMaterialSwatch()` hook, which subscribes
+ *     internally to the `materialFinish` store slice.
  *   - QA Report Issue #5 (composition order), Issue #7 (material params),
  *     Issue #9 (Sphere.tsx contains ZERO needsUpdate mutations).
  *
@@ -162,12 +163,14 @@ export function Sphere(props: SphereProps): JSX.Element {
   const primaryColor = useConfiguratorStore((s) => s.primaryColor);
   const secondaryColor = useConfiguratorStore((s) => s.secondaryColor);
   const accentColor = useConfiguratorStore((s) => s.accentColor);
-  const materialFinish = useConfiguratorStore((s) => s.materialFinish);
 
   // -----------------------------------------------------------------------
   // Material parameters resolved from the current finish (ST-004).
+  // The `useMaterialSwatch()` hook subscribes internally to the
+  // `materialFinish` store slice, so this component does NOT need its
+  // own `materialFinish` selector subscription.
   // -----------------------------------------------------------------------
-  const swatchParams = useMaterialSwatch(materialFinish);
+  const swatchParams = useMaterialSwatch();
 
   // -----------------------------------------------------------------------
   // Geometry / texture / material construction. Memoized so identical
@@ -199,7 +202,6 @@ export function Sphere(props: SphereProps): JSX.Element {
         map: texture,
         roughness: swatchParams.roughness,
         metalness: swatchParams.metalness,
-        envMapIntensity: swatchParams.envMapIntensity,
       }),
     // Intentionally an empty dep array (other than texture which is
     // also stable): we want this material instance to persist for the
@@ -216,7 +218,6 @@ export function Sphere(props: SphereProps): JSX.Element {
   useEffect(() => {
     material.roughness = swatchParams.roughness;
     material.metalness = swatchParams.metalness;
-    material.envMapIntensity = swatchParams.envMapIntensity;
     // Material.needsUpdate ≠ Texture.needsUpdate. This flag tells
     // Three.js the SHADER PROGRAM may need recompilation due to the
     // changed parameters; it is NOT the texture-update flag covered
