@@ -174,6 +174,7 @@ import type { ChangeEvent, FormEvent, JSX } from 'react';
 import { ApiError } from '../../api/client';
 import { createDesign } from '../../api/designs';
 import type { CreateDesignInput, Design, DesignLogo, DesignPayload } from '../../api/designs';
+import { getIdToken, onAuthStateChanged } from '../../auth/firebase-client';
 import { useConfiguratorStore } from '../../state/configuratorStore';
 
 // ============================================================================
@@ -200,19 +201,31 @@ import { useConfiguratorStore } from '../../state/configuratorStore';
 type SaveActionState = 'idle' | 'naming' | 'requesting' | 'success' | 'error';
 
 /**
- * Reasons the Save button may be disabled while the design has unsaved
- * changes. Drives the disabled-state tooltip / sr-only help text so the
- * user understands WHY they cannot save.
+ * Reasons the Save button may be disabled. Drives the disabled-state
+ * tooltip / sr-only help text so the user understands WHY they cannot
+ * save.
  *
- *   - 'already-saved'      — no unsaved changes (ST-018-AC4 idempotence).
+ *   - 'not-authenticated'   — no Firebase user is signed in. The Save
+ *                             CTA is gated behind authentication per
+ *                             ST-018-AC1 ("enabled whenever the design
+ *                             has unsaved changes AND the user is
+ *                             authenticated"). Higher precedence than
+ *                             every other reason because no save can
+ *                             succeed regardless of design state.
+ *   - 'request-in-flight'   — a POST is already running; the button is
+ *                             disabled to prevent double-submit.
  *   - 'logo-pending-upload' — the user uploaded a raw File that has not
  *                             yet been pushed through the GCS upload
  *                             pipeline. Out of scope for MG1-F.
- *   - 'request-in-flight'   — a POST is already running; the button is
- *                             disabled to prevent double-submit.
+ *   - 'already-saved'       — no unsaved changes (ST-018-AC4 idempotence).
  *   - null (enabled)        — the button is enabled.
  */
-type SaveDisabledReason = 'already-saved' | 'logo-pending-upload' | 'request-in-flight' | null;
+type SaveDisabledReason =
+  | 'not-authenticated'
+  | 'request-in-flight'
+  | 'logo-pending-upload'
+  | 'already-saved'
+  | null;
 
 // ============================================================================
 // Module-scope helpers
@@ -260,27 +273,40 @@ function buildLogoForWire(
 /**
  * Determine whether the Save button is disabled and, if so, the reason.
  *
- * Order of precedence (most-specific first):
+ * Order of precedence (most-fundamental first — auth gates everything):
  *
- *   1. 'request-in-flight' — a POST is currently running (transient,
+ *   1. 'not-authenticated' — the user is signed out (per ST-018-AC1 the
+ *      CTA requires `isAuthenticated === true`). Save cannot succeed
+ *      regardless of design state, so this reason takes precedence over
+ *      every other gate. Returning early avoids surfacing misleading
+ *      "make a change to enable saving" copy when the actual block is
+ *      the missing session.
+ *   2. 'request-in-flight' — a POST is currently running (transient,
  *      cleared on resolve/reject).
- *   2. 'logo-pending-upload' — the store holds a raw File that has not
+ *   3. 'logo-pending-upload' — the store holds a raw File that has not
  *      been uploaded yet. Out of scope for MG1-F per AAP §0.6.9.
- *   3. 'already-saved' — `isSaved === true` (no unsaved changes per
+ *   4. 'already-saved' — `isSaved === true` (no unsaved changes per
  *      ST-018-AC1 / ST-018-AC4).
- *   4. null (enabled) — there are unsaved changes AND the logo is in a
+ *   5. null (enabled) — the user is authenticated, there are unsaved
+ *      changes, no save is in flight, and the logo is in a
  *      serializable shape.
  *
  * @param actionState - Current save lifecycle state.
  * @param isSaved - The store's `isSaved` flag.
  * @param logoFile - The store's logo slice value.
+ * @param isAuthenticated - Whether a Firebase user is currently signed
+ *   in (derived from `onAuthStateChanged` subscription).
  * @returns The reason the button is disabled, or null when enabled.
  */
 function computeDisabledReason(
   actionState: SaveActionState,
   isSaved: boolean,
   logoFile: File | string | null,
+  isAuthenticated: boolean,
 ): SaveDisabledReason {
+  if (!isAuthenticated) {
+    return 'not-authenticated';
+  }
   if (actionState === 'requesting') {
     return 'request-in-flight';
   }
@@ -344,6 +370,19 @@ export function SaveDesignCta(): JSX.Element {
     title: string;
   } | null>(null);
 
+  /**
+   * Whether a Firebase user is currently signed in (ST-018-AC1).
+   *
+   * Default `false` because the safest assumption at first render is
+   * "no session" — the user must complete sign-in before the Save CTA
+   * activates. This avoids a brief enabled-then-disabled flicker on
+   * mount in the common case where the page loads while signed out.
+   *
+   * Updated by the `onAuthStateChanged` subscription effect below;
+   * NEVER mutated directly by any other code path.
+   */
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+
   // -------------------------------------------------------------------------
   // Refs for focus management
   // -------------------------------------------------------------------------
@@ -369,8 +408,39 @@ export function SaveDesignCta(): JSX.Element {
   // -------------------------------------------------------------------------
   // Derived values — recomputed each render; cheap and references stable.
   // -------------------------------------------------------------------------
-  const disabledReason = computeDisabledReason(actionState, isSaved, logoFile);
+  const disabledReason = computeDisabledReason(actionState, isSaved, logoFile, isAuthenticated);
   const isButtonEnabled = disabledReason === null && actionState !== 'naming';
+
+  // -------------------------------------------------------------------------
+  // Effect: subscribe to Firebase auth state (ST-018-AC1).
+  //
+  // The `onAuthStateChanged` helper from `../../auth/firebase-client`
+  // wraps the modular Firebase JS SDK callback. The callback fires:
+  //   - Once at subscription time with the current user (or null if
+  //     signed out / SDK not yet initialized).
+  //   - On every subsequent sign-in, sign-out, or token-refresh event.
+  //
+  // Rule R2: the callback ONLY derives a boolean from the user object;
+  // it NEVER logs `user.uid`, `user.email`, `user.providerData`, or
+  // any other PII / credential-adjacent field. The `User` parameter
+  // type from `firebase/auth` is intentionally narrowed to "non-null
+  // → authenticated" via `user !== null` before storage in state.
+  //
+  // StrictMode safety: the helper returns a no-op unsubscribe when
+  // the SDK has not yet been initialized, so the cleanup is safe to
+  // call in either order. React StrictMode's intentional double-mount
+  // therefore subscribes-and-unsubscribes once, then re-subscribes —
+  // both subscriptions fire the callback with the same boolean, so no
+  // observable state oscillation occurs.
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged((user) => {
+      setIsAuthenticated(user !== null);
+    });
+    return (): void => {
+      unsubscribe();
+    };
+  }, []);
 
   // -------------------------------------------------------------------------
   // Effect: focus the title input when the form opens.
@@ -456,6 +526,34 @@ export function SaveDesignCta(): JSX.Element {
       // Reset feedback for a retry attempt.
       setActionState('requesting');
       setErrorMessage(null);
+
+      // Defense-in-depth auth check (ST-018-AC1 / ST-018-AC3): the
+      // `disabledReason === 'not-authenticated'` gate already prevents
+      // the form from opening when the user is signed out, but a token
+      // could expire between mount and submit. `getIdToken()` returns
+      // null when:
+      //   - no Firebase user is signed in,
+      //   - the SDK has not been initialized yet, or
+      //   - the underlying token cannot be refreshed.
+      //
+      // In any of those cases, surface the actionable copy without
+      // calling the API — there is no path to success and the
+      // unauthenticated request would simply return 401.
+      //
+      // Rule R2: the returned `token` string is consulted ONLY to
+      // detect null. It is NEVER stored, rendered, or passed to any
+      // log function. The actual Authorization header attachment
+      // happens transparently inside `request()` in `../../api/client`,
+      // which calls `getIdToken()` again at outbound-request time —
+      // the token never crosses this component's scope.
+      const token = await getIdToken();
+      if (token === null) {
+        setActionState('error');
+        setErrorMessage(
+          'Your session is not active. Please sign in before saving this design.',
+        );
+        return;
+      }
 
       // Title fallback — empty string becomes the default (per ST-027
       // backend rejects empty; we default to keep the happy path open).
@@ -664,7 +762,14 @@ export function SaveDesignCta(): JSX.Element {
   // technology) so all users learn why the button is disabled.
   // -------------------------------------------------------------------------
   let disabledHelpText: string | null = null;
-  if (disabledReason === 'already-saved') {
+  if (disabledReason === 'not-authenticated') {
+    // ST-018-AC1 / ST-018-AC3: when the user is signed out, the actionable
+    // next step is to sign in. This text is announced to assistive
+    // technology via the visually-hidden help region linked through
+    // aria-describedby, and surfaced as a tooltip on hover for sighted
+    // users via the button's `title` attribute.
+    disabledHelpText = 'Sign in to save your design.';
+  } else if (disabledReason === 'already-saved') {
     disabledHelpText =
       'This design is already saved. Make a change to enable saving again.';
   } else if (disabledReason === 'logo-pending-upload') {
