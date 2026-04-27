@@ -71,8 +71,8 @@
  *     is attached to /api/designs/:id/share-link by ./client's
  *     request() helper, not by this component.
  *
- *   - Rule R9 (no payment processing): no charge/intent/settle code
- *     in this component.
+ *   - Rule R9 (no payment processing): no payment-processor or
+ *     settlement code in this component.
  *
  *   - C5 (correlation ID propagation): the X-Correlation-Id is
  *     attached automatically by ./client's request() helper.
