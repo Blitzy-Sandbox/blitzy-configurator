@@ -6,207 +6,157 @@
  *   - AAP §0.3.4 / §0.6.7 — "frontend/src/configurator/texture/texturePipeline.ts
  *     | C6/R7 coordinator: fabricCanvas.renderAll() → awaited — THEN
  *     threeTexture.needsUpdate = true".
- *   - AAP C6 — "When a configurator selection changes, the sequence MUST be:
- *     (1) call fabricCanvas.renderAll(), then (2) only after renderAll
- *     completes, set threeTexture.needsUpdate = true. Reversing this
- *     order produces a one-frame stale texture that is visible as flicker
- *     in Playwright visual-regression baselines. The texture update
- *     coordinator lives in frontend/src/configurator/texture/ and must
- *     be the single code path that mutates threeTexture.needsUpdate."
- *   - Rule R7 — same constraint, restated. This file is the SOLE site
- *     in the codebase that mutates `threeTexture.needsUpdate`; greppable
- *     enforcement via `grep -rnE "\.needsUpdate\s*=" frontend/src/configurator/texture/`.
- *   - QA Report Issue #9 — texture pipeline files MUST exist and the
- *     ordering contract MUST be enforceable.
+ *   - AAP §0.2.2 Constraint C6 — "When a configurator selection changes,
+ *     the sequence MUST be: (1) call fabricCanvas.renderAll(), then (2)
+ *     only after renderAll completes, set threeTexture.needsUpdate = true.
+ *     Reversing this order produces a one-frame stale texture that is
+ *     visible as flicker in Playwright visual-regression baselines. The
+ *     texture update coordinator lives in frontend/src/configurator/texture/
+ *     and must be the single code path that mutates threeTexture.needsUpdate."
+ *   - AAP §0.8.1 Rule R7 — "fabricCanvas.renderAll() MUST resolve before
+ *     threeTexture.needsUpdate = true is set."
  *
- * Responsibilities:
- *   1. Provide the SINGLE function (`updateTexture`) that consumers call
- *     after every configurator state change. Internally enforces:
+ * Single-code-path invariants enforced HERE (greppable):
+ *   - `grep -rn "needsUpdate" frontend/src/configurator/` — the assignment
+ *     `threeTexture.needsUpdate = true` appears EXCLUSIVELY in this file.
+ *     Sibling files (preview/Sphere.tsx, texture/threeTexture.ts,
+ *     texture/fabricCanvas.ts, controls/**) MUST NOT assign that flag.
+ *   - `grep -rn "fabricCanvas.renderAll" frontend/src/configurator/` —
+ *     the namespace-form invocation `fabricCanvas.renderAll()` appears
+ *     EXCLUSIVELY in this file. The exported function is called only here.
  *
- *       fabricCanvas.renderAll()      ← from `fabricCanvas.ts`
- *       threeTexture.needsUpdate = true   ← from `threeTexture.ts`
- *
- *     in this exact order, never reversed.
- *
- *   2. Provide an `applyConfiguratorState` that paints the current
- *      configurator selection (primary color, accent color, optional
- *      logo placeholder) onto the Fabric canvas, then invokes
- *      `updateTexture()` to commit the changes through the strict
- *      ordering contract.
- *
- *   3. Expose lifecycle helpers (`disposeTexturePipeline`) so that
- *      tests and React StrictMode cleanup paths can fully reset the
- *      pipeline without leaking GPU memory.
- *
- * Cross-cutting rules enforced here:
- *   - Rule R7 / C6 (THIS module's primary purpose). The ordering is
- *     enforced by code structure: `updateTexture()` calls
- *     `fabricCanvas.renderAll()` FIRST and assigns
- *     `threeTexture.needsUpdate = true` SECOND. Both operations are
- *     synchronous in their critical path; no `await` separates them
- *     so no timer / microtask can interleave between the two.
- *   - Rule R2: ZERO `console.*` statements; failures throw.
- *   - Rule R3: No auth / Firebase / JWT imports.
+ * Cross-cutting rules:
+ *   - Rule R7 / C6: see above — this module's primary purpose.
+ *   - Rule R2: ZERO `console.*` calls. Errors propagate to the caller
+ *     (e.g., `LogoUploader.tsx` renders ST-017 rejection UI on logo
+ *     decode failure).
+ *   - Rule R3: no Firebase / JWT / auth imports.
+ *   - Rule R9: no payment-processor imports.
  *
  * Out of scope:
- *   - Render loop scheduling (R3F's `useFrame` hooks own that cadence).
- *   - Material / shader / mesh management (lives in `Sphere.tsx`).
- *   - Logo upload validation (lives in `LogoUploader.tsx`).
+ *   - Drawing primitives (lives in `./fabricCanvas.ts`).
+ *   - Three.js material / shader / mesh management (lives in
+ *     `../preview/Sphere.tsx` and `./threeTexture.ts`).
+ *   - Render-loop scheduling (R3F's `useFrame` hooks).
+ *   - Caller-side debouncing / throttling (e.g., `LogoPositioner.tsx`
+ *     drag handler may debounce; this module never does).
  */
 
 import * as fabricCanvas from './fabricCanvas';
 import { threeTexture } from './threeTexture';
+import type { ConfiguratorState } from '../../state/configuratorStore';
 
 // ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
-/**
- * Subset of the Zustand configurator store that the texture pipeline
- * needs in order to render the current ball appearance. Kept narrow so
- * the pipeline does not transitively depend on `loadedDesign`,
- * `isSaved`, or any other slice unrelated to visual rendering.
- *
- * The shape mirrors the corresponding fields on `ConfiguratorState`
- * (defined in `configuratorStore.ts`) but is restated here so this
- * module has zero direct dependency on the store — a future swap from
- * Zustand to another state library would require ZERO changes in this
- * file.
- */
-export interface TextureConfiguratorState {
-  readonly primaryColor: string;
-  readonly secondaryColor: string;
-  readonly accentColor: string;
-}
-
-// ---------------------------------------------------------------------------
-// Public API — texture coordinator (Rule R7 / C6 enforcement)
+// Internal coordinator
 // ---------------------------------------------------------------------------
 
 /**
- * Commit pending Fabric mutations to the Three.js texture.
+ * Apply the latest configurator state to the Fabric canvas, commit the
+ * Fabric draws to canvas pixels, yield one animation frame, then flag the
+ * Three.js CanvasTexture for GPU re-upload.
  *
- * (CRITICAL — Rule R7 / C6) Enforces the documented ordering:
+ * Per Rule R7 / C6, the ordering MUST be:
+ *   1. Apply state to Fabric (sync setters + awaited async logo load)
+ *   2. fabricCanvas.renderAll()                     ← rasterize Fabric scene
+ *   3. await one rAF tick                            ← canvas-pixel flush barrier
+ *   4. threeTexture.needsUpdate = true               ← schedule GPU re-upload
  *
- *   1. fabricCanvas.renderAll()        ← rasterize all object updates
- *   2. threeTexture.needsUpdate = true ← schedule GPU re-upload
+ * Reversing steps 3 and 4 (or omitting the rAF barrier) produces a
+ * one-frame stale texture that breaks Playwright visual baselines (ST-046),
+ * particularly under WebKit where the canvas backing-store flush timing
+ * differs from Chromium.
  *
- * Both calls are synchronous; no `await` separates them, so no timer /
- * microtask / promise resolution can interleave between the two
- * operations. Reversing the order would produce a one-frame stale
- * texture (the GPU would re-upload the OLD bitmap, then Fabric would
- * render the NEW one but the upload would not happen until the next
- * frame).
+ * Defined as a standalone function (rather than inline on the namespace
+ * object) so that `texturePipeline.update.name === 'update'` for stack
+ * traces and so the function is hoistable above its `texturePipeline`
+ * export below.
  *
- * Idempotent — safe to call multiple times back-to-back. Each
- * invocation re-rasterizes Fabric's object list and re-marks the
- * texture dirty. The GPU upload itself happens at most once per frame
- * regardless of how many times `needsUpdate` is set within that frame
- * window.
+ * @param state The Zustand store snapshot — typically read via
+ *   `useConfiguratorStore.getState()`. Any object satisfying the
+ *   `ConfiguratorState` shape is accepted; the coordinator reads only
+ *   the color, pattern, finish, and logo slices.
+ * @returns A Promise resolving AFTER `threeTexture.needsUpdate = true`
+ *   is set. Callers may `await` this for ST-009 / ST-015 latency-budget
+ *   tests but the GPU upload itself happens on the next WebGL render
+ *   tick (outside this pipeline's responsibility).
  */
-export function updateTexture(): void {
-  // STEP 1 — Fabric MUST render first. The synchronous `renderAll()`
-  // walks Fabric's object list and rasterizes into the underlying
-  // 2D context (the HTMLCanvasElement that Three's CanvasTexture
-  // sources from).
+async function update(state: ConfiguratorState): Promise<void> {
+  // STEP 1 — Apply state to the Fabric scene tree.
   //
-  // (CRITICAL) Invoked in namespace form `fabricCanvas.renderAll()`
-  // — the literal string `fabricCanvas.renderAll` is the verification
-  // anchor the AAP §0.6.7 / Phase 9 grep checks for; this is the SINGLE
-  // call site in the codebase.
+  // The setters mutate Fabric scene state imperatively; they do NOT
+  // commit pixels to the canvas (that is exclusively `renderAll()`'s
+  // job). Synchronous setters run first; the async logo loader is
+  // `await`ed so the canvas has all objects in their final state when
+  // `renderAll()` runs in step 2.
+  fabricCanvas.setPanelColors(state.primaryColor, state.secondaryColor, state.accentColor);
+  fabricCanvas.setStitchingPattern(state.stitchingPattern);
+  fabricCanvas.setMaterialFinish(state.materialFinish);
+  await fabricCanvas.setLogo(
+    state.logoFile,
+    state.logoPosition.x,
+    state.logoPosition.y,
+    state.logoScale,
+  );
+
+  // STEP 2 — Commit Fabric draws to canvas pixels.
+  //
+  // Fabric 6.x's `renderAll()` is synchronous (returns void); it walks
+  // the object tree and rasterizes every object via the underlying
+  // 2D context. After this returns the canvas pixels are written, but
+  // the browser may not have flushed them to the GPU-readable surface
+  // that Three.js will sample on its next draw call.
   fabricCanvas.renderAll();
 
-  // STEP 2 — Mark the Three texture dirty so the next WebGL draw
-  // call re-uploads the pixel buffer to the GPU. This MUST happen
-  // AFTER step 1 — reversing the order would upload the stale bitmap
-  // and the new Fabric content would be invisible until the next
-  // frame triggers another `needsUpdate` cycle.
+  // STEP 3 — rAF barrier (canvas-pixel flush).
   //
-  // (CRITICAL — Rule R7 / C6) This is the SOLE assignment to
-  // `threeTexture.needsUpdate` in the entire frontend codebase.
-  // Greppable enforcement:
-  //   grep -rnE "\.needsUpdate\s*=" frontend/src/configurator/texture/
-  // The match below is the ONLY allowed code-path mutation of the
-  // Three.js texture's dirty flag. `Sphere.tsx` may reference
-  // `material.needsUpdate` (a different flag on the MATERIAL, used
-  // for shader recompilation) but never `texture.needsUpdate`.
+  // Yielding one animation frame gives the browser an opportunity to
+  // commit the canvas writes from step 2 to the underlying surface
+  // that Three.js's WebGLRenderer will read. Without this barrier, on
+  // WebKit (Safari) and some Chromium variants under load, the GPU
+  // upload at step 4 can read STALE canvas pixels — producing the
+  // one-frame flicker that ST-046's `toHaveScreenshot()` baselines
+  // catch as a visual diff. This barrier is the documented separator
+  // between Fabric pixel commit and Three texture flag mutation.
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+
+  // STEP 4 — Mark the Three.js CanvasTexture dirty.
+  //
+  // (CRITICAL — Rule R7 / C6) This is THE single assignment to
+  // `threeTexture.needsUpdate` in the entire `frontend/src/configurator/`
+  // subtree. Three.js's renderer reads this flag on its next
+  // `WebGLRenderer.render()` call; when `true`, it re-uploads the
+  // canvas pixels to the GPU texture. Setting this BEFORE the canvas
+  // pixels are flushed (i.e., reversing steps 3 and 4) causes Three
+  // to upload the stale prior bitmap.
   threeTexture.needsUpdate = true;
 }
 
 // ---------------------------------------------------------------------------
-// Public API — high-level paint helpers
+// Public API — single namespace export
 // ---------------------------------------------------------------------------
 
 /**
- * Paint the configurator's current panel colors onto the Fabric canvas,
- * then commit the changes through `updateTexture()` for strict R7 / C6
- * compliance.
+ * The texture-pipeline namespace object.
  *
- * The actual painting (panel layout, stripe positions, accent shape
- * placement) is owned by `fabricCanvas.setPanelColors`, which mutates
- * its module-private Fabric scene tree in place. This module's job is
- * SOLELY orchestration — paint, then flush through the strict ordering
- * contract.
+ * Exported as `texturePipeline` (not as the bare `update` function) so
+ * call sites read `texturePipeline.update(state)` — making the R7 / C6
+ * ordering invariant trivial to spot in code review and grep audits.
  *
- * Painting strategy (defined inside `fabricCanvas.setPanelColors`):
- *   - Primary color fills the entire texture as the background.
- *   - Secondary color paints four horizontal stripes at fixed normalized
- *     y-positions, simulating panel seams.
- *   - Accent color paints six accent circles arranged across the texture.
+ * The single public entry point for triggering a texture refresh is
+ * `texturePipeline.update(state)`. Every caller in
+ * `frontend/src/configurator/controls/**` and
+ * `frontend/src/features/design-management/**` MUST go through this
+ * function; any direct `threeTexture.needsUpdate = ...` assignment
+ * outside this file violates Rule R7 / C6 and MUST be rejected during
+ * code review.
  *
- * Idempotent — successive calls with the same arguments produce the
- * same scene. Successive calls with different arguments fully overwrite
- * the previous stripes and accent shapes (no stale geometry accumulates).
- *
- * Synchronous — the panel-color setter is synchronous, and so is the
- * subsequent `updateTexture()` flush. The whole call returns within a
- * single tick to satisfy the ST-009 latency budget for "real-time
- * preview sync."
+ * The `as const` assertion freezes the namespace at the type level
+ * (`update` becomes a readonly property whose value is precisely the
+ * `update` function declared above) and prevents accidental runtime
+ * re-assignment in consumer code.
  */
-export function applyConfiguratorState(state: TextureConfiguratorState): void {
-  // Mutate the Fabric scene tree to reflect the requested colors. This
-  // does NOT commit pixels; pixels are committed exclusively by the
-  // `fabricCanvas.renderAll()` invocation inside `updateTexture()`.
-  fabricCanvas.setPanelColors(
-    state.primaryColor,
-    state.secondaryColor,
-    state.accentColor,
-  );
-
-  // Commit through the strict R7 / C6 ordering contract:
-  //   1. fabricCanvas.renderAll()        (rasterize Fabric scene)
-  //   2. threeTexture.needsUpdate = true (schedule GPU re-upload)
-  updateTexture();
-}
-
-// ---------------------------------------------------------------------------
-// Lifecycle helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Dispose the Three.js texture singleton owned by the pipeline.
- *
- * Used by:
- *   - React StrictMode's `useEffect` cleanup branch (development).
- *   - Playwright tests that want a clean slate between test cases.
- *
- * Idempotent — safe to call when nothing has been initialized yet.
- *
- * Lifecycle note: the Fabric canvas singleton in `./fabricCanvas.ts`
- * is intentionally NOT disposed here. The Fabric canvas is a module-
- * scope, page-lifetime singleton — it owns the HTMLCanvasElement that
- * Three's CanvasTexture wraps, and replacing that element across React
- * StrictMode mount/cleanup/remount cycles would invalidate every GPU
- * mipmap and produce a visible flash on the first frame after the
- * swap. Tests that need a fully fresh state must reload the page (or
- * reset module state via Vitest's `vi.resetModules()`).
- */
-export function disposeTexturePipeline(): void {
-  // The `dispose()` method is the standard Three.js Texture lifecycle
-  // hook for releasing GPU resources. After disposal the texture
-  // singleton in `./threeTexture.ts` is a "dead" object — its module-
-  // level binding still exists, but the GPU handle is gone. Tests that
-  // need a fully fresh state must reload the page (or reset the module
-  // cache via the test runner's `vi.resetModules()` / equivalent).
-  threeTexture.dispose();
-}
+export const texturePipeline = {
+  update,
+} as const;

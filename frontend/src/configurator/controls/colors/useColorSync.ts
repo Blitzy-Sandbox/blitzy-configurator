@@ -26,12 +26,12 @@
  *   case because React batches the re-renders.
  *
  *   The QA-mandated FIFO chain still adds value:
- *     1. It guarantees a strict serialization of pipeline calls even
- *        when the future texture work becomes asynchronous (e.g., GPU
- *        readback, async logo decoding, or off-thread rendering via
- *        `OffscreenCanvas`). Today the pipeline is synchronous; the
- *        chain ensures we never have to redesign the consumer surface
- *        when that changes.
+ *     1. The texture pipeline `update()` is now ASYNC (it awaits
+ *        `fabricCanvas.setLogo` image decode and a `requestAnimationFrame`
+ *        barrier before flagging the Three.js texture dirty per Rule R7
+ *        / C6). The chain guarantees a strict serialization of pipeline
+ *        calls so the LAST-submitted state wins on the GPU rather than
+ *        an interleaved race producing stale pixels.
  *     2. It establishes ONE provably-canonical site that calls the
  *        pipeline from this folder, satisfying the QA report's
  *        "single canonical caller from controls/colors/" rule and
@@ -48,13 +48,12 @@
  *   subsequent updates.
  *
  * Cross-cutting rules:
- *   - Rule R7 / C6: this hook calls `applyConfiguratorState(...)` which
- *     internally invokes `updateTexture()` (the SINGLE canonical
- *     orchestrator that runs `renderFabricCanvas()` BEFORE
- *     `markThreeTextureDirty()`). The ordering is enforced inside
- *     `texturePipeline.ts`; this hook does not directly mutate
- *     `threeTexture.needsUpdate` and does not call `updateTexture()`
- *     out of order.
+ *   - Rule R7 / C6: this hook calls `texturePipeline.update(...)` which
+ *     is the SINGLE canonical orchestrator that runs `renderAll()`
+ *     BEFORE `threeTexture.needsUpdate = true`. The ordering is
+ *     enforced inside `texturePipeline.ts`; this hook does not directly
+ *     mutate `threeTexture.needsUpdate` and does not call any other
+ *     pipeline-internal helper out of order.
  *   - Rule R2: ZERO `console.*` calls. Errors are swallowed at the
  *     chain boundary so the next link continues.
  *   - Rule R3: no auth imports.
@@ -63,21 +62,7 @@
 import { useEffect, useRef } from 'react';
 
 import { useConfiguratorStore } from '../../../state/configuratorStore';
-import {
-  applyConfiguratorState,
-  type TextureConfiguratorState,
-} from '../../texture/texturePipeline';
-
-/**
- * Type-narrowed view of the color slices that drive the live preview.
- * Re-stated locally so the hook does not transitively depend on the
- * full `ConfiguratorState` interface — keeps the test surface narrow.
- */
-interface ColorSliceSnapshot extends TextureConfiguratorState {
-  readonly primaryColor: string;
-  readonly secondaryColor: string;
-  readonly accentColor: string;
-}
+import { texturePipeline } from '../../texture/texturePipeline';
 
 /**
  * Real-time color → texture synchronization hook.
@@ -92,6 +77,13 @@ interface ColorSliceSnapshot extends TextureConfiguratorState {
  */
 export function useColorSync(): void {
   // ----- Store subscriptions: SLICE-only selectors per Zustand best practice -----
+  //
+  // Subscribing to the three color slices triggers this hook's effect
+  // ONLY when one of those three slices changes — pattern, finish, or
+  // logo updates do not run this effect (those slices have their own
+  // synchronization paths upstream). The selectors return primitive
+  // strings, so Zustand's default Object.is equality short-circuits
+  // unchanged colors with no re-render.
   const primaryColor = useConfiguratorStore((s) => s.primaryColor);
   const secondaryColor = useConfiguratorStore((s) => s.secondaryColor);
   const accentColor = useConfiguratorStore((s) => s.accentColor);
@@ -105,37 +97,32 @@ export function useColorSync(): void {
   const updateChainRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
-    // Snapshot the current slice values so the effect's closure does
-    // not capture references that mutate before the queued work runs.
-    // The Zustand store is immutable per `set(...)` so the strings are
-    // safe to capture, but the explicit snapshot documents intent and
-    // future-proofs against migrating to a mutable state container.
-    const snapshot: ColorSliceSnapshot = {
-      primaryColor,
-      secondaryColor,
-      accentColor,
-    };
-
     // Capture the previous link, replace the ref with the next link.
     // Doing this synchronously inside the effect (BEFORE awaiting any
     // microtask) preserves submission order even if multiple effect
     // calls overlap — each call sees the most recent ref value.
     const previousLink = updateChainRef.current;
-    const nextLink = previousLink.then(() => {
-      // The pipeline call is synchronous in the current implementation;
-      // wrapping it in a promise function body still composes correctly
-      // because `.then(fn)` resolves with `fn`'s return value (void
-      // here) on the next microtask. If the pipeline becomes async in
-      // the future, returning the in-flight promise here will preserve
-      // the FIFO contract automatically.
+    const nextLink: Promise<void> = previousLink.then(async () => {
+      // Read the current store snapshot at execution time (NOT at
+      // submission time) so the texture pipeline always paints the
+      // most recent state. This is intentional last-write-wins
+      // behavior on the GPU: if the user clicks five swatches in 50 ms,
+      // the chain serializes five `update()` calls but each call
+      // re-reads `getState()`, so any work that started before the
+      // user's final click reflects the final color when it runs —
+      // satisfying ST-009-AC4 ("rapid successive color changes ... no
+      // lost or reordered updates").
+      const snapshot = useConfiguratorStore.getState();
       try {
-        applyConfiguratorState(snapshot);
+        await texturePipeline.update(snapshot);
       } catch {
         // Rule R2 demands no `console.*` calls. We swallow the error
         // here so the chain stays alive — a single bad snapshot must
         // not poison every subsequent update. The pipeline itself
-        // throws only on truly-unrecoverable conditions (e.g., missing
-        // Fabric canvas) which a higher-level error boundary handles.
+        // throws only on truly-unrecoverable conditions (e.g., logo
+        // image decode failure, missing Fabric canvas) which a
+        // higher-level error boundary handles via the UI controls
+        // that originated the offending state mutation.
       }
     });
 

@@ -47,7 +47,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { MeshStandardMaterial, Quaternion, SphereGeometry, Vector3, type Mesh } from 'three';
 
 import { useConfiguratorStore } from '../../state/configuratorStore';
-import { applyConfiguratorState } from '../texture/texturePipeline';
+import { texturePipeline } from '../texture/texturePipeline';
 import { threeTexture } from '../texture/threeTexture';
 
 import { useMaterialSwatch } from './useMaterialSwatch';
@@ -143,7 +143,7 @@ export interface SphereProps {
  *
  * Subscribes via Zustand selectors to the three configurator color
  * slices and the material finish. Whenever any of those changes (or on
- * mount), `applyConfiguratorState(...)` paints the new color regions
+ * mount), `texturePipeline.update(...)` paints the new color regions
  * onto the Fabric canvas and commits via the strict R7 / C6 ordering
  * contract (handled inside `texturePipeline.ts`).
  *
@@ -237,11 +237,19 @@ export function Sphere(props: SphereProps): JSX.Element {
   // is the single site that mutates `texture.needsUpdate`.
   // -----------------------------------------------------------------------
   useEffect(() => {
-    applyConfiguratorState({
-      primaryColor,
-      secondaryColor,
-      accentColor,
-    });
+    // The pipeline is async (it awaits Fabric's `setLogo` image-decode
+    // and a one-frame `requestAnimationFrame` barrier per Rule R7 / C6).
+    // We intentionally do not await the returned Promise here — the
+    // useEffect callback is fire-and-forget and the next React render
+    // will pick up any state already written. Errors propagate to a
+    // higher-level error boundary rather than the React render path.
+    //
+    // We pass `useConfiguratorStore.getState()` (the full state) rather
+    // than reconstructing a narrow object so the pipeline reads the
+    // latest pattern / finish / logo slices alongside the colors that
+    // triggered this effect — the Fabric setters are idempotent so
+    // re-applying unchanged slices is safe.
+    void texturePipeline.update(useConfiguratorStore.getState());
   }, [primaryColor, secondaryColor, accentColor]);
 
   // -----------------------------------------------------------------------
