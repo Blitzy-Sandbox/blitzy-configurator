@@ -48,7 +48,7 @@ import { MeshStandardMaterial, Quaternion, SphereGeometry, Vector3, type Mesh } 
 
 import { useConfiguratorStore } from '../../state/configuratorStore';
 import { applyConfiguratorState } from '../texture/texturePipeline';
-import { getThreeTexture } from '../texture/threeTexture';
+import { threeTexture } from '../texture/threeTexture';
 
 import { useMaterialSwatch } from './useMaterialSwatch';
 import type { IdleAutoRotateRef } from './useIdleAutoRotate';
@@ -179,9 +179,10 @@ export function Sphere(props: SphereProps): JSX.Element {
   // instance with in-place material parameter updates satisfies that
   // requirement).
   //
-  // Per Rule R7 / C6 NOTE: This module imports `getThreeTexture` (a
-  // GETTER) and never reaches into `texture.needsUpdate`. The texture
-  // pipeline coordinator owns that mutation exclusively.
+  // Per Rule R7 / C6 NOTE: This module imports `threeTexture` (a
+  // module-level CanvasTexture singleton) and never reaches into
+  // `texture.needsUpdate`. The texture pipeline coordinator owns
+  // that mutation exclusively.
   // -----------------------------------------------------------------------
 
   const geometry = useMemo(
@@ -189,7 +190,11 @@ export function Sphere(props: SphereProps): JSX.Element {
     [],
   );
 
-  const texture = useMemo(() => getThreeTexture(), []);
+  // The `threeTexture` import is itself a module-level singleton — it
+  // is constant for the page lifetime. The `useMemo` wrap is purely
+  // defensive: it documents the stable identity and hands a consistent
+  // reference to the material's `map` field across re-renders.
+  const texture = useMemo(() => threeTexture, []);
 
   // The MeshStandardMaterial is constructed once, then mutated in place
   // via the `useEffect` block below to apply finish parameters. This

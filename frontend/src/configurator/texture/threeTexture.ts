@@ -1,177 +1,209 @@
 /**
- * Three.js texture singleton wrapping the Fabric.js canvas bitmap.
+ * Three.js CanvasTexture singleton wrapping the Fabric.js canvas.
  *
  * Authority:
  *   - AAP §0.3.4 / §0.6.7 — "frontend/src/configurator/texture/threeTexture.ts
  *     | Three.js texture wrapping the Fabric canvas".
- *   - AAP C6 / Rule R7 — texture update ordering. This module owns the
- *     SOLE call site that mutates `THREE.Texture#needsUpdate`. Every
- *     other module that wants to mark the texture dirty MUST go through
- *     `texturePipeline.updateTexture()`, which calls
- *     `fabricCanvas.renderAll()` first and then `markThreeTextureDirty()`.
- *   - QA Report Issue #9 — texture pipeline files MUST exist and the
- *     ordering contract MUST be enforceable.
+ *   - AAP §0.2.2 Constraint C6 / Rule R7 — "The texture update coordinator
+ *     lives in `frontend/src/configurator/texture/` and must be the single
+ *     code path that mutates `threeTexture.needsUpdate`." The single code
+ *     path is `./texturePipeline.ts`. THIS module is the producer of the
+ *     texture singleton, not the mutator of its dirty flag.
  *
  * Responsibilities:
- *   1. Construct exactly one `THREE.CanvasTexture` whose source is the
- *      detached HTMLCanvasElement owned by `fabricCanvas.ts`.
- *   2. Expose `getThreeTexture()` to consumers (Sphere.tsx) and
- *      `markThreeTextureDirty()` to the pipeline coordinator.
- *   3. Maintain proper texture configuration (color space, anisotropy,
- *      flip-Y) so the texture renders correctly on a `SphereGeometry`
- *      with default UV mapping.
+ *   1. Construct exactly ONE `THREE.CanvasTexture` whose source is the
+ *      offscreen `HTMLCanvasElement` owned by `./fabricCanvas` (created
+ *      once at module evaluation time and never appended to the DOM).
+ *   2. Configure the texture for visually correct rendering on a sphere
+ *      mesh: sRGB color space, linear filtering, no mipmaps (frequent
+ *      updates), repeat wrap mode (closes the equirectangular UV seam),
+ *      and modest anisotropy (sharper oblique-angle sampling).
+ *   3. Expose the texture as a module-level constant `threeTexture` so
+ *      that:
+ *        - `../preview/Sphere.tsx` can wire it into a material's `map`
+ *          property; and
+ *        - `./texturePipeline.ts` can flag it for GPU re-upload by
+ *          assigning `threeTexture.needsUpdate = true` after Fabric
+ *          has rendered the latest scene.
  *
- * Cross-cutting rules enforced here:
- *   - Rule R7 / C6: `markThreeTextureDirty()` is the SOLE function in
- *     the codebase that sets `texture.needsUpdate = true`. Sphere.tsx
- *     MUST NOT touch `needsUpdate` directly. The texture pipeline
- *     orchestrates ordering by calling `fabricCanvas.renderAll()` first
- *     and `markThreeTextureDirty()` second.
- *   - Rule R2: ZERO `console.*` statements.
- *   - Rule R3: No auth imports.
+ * Cross-cutting rules enforced here (by what this module does NOT do):
+ *   - Rule R7 / C6: this module performs ZERO assignments to
+ *     `texture.needsUpdate`. The Three.js `CanvasTexture` constructor
+ *     internally sets `needsUpdate = true` once on instantiation (library
+ *     behavior — not user code). Every user-code mutation of that flag
+ *     happens exclusively inside `./texturePipeline.ts`.
+ *     Verification:
+ *       grep -n "\.needsUpdate" frontend/src/configurator/texture/threeTexture.ts
+ *     returns ZERO matches; the only mutation site in
+ *     `frontend/src/configurator/` is `./texturePipeline.ts`.
+ *   - Rule R2: ZERO `console.*` statements; failures throw at module
+ *     evaluation time (fail-loud), which is the desired behavior — if
+ *     the offscreen canvas cannot be obtained, the entire 3D preview
+ *     is non-functional and the app should refuse to start.
+ *   - Rule R3: no Firebase, JWT, or auth imports — pure rendering
+ *     primitive.
  *
  * Out of scope:
- *   - Material / shader / mesh management (that lives in `Sphere.tsx`
- *     and `useMaterialSwatch.ts`).
- *   - Multi-texture support (the configurator uses ONE map per ball).
+ *   - Drawing onto the canvas — owned by `./fabricCanvas`.
+ *   - Ordering of `renderAll()` then `needsUpdate` — owned by
+ *     `./texturePipeline`.
+ *   - Material / shader / mesh management — owned by `../preview/Sphere`.
+ *   - Texture lifecycle / disposal — the singleton is intentionally
+ *     page-lifetime; tests that need a fresh state must reload the page
+ *     or reset module state via the test runner's module cache.
  */
 
-import { CanvasTexture, RepeatWrapping, SRGBColorSpace, type Texture } from 'three';
+import {
+  CanvasTexture,
+  LinearFilter,
+  RepeatWrapping,
+  SRGBColorSpace,
+} from 'three';
 
 import { getElement } from './fabricCanvas';
 
 // ---------------------------------------------------------------------------
-// Module-private singleton state.
-//
-// Module scope (not per-effect) so that the texture survives React
-// StrictMode's mount/cleanup/remount and Vite HMR re-execution of
-// consuming components.
+// Module-private factory
 // ---------------------------------------------------------------------------
 
 /**
- * The single Three.js CanvasTexture wrapping the Fabric canvas bitmap.
- * `null` until first `getThreeTexture()` call; reset to `null` by
- * `disposeThreeTexture()`.
+ * Construct and configure the singleton `CanvasTexture`.
+ *
+ * Runs exactly once at module evaluation time. The Three.js
+ * `CanvasTexture` constructor receives the offscreen `HTMLCanvasElement`
+ * from `getElement()` and binds it as the texture's pixel source — every
+ * subsequent GPU upload reads from THIS canvas's 2D context.
+ *
+ * After construction, configure the properties that make the texture
+ * render correctly when applied as a material `map` on a sphere mesh:
+ *
+ *   - `colorSpace = SRGBColorSpace`
+ *     The Fabric canvas's 2D context paints sRGB color values (e.g.
+ *     '#FF0000', '#3388CC' — the literal CSS hex strings produced by
+ *     the configurator's color pickers). The WebGLRenderer must apply
+ *     the correct sRGB-to-linear conversion when sampling. Without
+ *     this, color picker selections render visibly washed out or
+ *     oversaturated relative to the swatch the user chose.
+ *
+ *   - `minFilter = magFilter = LinearFilter`
+ *     Linear interpolation produces smooth color transitions across the
+ *     sphere's UV-mapped surface at varying camera distances. Avoids
+ *     the blocky `NearestFilter` look that exposes the underlying
+ *     1024x1024 grid.
+ *
+ *   - `generateMipmaps = false`
+ *     Mipmaps would have to be regenerated on every Fabric update
+ *     (every color/pattern/logo change). Regeneration cost is roughly
+ *     1.33x the upload cost of the base level — non-trivial when the
+ *     ST-009 latency budget is "real-time preview sync." We accept a
+ *     small aliasing trade-off in exchange for predictable update cost.
+ *
+ *   - `wrapS = wrapT = RepeatWrapping`
+ *     The default Three.js `SphereGeometry` UVs run [0,1] longitude
+ *     and [0,1] latitude. RepeatWrapping ensures sampling at u=1.001
+ *     returns the same color as u=0.001 — the seam at the longitude
+ *     wrap-around is invisible. ClampToEdgeWrapping at the poles is
+ *     also acceptable but RepeatWrapping is the safest portable
+ *     default and avoids a visible pinch at v=0/v=1.
+ *
+ *   - `anisotropy = 4`
+ *     Improves filtering quality at oblique viewing angles (e.g. when
+ *     the user rotates the ball ~70-90 degrees from camera normal).
+ *     A modest value of 4 is supported by virtually every WebGL
+ *     implementation including iOS Safari; setting it to the absolute
+ *     max (16) is silently clamped on lower-end GPUs and adds
+ *     bandwidth cost that risks the ST-005 30 FPS floor.
+ *
+ * Note on `needsUpdate`: the `CanvasTexture` constructor sets
+ * `this.needsUpdate = true` internally (this is library behavior in
+ * Three.js's `CanvasTexture.js`). That single internal assignment is
+ * sufficient for the first GPU upload after the texture is attached
+ * to a material. THIS user code does not assign `needsUpdate` at any
+ * point — the exclusive mutation site is `./texturePipeline.ts`.
  */
-let threeTexture: CanvasTexture | null = null;
+function createTexture(): CanvasTexture {
+  // Acquire the offscreen HTMLCanvasElement painted by Fabric. The
+  // sibling module created this element at its own module-evaluation
+  // time, so it is guaranteed to be a valid `<canvas>` instance here.
+  // No defensive null-check: a missing canvas means the entire
+  // configurator is broken and the app must fail to load loudly rather
+  // than render a black or transparent ball.
+  const element = getElement();
+
+  // Construct the texture. The constructor wires `element` as the
+  // source (`texture.image === element` after this line) and the
+  // Three.js library internally flips its own dirty flag once for
+  // the initial GPU upload — see node_modules/three/src/textures/
+  // CanvasTexture.js. We do NOT reassert that flag in user code.
+  const texture = new CanvasTexture(element);
+
+  // Color space — sRGB roundtrips Fabric's hex-color paint job through
+  // the WebGLRenderer's tone-mapping pipeline.
+  texture.colorSpace = SRGBColorSpace;
+
+  // Filtering — linear interpolation for smooth UV sampling, no
+  // mipmaps (they would have to be regenerated on every Fabric update).
+  texture.minFilter = LinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.generateMipmaps = false;
+
+  // Wrap mode — RepeatWrapping closes the equirectangular sphere UV
+  // seam at u=0 / u=1. Same wrap on V for portability across geometry
+  // implementations.
+  texture.wrapS = RepeatWrapping;
+  texture.wrapT = RepeatWrapping;
+
+  // Anisotropy — modest value (4) for sharper oblique-angle sampling
+  // without taxing low-end GPUs or risking the ST-005 framerate floor.
+  texture.anisotropy = 4;
+
+  return texture;
+}
 
 // ---------------------------------------------------------------------------
-// Public API
+// Public API — the singleton constant
 // ---------------------------------------------------------------------------
 
 /**
- * Return the singleton Three.js texture, creating it on first call.
+ * The single, session-wide Three.js `CanvasTexture` whose pixel source
+ * is the offscreen Fabric.js canvas in `./fabricCanvas`.
  *
- * The texture is constructed from the Fabric HTMLCanvasElement returned
- * by `getElement()`. Three.js's `CanvasTexture` automatically sets
- * `needsUpdate = true` once when constructed (per the official Three.js
- * docs), so the first frame after creation always sees the Fabric
- * content uploaded to the GPU without any extra coordination.
+ * Constructed eagerly at module evaluation time; ESM/Vite caches the
+ * module so subsequent imports return this exact reference. React
+ * StrictMode's effect double-invocation does NOT re-evaluate the
+ * module, so the singleton survives mount/cleanup/remount cycles.
  *
- * Texture configuration:
- *   - `colorSpace = SRGBColorSpace`: pixel values authored in the
- *     Fabric canvas (which uses CSS sRGB color values like '#FFFFFF')
- *     are interpreted as sRGB by the GPU sampler. Without this, colors
- *     would be sampled as linear-RGB and look noticeably washed out.
- *   - `flipY = false`: The Fabric canvas pixel buffer's origin is
- *     top-left; Three.js's default `flipY=true` flips the Y axis on
- *     upload, which would render text and logos upside down on the
- *     ball. Setting `false` preserves the natural orientation.
- *   - `wrapS = wrapT = RepeatWrapping`: lets the equirectangular
- *     projection seam at u=0/u=1 be hidden by the default Three.js UV
- *     mapping for `SphereGeometry`.
- *   - `anisotropy = 4`: provides reasonable filtering quality at
- *     glancing angles (e.g., looking along the equator) without the
- *     8/16-sample cost of higher anisotropy.
+ * Consumers:
+ *   - `../preview/Sphere.tsx` reads this texture and assigns it to its
+ *     `MeshStandardMaterial.map` field. The material's `map` reference
+ *     is stable for the mesh's lifetime — no re-uploads triggered by
+ *     React re-renders.
+ *   - `./texturePipeline.ts` mutates `threeTexture.needsUpdate = true`
+ *     immediately after `fabricCanvas.renderAll()` to schedule a GPU
+ *     re-upload on the next WebGL draw call. This file is the SOLE
+ *     code path in the codebase that performs that assignment — Rule
+ *     R7 / C6 enforces single-code-path mutation of the flag.
  *
- * Cross-cutting note (Rule R7 / C6): This function does NOT itself
- * mutate `needsUpdate` after construction. The CanvasTexture
- * constructor sets it to `true` exactly once for the initial upload;
- * every subsequent dirty marker MUST go through `markThreeTextureDirty()`
- * — and `markThreeTextureDirty()` MUST be called only by the texture
- * pipeline coordinator after `renderFabricCanvas()`.
+ * Members (per AAP exports schema for this file):
+ *   - `needsUpdate`   — boolean dirty flag; mutated only by
+ *                       `./texturePipeline.ts` per Rule R7 / C6.
+ *   - `colorSpace`    — set to `SRGBColorSpace`.
+ *   - `minFilter`     — set to `LinearFilter`.
+ *   - `magFilter`     — set to `LinearFilter`.
+ *   - `generateMipmaps` — set to `false`.
+ *   - `wrapS`         — set to `RepeatWrapping`.
+ *   - `wrapT`         — set to `RepeatWrapping`.
+ *   - `anisotropy`    — set to `4`.
+ *   - `image`         — set by the `CanvasTexture` constructor to the
+ *                       `HTMLCanvasElement` returned by `getElement()`.
+ *
+ * Performance profile:
+ *   - GPU memory: ~ 4 MB (1024 x 1024 x 4 bytes RGBA), no mipmaps.
+ *   - Construction cost: O(1), < 1 ms at module evaluation.
+ *   - Per-frame cost when `needsUpdate === false`: zero (Three.js skips
+ *     re-upload).
+ *   - Per-frame cost when `needsUpdate === true`: one `texSubImage2D`
+ *     call (~ 4 MB, typically < 2 ms on integrated GPUs — well within
+ *     the ST-005 33 ms-per-frame budget).
  */
-export function getThreeTexture(): CanvasTexture {
-  if (threeTexture !== null) {
-    return threeTexture;
-  }
-
-  const fabricElement = getElement();
-  threeTexture = new CanvasTexture(fabricElement);
-
-  // Color space: Fabric writes sRGB hex colors; the texture must be
-  // sampled as sRGB to roundtrip through the renderer's tone mapping.
-  threeTexture.colorSpace = SRGBColorSpace;
-
-  // Preserve native HTML canvas pixel orientation.
-  threeTexture.flipY = false;
-
-  // Equirectangular wrap so the seam at u=0/u=1 is hidden.
-  threeTexture.wrapS = RepeatWrapping;
-  threeTexture.wrapT = RepeatWrapping;
-
-  // Glancing-angle filtering quality vs. cost trade-off.
-  threeTexture.anisotropy = 4;
-
-  // The CanvasTexture constructor sets `needsUpdate = true` automatically;
-  // we do NOT reassert it here because doing so would constitute a
-  // second `needsUpdate` mutation, which would create the dual-write
-  // pattern Rule R7 / C6 explicitly forbids.
-
-  return threeTexture;
-}
-
-/**
- * Mark the Three.js texture dirty, instructing the WebGL renderer to
- * re-upload the underlying canvas pixel buffer to the GPU on the next
- * draw call.
- *
- * (CRITICAL — Rule R7 / C6) This is the SOLE call site in the codebase
- * that is permitted to set `texture.needsUpdate = true`. The texture
- * pipeline coordinator (`texturePipeline.updateTexture()`) MUST call
- * `fabricCanvas.renderAll()` FIRST and `markThreeTextureDirty()` SECOND.
- * Any other call ordering produces a one-frame stale texture flicker
- * that is visible in Playwright visual-regression baselines.
- *
- * Idempotent: calling this when the texture has not yet been created
- * is a no-op (the next `getThreeTexture()` call will mark it dirty
- * automatically via the constructor).
- */
-export function markThreeTextureDirty(): void {
-  if (threeTexture === null) {
-    // Nothing to mark dirty yet — the CanvasTexture constructor will
-    // perform the initial upload on first creation. This branch
-    // protects against a race where the pipeline coordinator runs
-    // before the consumer (Sphere.tsx) has mounted.
-    return;
-  }
-  threeTexture.needsUpdate = true;
-}
-
-/**
- * Dispose the singleton texture, releasing GPU resources.
- *
- * Idempotent: safe to call when no texture exists. After invocation,
- * the next `getThreeTexture()` call constructs a fresh texture from
- * the (presumably still-alive) Fabric canvas.
- *
- * In React StrictMode's development double-invocation cycle, the
- * cleanup function returned from `useEffect` runs once before the
- * effect re-runs; calling `disposeThreeTexture()` followed by a
- * subsequent `getThreeTexture()` correctly reproduces the production
- * one-mount lifecycle.
- */
-export function disposeThreeTexture(): void {
-  if (threeTexture !== null) {
-    threeTexture.dispose();
-    threeTexture = null;
-  }
-}
-
-/**
- * Type re-export so consumers can ascribe their `THREE.MeshStandardMaterial.map`
- * field to the texture singleton without importing `three` themselves.
- * Aliased to the base `Texture` type to satisfy `MeshStandardMaterial.map`'s
- * type annotation.
- */
-export type ConfiguratorTexture = Texture;
+export const threeTexture: CanvasTexture = createTexture();

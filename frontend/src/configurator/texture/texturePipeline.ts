@@ -13,8 +13,9 @@
  *     in Playwright visual-regression baselines. The texture update
  *     coordinator lives in frontend/src/configurator/texture/ and must
  *     be the single code path that mutates threeTexture.needsUpdate."
- *   - Rule R7 — same constraint, restated. This file is the SOLE caller
- *     of `markThreeTextureDirty()`; greppable enforcement.
+ *   - Rule R7 — same constraint, restated. This file is the SOLE site
+ *     in the codebase that mutates `threeTexture.needsUpdate`; greppable
+ *     enforcement via `grep -rnE "\.needsUpdate\s*=" frontend/src/configurator/texture/`.
  *   - QA Report Issue #9 — texture pipeline files MUST exist and the
  *     ordering contract MUST be enforceable.
  *
@@ -40,10 +41,10 @@
  * Cross-cutting rules enforced here:
  *   - Rule R7 / C6 (THIS module's primary purpose). The ordering is
  *     enforced by code structure: `updateTexture()` calls
- *     `fabricCanvas.renderAll()` FIRST and `markThreeTextureDirty()`
- *     SECOND. Both calls are synchronous in their critical path; no
- *     `await` separates them so no timer / microtask can interleave
- *     between the two operations.
+ *     `fabricCanvas.renderAll()` FIRST and assigns
+ *     `threeTexture.needsUpdate = true` SECOND. Both operations are
+ *     synchronous in their critical path; no `await` separates them
+ *     so no timer / microtask can interleave between the two.
  *   - Rule R2: ZERO `console.*` statements; failures throw.
  *   - Rule R3: No auth / Firebase / JWT imports.
  *
@@ -54,7 +55,7 @@
  */
 
 import * as fabricCanvas from './fabricCanvas';
-import { disposeThreeTexture, markThreeTextureDirty } from './threeTexture';
+import { threeTexture } from './threeTexture';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -120,7 +121,16 @@ export function updateTexture(): void {
   // AFTER step 1 — reversing the order would upload the stale bitmap
   // and the new Fabric content would be invisible until the next
   // frame triggers another `needsUpdate` cycle.
-  markThreeTextureDirty();
+  //
+  // (CRITICAL — Rule R7 / C6) This is the SOLE assignment to
+  // `threeTexture.needsUpdate` in the entire frontend codebase.
+  // Greppable enforcement:
+  //   grep -rnE "\.needsUpdate\s*=" frontend/src/configurator/texture/
+  // The match below is the ONLY allowed code-path mutation of the
+  // Three.js texture's dirty flag. `Sphere.tsx` may reference
+  // `material.needsUpdate` (a different flag on the MATERIAL, used
+  // for shader recompilation) but never `texture.needsUpdate`.
+  threeTexture.needsUpdate = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,8 +174,8 @@ export function applyConfiguratorState(state: TextureConfiguratorState): void {
   );
 
   // Commit through the strict R7 / C6 ordering contract:
-  //   1. fabricCanvas.renderAll()       (rasterize Fabric scene)
-  //   2. markThreeTextureDirty()        (schedule GPU re-upload)
+  //   1. fabricCanvas.renderAll()        (rasterize Fabric scene)
+  //   2. threeTexture.needsUpdate = true (schedule GPU re-upload)
   updateTexture();
 }
 
@@ -192,5 +202,11 @@ export function applyConfiguratorState(state: TextureConfiguratorState): void {
  * reset module state via Vitest's `vi.resetModules()`).
  */
 export function disposeTexturePipeline(): void {
-  disposeThreeTexture();
+  // The `dispose()` method is the standard Three.js Texture lifecycle
+  // hook for releasing GPU resources. After disposal the texture
+  // singleton in `./threeTexture.ts` is a "dead" object — its module-
+  // level binding still exists, but the GPU handle is gone. Tests that
+  // need a fully fresh state must reload the page (or reset the module
+  // cache via the test runner's `vi.resetModules()` / equivalent).
+  threeTexture.dispose();
 }
