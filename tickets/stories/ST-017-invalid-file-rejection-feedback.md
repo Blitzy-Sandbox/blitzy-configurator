@@ -13,7 +13,7 @@ As an end user, I want the configurator to tell me plainly when my logo upload f
 
 ## Acceptance Criteria
 
-- [ ] Uploading a file whose type is not among the supported raster and vector image formats is rejected and the preview is left unchanged.
-- [ ] Uploading a file larger than the documented maximum file size is rejected and the preview is left unchanged.
-- [ ] Every rejection produces a user-facing message that names the specific reason (unsupported format versus size limit) and the remediation the user can take.
-- [ ] The rejection message is announced to assistive technology and does not obscure the 3D preview or the control sidebar.
+- [x] Uploading a file whose type is not among the supported raster and vector image formats is rejected and the preview is left unchanged.
+- [x] Uploading a file larger than the documented maximum file size is rejected and the preview is left unchanged.
+- [x] Every rejection produces a user-facing message that names the specific reason (unsupported format versus size limit) and the remediation the user can take.
+- [x] The rejection message is announced to assistive technology and does not obscure the 3D preview or the control sidebar.
