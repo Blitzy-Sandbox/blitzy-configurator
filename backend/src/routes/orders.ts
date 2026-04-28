@@ -275,10 +275,23 @@ import type { OrderService } from '../services/order.service';
  * Schema for one cart line item in `POST /api/orders`.
  *
  * Fields:
- *   - `designId` — non-empty string. Points to a row in the
- *                  `designs` table; the service validates ownership
- *                  via `designRepository.findById` before any
- *                  INSERT (ST-032-AC3 enumeration-defense).
+ *   - `designId` — UUID v4 string. QA Final B Issue #5 (MAJOR):
+ *                  previously declared as `z.string().min(1)`, which
+ *                  forwarded any non-empty string to the service. The
+ *                  service's `designRepository.findById` then cast the
+ *                  raw string to `::uuid` in SQL and PostgreSQL emitted
+ *                  error 22P02 ("invalid input syntax for type uuid"),
+ *                  which propagated as a generic 500 INTERNAL_ERROR.
+ *                  The fix tightens the schema to `.uuid()` so any
+ *                  malformed identifier produces a structured 400 +
+ *                  Zod error envelope, matches the project-wide
+ *                  validation contract, prevents Postgres internal
+ *                  error codes from leaking to clients, and keeps the
+ *                  4xx vs 5xx metric counters honest. The service
+ *                  layer's existence check (ST-032-AC3) still runs
+ *                  for valid UUIDs and returns 404 DESIGN_NOT_FOUND
+ *                  when the row is absent or owned by a different
+ *                  user.
  *   - `quantity` — positive integer. The DB CHECK constraint
  *                  `quantity > 0` (ST-035-AC2) is the ultimate
  *                  guard; this Zod constraint converts a
@@ -292,7 +305,7 @@ import type { OrderService } from '../services/order.service';
  */
 const cartItemSchema = z
   .object({
-    designId: z.string().min(1, { message: 'designId required' }),
+    designId: z.string().uuid({ message: 'designId must be a UUID' }),
     quantity: z.number().int().positive({
       message: 'quantity must be a positive integer',
     }),
@@ -889,9 +902,29 @@ async function runFinalizeOrder(
   // check is defense-in-depth — Express normalises `//` segments
   // differently across minor versions, and a future migration to a
   // different route-matching library could change the contract.
+  //
+  // QA Final B Issue #5 (MAJOR): the previous check accepted ANY
+  // non-empty string and forwarded it to the service. The repository
+  // then cast the raw string to `::uuid` in a SQL parameter, and
+  // PostgreSQL responded with error 22P02 ("invalid input syntax for
+  // type uuid") which propagated up as a generic 500 INTERNAL_ERROR.
+  // Mirroring the fix in `routes/designs.ts` for the share-link
+  // endpoint, we now validate the path parameter as a UUID at the
+  // route boundary using Zod's built-in `.uuid()` so the response
+  // matches the project-wide error envelope, the metric counters
+  // (4xx vs 5xx) reflect reality, and the Postgres error never
+  // leaks through.
   const orderId: string = req.params['id'] ?? '';
   if (orderId.trim() === '') {
     res.status(400).json(buildError('VALIDATION_FAILED', 'Order id required'));
+    return;
+  }
+  const orderIdParsed = z
+    .string()
+    .uuid({ message: 'Order id must be a UUID' })
+    .safeParse(orderId);
+  if (!orderIdParsed.success) {
+    res.status(400).json(translateZodError(orderIdParsed.error));
     return;
   }
 
@@ -917,7 +950,7 @@ async function runFinalizeOrder(
   try {
     const finalized = await orderService.finalizeOrder({
       userId: uid,
-      orderId,
+      orderId: orderIdParsed.data,
     });
 
     res.status(200).json(finalized);

@@ -175,13 +175,43 @@ import type { ShareLinkService } from '../services/share-link.service';
  * in the service layer's looser check). The service layer ALSO checks
  * `Number.isFinite`; we do it here too so the 400 response carries the
  * precise field-level error attribution.
+ *
+ * QA Final B Issue #6 (MINOR): logo placement bounds are NOW enforced
+ * server-side as defense-in-depth. The frontend `LogoPositioner.tsx`
+ * clamps offsetX/offsetY to [-1, 1] (normalized texture-space
+ * coordinates where 0,0 is the canvas center) and scale to
+ * [0.25, 2.5] (LogoPositioner.tsx `MIN_SCALE` / `MAX_SCALE`
+ * constants). A malicious / curl-only client that bypasses the
+ * frontend WOULD have been able to persist out-of-range values
+ * (verified: `offsetX: 2.5` and `scale: 5.0` were both accepted
+ * with 201 prior to this fix). Mirroring the frontend bounds here
+ * produces a structured 400 with field-level attribution for every
+ * adversarial submission, preventing data drift in the persisted
+ * JSONB payload. `rotation` remains unbounded — the frontend does
+ * not currently constrain it (any radian value is meaningful), so
+ * the server preserves that flexibility.
  */
 const logoSchema = z
   .object({
     objectKey: z.string().min(1, 'logo.objectKey must be a non-empty string'),
-    offsetX: z.number().finite().optional(),
-    offsetY: z.number().finite().optional(),
-    scale: z.number().finite().optional(),
+    offsetX: z
+      .number()
+      .finite()
+      .min(-1, 'logo.offsetX must be >= -1')
+      .max(1, 'logo.offsetX must be <= 1')
+      .optional(),
+    offsetY: z
+      .number()
+      .finite()
+      .min(-1, 'logo.offsetY must be >= -1')
+      .max(1, 'logo.offsetY must be <= 1')
+      .optional(),
+    scale: z
+      .number()
+      .finite()
+      .min(0.25, 'logo.scale must be >= 0.25')
+      .max(2.5, 'logo.scale must be <= 2.5')
+      .optional(),
     rotation: z.number().finite().optional(),
   })
   .strict();
@@ -219,15 +249,65 @@ const PATTERN_VALUES = ['classic', 'hexagonal', 'diamond', 'spiral', 'star', 'gr
 const FINISH_VALUES = ['matte', 'glossy', 'metallic'] as const;
 
 /**
+ * Canonical hex color regex for #RRGGBB format (Issues #3 + #4).
+ *
+ * The frontend `DesignPayload.primaryColor` / `secondaryColor` /
+ * `accentColor` interfaces in `frontend/src/api/designs.ts` document
+ * the canonical contract as "#RRGGBB uppercase". The configurator
+ * store and color picker components emit values in this form, but
+ * a curl-only client was previously able to persist arbitrary
+ * non-hex strings (verified: `primaryColor: "red"` returned 201
+ * prior to this fix). Mirroring the canonical contract on the
+ * server is the defense-in-depth we need: any non-#RRGGBB value
+ * now yields a structured 400 with `path: "payload.primaryColor"`.
+ *
+ * Pattern intent:
+ *   ^#         literal hash
+ *   [0-9A-Fa-f]{6}  exactly six hex digits (case-insensitive at
+ *                   the regex level — case is normalized below
+ *                   via `.transform(toUpperCase)`).
+ *   $          end of string (no trailing characters).
+ *
+ * Allowed at the regex level (case-insensitive); normalized to
+ * uppercase by the schema transform so the persisted JSONB and
+ * the wire response are uniformly `#RRGGBB` regardless of how the
+ * client formatted the value. This eliminates round-trip drift
+ * between `#ff0000` and `#FF0000` which the frontend treats as a
+ * single canonical color.
+ */
+const HEX_COLOR_REGEX = /^#[0-9A-Fa-f]{6}$/;
+
+/**
+ * Reusable color schema with regex validation + uppercase normalization
+ * (QA Final B Issues #3 + #4).
+ *
+ * Every color field on a design payload (primaryColor, secondaryColor,
+ * accentColor) MUST satisfy the canonical `#RRGGBB` contract that the
+ * frontend `DesignPayload` documents. The transform normalizes any
+ * accepted hex value to uppercase so the database stores a single
+ * canonical form and the wire response is identical regardless of the
+ * client's casing convention.
+ *
+ * Per-field error messages are interpolated by the caller (template
+ * literal closure on the field name) so each Zod issue carries the
+ * exact `path: "payload.<field>"` attribution.
+ */
+const buildColorSchema = (fieldName: string) =>
+  z
+    .string()
+    .regex(HEX_COLOR_REGEX, `payload.${fieldName} must be #RRGGBB hex format`)
+    .transform((s) => s.toUpperCase());
+
+/**
  * Design payload schema (ST-027-AC1, ST-027-AC3).
  *
  * The configurator persists three required fields (primaryColor,
- * pattern, finish) and several optional fields (secondaryColor,
- * accentColor, logo). The schema mirrors the service-layer allow-list
- * EXACTLY — adding a new payload field requires changes in both
- * places, which is intentional: a Zod-only addition would be silently
- * dropped by the service's allow-list, and a service-only addition
- * would be rejected by Zod's `.strict()` mode at the route boundary.
+ * pattern, finish) and several optional fields (logo). The schema
+ * mirrors the service-layer allow-list EXACTLY — adding a new
+ * payload field requires changes in both places, which is
+ * intentional: a Zod-only addition would be silently dropped by
+ * the service's allow-list, and a service-only addition would be
+ * rejected by Zod's `.strict()` mode at the route boundary.
  *
  * The `logo` field accepts `null` explicitly: a frontend that wants
  * to clear an existing logo sends `logo: null` rather than omitting
@@ -237,12 +317,35 @@ const FINISH_VALUES = ['matte', 'glossy', 'metallic'] as const;
  * QA Issue #11 fix: `pattern` and `finish` are now `z.enum(...)` over
  * the canonical tuples, so any non-matching string produces a 400 with
  * a per-field error attribution rather than being silently accepted.
+ *
+ * QA Final B Issue #2 (MINOR): `secondaryColor` and `accentColor`
+ * remain `.optional()` to preserve compatibility with the
+ * AAP-mandated Gate T1-C verbatim curl payload (AAP §0.6.4) which
+ * uses a minimal `{primaryColor, pattern, finish}` body. The QA
+ * finding offered two resolution paths ("either require or both
+ * optional"); the AAP Gate T1-C example forces the optional path,
+ * and the contract drift is eliminated by relaxing the frontend
+ * `DesignPayload` interface to mark these two fields as optional
+ * (`secondaryColor?: string`, `accentColor?: string`) — see
+ * `frontend/src/api/designs.ts`. This documents the actual wire
+ * contract (the backend accepts a 1-color payload) without breaking
+ * Gate T1-C.
+ *
+ * QA Final B Issue #3 (MINOR): all three color fields, when present,
+ * validate against the canonical `#RRGGBB` hex regex via
+ * `buildColorSchema`. Optional fields that are absent skip the regex
+ * check.
+ *
+ * QA Final B Issue #4 (MINOR): all three color fields, when present,
+ * normalize to uppercase via the transform inside `buildColorSchema`,
+ * so a lowercase client submission round-trips as the canonical
+ * uppercase form documented by the frontend.
  */
 const designPayloadSchema = z
   .object({
-    primaryColor: z.string().min(1, 'payload.primaryColor must be a non-empty string'),
-    secondaryColor: z.string().min(1).optional(),
-    accentColor: z.string().min(1).optional(),
+    primaryColor: buildColorSchema('primaryColor'),
+    secondaryColor: buildColorSchema('secondaryColor').optional(),
+    accentColor: buildColorSchema('accentColor').optional(),
     pattern: z.enum(PATTERN_VALUES, {
       errorMap: () => ({
         message: `payload.pattern must be one of: ${PATTERN_VALUES.join(', ')}`,
@@ -731,16 +834,40 @@ async function runIssueShareLink(
   // narrow defensively here so that an unexpectedly missing route
   // parameter (e.g., a future routing refactor) surfaces a clean 400
   // rather than handing `''` to the service layer.
+  //
+  // QA Final B Issue #5 (MAJOR): the previous check accepted ANY
+  // non-empty string and forwarded it to the service. The repository
+  // then cast the raw string to `::uuid` in a SQL parameter, and
+  // PostgreSQL responded with error 22P02 ("invalid input syntax for
+  // type uuid") which propagated up as a generic 500 INTERNAL_ERROR.
+  // The result was a contract violation: every other validation error
+  // returns a structured 400 + Zod error envelope, but malformed
+  // UUIDs alone returned 500. We now validate the path parameter as
+  // a UUID at the route boundary using Zod's built-in `.uuid()` so
+  // the response matches the project-wide error envelope, the metric
+  // counters (4xx vs 5xx) reflect reality, and the Postgres error
+  // never leaks through.
   const rawId: string = req.params['id'] ?? '';
-  if (typeof rawId !== 'string' || rawId.trim().length === 0) {
+  if (rawId.trim().length === 0) {
     res.status(400).json(buildError('VALIDATION_DESIGN_ID_MISSING', 'Design id is required'));
+    return;
+  }
+  const idParsed = z.string().uuid({ message: 'Design id must be a UUID' }).safeParse(rawId);
+  if (!idParsed.success) {
+    // translateZodError() returns a full structured ErrorBody with
+    // the project-wide `error.code` = 'VALIDATION_FAILED' shape and
+    // per-issue `details` entries (path + message). The Zod path
+    // for a top-level `safeParse` is empty, so `details[].path` will
+    // be the empty string; consumers branch on `error.code` rather
+    // than the path here. The HTTP status is 400.
+    res.status(400).json(translateZodError(idParsed.error));
     return;
   }
 
   try {
     const shareLink = await shareLinkService.issue({
       ownerUid: uid,
-      designId: rawId,
+      designId: idParsed.data,
     });
     // ST-029-AC2: response includes `token`, `designId`, `ownerUid`,
     // `issuedAt`, `expiresAt`, `revokedAt`. Date fields are serialized

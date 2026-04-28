@@ -303,6 +303,12 @@ const mockedLogger = pinoModule.logger as unknown as {
 type SessionServiceMock = {
   verifyToken: jest.Mock<Promise<DecodedIdToken>, [string]>;
   isRevoked: jest.Mock<Promise<boolean>, [string, string]>;
+  // QA Final B Issue #7 — JIT user creation. The middleware calls
+  // `ensureUser` on every authenticated request after `verifyToken`
+  // and `isRevoked` succeed. The default mock resolves to `undefined`
+  // (no-op) so existing tests continue to pass; suites that exercise
+  // the JIT failure path override the mock per-test.
+  ensureUser: jest.Mock<Promise<void>, [{ uid: string; email?: string }]>;
 };
 
 // ===========================================================================
@@ -374,9 +380,16 @@ function buildNext(): jest.Mock {
 
 /** Build a fresh SessionService double with un-configured method mocks. */
 function buildSessionService(): SessionServiceMock {
+  // The ensureUser mock defaults to resolving with `undefined` (no-op)
+  // so existing tests that don't care about JIT user creation continue
+  // to pass. Tests that exercise the JIT failure path call
+  // `mockRejectedValueOnce(...)` per-test.
+  const ensureUserMock = jest.fn() as SessionServiceMock['ensureUser'];
+  ensureUserMock.mockResolvedValue(undefined);
   return {
     verifyToken: jest.fn() as SessionServiceMock['verifyToken'],
     isRevoked: jest.fn() as SessionServiceMock['isRevoked'],
+    ensureUser: ensureUserMock,
   };
 }
 
@@ -1199,6 +1212,21 @@ describe('sessionMiddleware — ST-026 Acceptance Criteria', () => {
         } as unknown as SessionService,
       };
       expect(() => sessionMiddleware(incomplete)).toThrow(/isRevoked/i);
+    });
+
+    it('throws synchronously when sessionService.ensureUser is missing (QA Final B Issue #7)', () => {
+      // The middleware calls `ensureUser` on every authenticated
+      // request to JIT-mirror Firebase users into the local `users`
+      // table. A composition-root that provides a service without
+      // `ensureUser` must fail fast at app boot per Rule R4.
+      const incomplete = {
+        sessionService: {
+          verifyToken: jest.fn() as SessionServiceMock['verifyToken'],
+          isRevoked: jest.fn() as SessionServiceMock['isRevoked'],
+          // ensureUser intentionally absent
+        } as unknown as SessionService,
+      };
+      expect(() => sessionMiddleware(incomplete)).toThrow(/ensureUser/i);
     });
   });
 

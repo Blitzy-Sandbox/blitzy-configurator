@@ -600,6 +600,24 @@ export interface LoginResult {
  *     derive the `tokenRef` used to mark the matching session row
  *     revoked. NEVER logged (Rule R2).
  */
+export interface EnsureUserParams {
+  /**
+   * Firebase user ID from the verified idToken. Used as both the local
+   * `users.id` primary key and the lookup key for `findByFirebaseUid`.
+   */
+  uid: string;
+  /**
+   * OPTIONAL email claim from the decoded Firebase idToken. When
+   * present, it is used as the `loginIdentifier` for the JIT-created
+   * row to maintain parity with rows created by `register`. When
+   * absent (e.g. anonymous, phone, or custom-token sign-in), the uid
+   * is used as the loginIdentifier — guaranteed unique because uids
+   * are unique. NEVER logged in raw form (Rule R2 — `emailPresent`
+   * boolean only).
+   */
+  email?: string;
+}
+
 export interface LogoutParams {
   /** Authenticated user's Firebase user ID (from `req.uid`). */
   uid: string;
@@ -759,6 +777,57 @@ export interface SessionService {
    *   middleware fails closed per Rule R8 and rejects the request.
    */
   isRevoked(uid: string, rawBearerToken: string): Promise<boolean>;
+
+  /**
+   * Ensure a local `users` row exists for the supplied Firebase uid —
+   * QA Final B Issue #7 fix (Just-In-Time user mirroring).
+   *
+   * Background:
+   *   The frontend (`frontend/src/auth/firebase-client.ts`) authenticates
+   *   end users directly against the Firebase JS SDK
+   *   (`signInWithEmailAndPassword`, `createUserWithEmailAndPassword`)
+   *   and never calls our `/api/auth/register` or `/api/auth/login`
+   *   endpoints. As a result, a Firebase-authenticated user reaching a
+   *   protected backend route may NOT have a corresponding row in our
+   *   local `users` table. The first attempt to persist a design
+   *   (FK `designs.user_id REFERENCES users(id)`) would therefore
+   *   surface as PostgreSQL `23503` (foreign key violation) — observed
+   *   by QA as a generic HTTP 500 on the user's first save.
+   *
+   * Resolution:
+   *   The session middleware calls this method on every authenticated
+   *   request AFTER `verifyToken` and `isRevoked` succeed and BEFORE
+   *   `req.uid` is set. If a row already exists for `uid`, the call is
+   *   a no-op (the common-path optimization — one PK-indexed SELECT).
+   *   If no row exists, a new row is inserted with the email claim (or
+   *   the uid as fallback) used as the `loginIdentifier`.
+   *
+   * Idempotency and concurrency:
+   *   The implementation is a "find-then-insert" pattern. Two
+   *   concurrent first-requests for the same uid race; the loser
+   *   surfaces a UNIQUE-violation (PK on `users.id`) which is treated
+   *   as success — the user now exists.
+   *
+   * Rule compliance:
+   *   - Rule R2: only `event`, `uid`, and `emailPresent` (boolean) are
+   *     logged. Raw email values are NEVER logged.
+   *   - Rule R3: this method does NOT call `verifyIdToken`; the caller
+   *     (middleware) is responsible for token verification BEFORE
+   *     invoking `ensureUser`.
+   *   - Rule R8 (fail-closed): on any unrecoverable error (DB
+   *     unreachable, FK violation against an unrelated row), the
+   *     method propagates the error to the middleware, which fails
+   *     closed with HTTP 401 INVALID_SESSION.
+   *
+   * @param params See {@link EnsureUserParams}.
+   * @returns Resolves when a row is guaranteed to exist for `uid`.
+   * @throws {ValidationError} when `uid` fails structural validation.
+   * @throws Any non-recoverable PG error from
+   *   `userRepository.findByFirebaseUid` or
+   *   `userRepository.insert`. PK UNIQUE violations from a concurrent
+   *   first-insert race are caught internally and treated as success.
+   */
+  ensureUser(params: EnsureUserParams): Promise<void>;
 }
 
 /**
@@ -1181,6 +1250,118 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // A non-null value means the row was revoked (logout endpoint set
       // `revoked_at = now()` via the COALESCE clause).
       return session.revokedAt !== null;
+    },
+
+    /**
+     * Ensure a local `users` row exists for the supplied uid —
+     * QA Final B Issue #7 fix.
+     *
+     * Implementation flow:
+     *   1. Validate uid (structural).
+     *   2. Look up the existing row via
+     *      `userRepository.findByFirebaseUid(uid)`. The query is
+     *      backed by the PRIMARY KEY index on `users.id`, so it is
+     *      O(log n) — comfortably inside the ST-026-AC4 latency
+     *      budget for the hot path.
+     *   3. If the row exists, return immediately (no-op).
+     *   4. Otherwise, INSERT a new row with `firebaseUid` as the PK
+     *      and either `email` (when present) or `uid` (fallback) as
+     *      the `loginIdentifier`. The `credential_digest` column is
+     *      NEVER populated (Rule R3).
+     *   5. Catch the UNIQUE-violation race condition (PG `23505`) and
+     *      treat it as success — a concurrent first-request for the
+     *      same uid won the insert.
+     *   6. Log a `user.jit_created` event with `uid` and
+     *     `emailPresent` only (Rule R2 — raw email NEVER logged).
+     *
+     * Rationale for `loginIdentifier` fallback to `uid`:
+     *   The `users.login_identifier` column has a UNIQUE constraint.
+     *   For users registered through `/api/auth/register`, it is the
+     *   email. For users authenticated via the Firebase JS SDK
+     *   without ever calling our register endpoint, the email may be
+     *   absent (anonymous, phone, custom-token providers) OR may
+     *   conflict with a row created earlier through a different path.
+     *   Falling back to the uid (which is the PK and therefore
+     *   guaranteed unique) avoids both edge cases. A future migration
+     *   can backfill loginIdentifier with the email once Firebase Auth
+     *   custom claims propagate.
+     *
+     * Why we catch only `23505` (UNIQUE violation):
+     *   Other PG error codes (e.g. `23503` foreign-key violation) are
+     *   unrecoverable from inside this method and indicate a
+     *   schema/data inconsistency that requires operator attention —
+     *   we propagate them to the middleware, which fails closed per
+     *   Rule R8.
+     */
+    async ensureUser({ uid, email }: EnsureUserParams): Promise<void> {
+      validateUid(uid);
+
+      // Step 1: fast path — lookup by PK index. Returns null when
+      // the user has never been mirrored locally.
+      const existing = await userRepository.findByFirebaseUid(uid);
+      if (existing !== null) {
+        // Common path: the user already has a local row. No log
+        // record is emitted on this path to avoid log volume on the
+        // hot path of every authenticated request.
+        return;
+      }
+
+      // Step 2: insert a new row. The loginIdentifier is the email
+      // when present (parity with `register`) and the uid otherwise
+      // (uid is the PK, so it is guaranteed unique).
+      const loginIdentifier =
+        typeof email === 'string' && email.length > 0 ? email : uid;
+
+      // Step 3: attempt the INSERT. Wrap in try/catch to handle the
+      // concurrent-first-request race condition.
+      try {
+        await userRepository.insert({
+          firebaseUid: uid,
+          loginIdentifier,
+        });
+      } catch (err) {
+        // Step 3a: detect PG `23505` UNIQUE/PK violation. The
+        // `pg` driver attaches the SQLSTATE on the `code` property
+        // of the thrown error.
+        const isUniqueViolation =
+          typeof err === 'object' &&
+          err !== null &&
+          'code' in err &&
+          (err as { code?: unknown }).code === '23505';
+
+        if (isUniqueViolation) {
+          // A concurrent first-request for the same uid won the
+          // INSERT race. The user now exists; treat as success.
+          // Log at debug level for operator visibility — this is
+          // expected under load but should be rare overall.
+          logger.debug(
+            {
+              event: 'user.jit_create_race_resolved',
+              uid,
+            },
+            'JIT user-create lost a race — row already exists',
+          );
+          return;
+        }
+
+        // Any other PG error (FK violation, connection failure,
+        // permission error) is unrecoverable from inside this
+        // method and surfaces to the middleware, which fails
+        // closed per Rule R8.
+        throw err;
+      }
+
+      // Step 4: log the JIT creation. Per Rule R2, ONLY `event`,
+      // `uid`, and `emailPresent` (boolean) are logged. The raw
+      // email value is NEVER logged.
+      logger.info(
+        {
+          event: 'user.jit_created',
+          uid,
+          emailPresent: typeof email === 'string' && email.length > 0,
+        },
+        'user JIT-created from Firebase token',
+      );
     },
   };
 

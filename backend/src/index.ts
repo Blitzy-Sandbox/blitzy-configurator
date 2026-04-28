@@ -540,10 +540,19 @@ async function bootstrap(): Promise<http.Server> {
     ?.split(',')
     .map((o) => o.trim())
     .filter((o) => o.length > 0);
+  // QA Final B Issue #8: include both `localhost` and `127.0.0.1`
+  // forms of the Vite dev server origin in the default allow-list.
+  // Browsers treat `http://localhost:5173` and `http://127.0.0.1:5173`
+  // as DISTINCT origins for CORS purposes — a developer reaching the
+  // frontend at the IP form would otherwise see preflight failures
+  // (`net::ERR_FAILED`). Both forms are common in dev environments
+  // (some dev tools bind only to 127.0.0.1, others only to localhost),
+  // so accepting both is the least-surprise default. Production
+  // deployments override this via `CORS_ALLOWED_ORIGINS`.
   const corsAllowedOrigins =
     parsedCorsOrigins !== undefined && parsedCorsOrigins.length > 0
       ? parsedCorsOrigins
-      : ['http://localhost:5173'];
+      : ['http://localhost:5173', 'http://127.0.0.1:5173'];
   const corsOptions: CorsOptions = {
     origin: corsAllowedOrigins,
     credentials: false,

@@ -736,16 +736,29 @@ async function setupAuthenticatedUser(
  *
  * The shape mirrors the one used in `designs.integration.test.ts`:
  *   {
- *     primaryColor: '#FF0000',
- *     pattern:      'classic',
- *     finish:       'matte',
+ *     primaryColor:   '#FF0000',
+ *     secondaryColor: '#00FF00',
+ *     accentColor:    '#0000FF',
+ *     pattern:        'classic',
+ *     finish:         'matte',
  *   }
+ *
+ * QA Final B Issue #2 (BOTH-OPTIONAL pivot): `secondaryColor` and
+ * `accentColor` remain `.optional()` on the production
+ * `designPayloadSchema` so the AAP §0.6.4 Gate T1-C verbatim payload
+ * still yields 201. The frontend `DesignPayload` was relaxed to mark
+ * these two fields optional in lock-step. This integration fixture
+ * nevertheless populates all three colors with canonical `#RRGGBB`
+ * hex values (Issue #3) so tests that assert color round-trip
+ * behaviour can distinguish the three fields uniquely.
  *
  * @returns A fresh payload object suitable for `POST /api/designs`.
  */
 function buildValidDesignPayload(): Record<string, unknown> {
   return {
     primaryColor: '#FF0000',
+    secondaryColor: '#00FF00',
+    accentColor: '#0000FF',
     pattern: 'classic',
     finish: 'matte',
   };

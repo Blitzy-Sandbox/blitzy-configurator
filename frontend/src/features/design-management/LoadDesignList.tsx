@@ -210,9 +210,11 @@
  *
  *     {
  *       design: {                       // backend canonical shape
- *         primaryColor: HexColor,
- *         secondaryColor: HexColor,
- *         accentColor: HexColor,
+ *         primaryColor: HexColor,       // REQUIRED on the wire
+ *         secondaryColor?: HexColor,    // OPTIONAL on the wire (see
+ *                                       // QA Final B Issue #2 below)
+ *         accentColor?: HexColor,       // OPTIONAL on the wire (see
+ *                                       // QA Final B Issue #2 below)
  *         pattern: StitchingPattern,    // server-validated by Zod enum
  *         finish: MaterialFinish,       // server-validated by Zod enum
  *         logo: { objectKey, offsetX?, offsetY?, scale?, rotation? } | null
@@ -224,6 +226,20 @@
  *                                       // Date via Date.prototype.toJSON
  *     }
  *
+ *   QA Final B — Issue #2 (BOTH-OPTIONAL pivot):
+ *     Per AAP §0.6.4 Gate T1-C, the verbatim curl payload for "create
+ *     design" sends ONLY {primaryColor, pattern, finish} — i.e. the
+ *     minimal payload that MUST yield 201. To satisfy that gate, both
+ *     `secondaryColor` and `accentColor` are OPTIONAL in the backend
+ *     Zod schema and therefore OPTIONAL in `DesignPayload` on the
+ *     client. The store-side `LoadedDesignPayload`, however, requires
+ *     a concrete `HexColor` for both fields because the configurator
+ *     UI cannot render with `undefined` colours. The wire-to-store
+ *     mapper below therefore SUBSTITUTES `CONFIGURATOR_DEFAULTS` for
+ *     any colour field that the wire omits — a transparent client-
+ *     side hydration that keeps the load flow lossless from the
+ *     user's perspective.
+ *
  *   The configurator store's LoadedDesignPayload shape (consumed by
  *   useConfiguratorStore.loadDesign) is:
  *
@@ -232,7 +248,9 @@
  *       title: string,                    ← title
  *       primaryColor: HexColor,           ← design.primaryColor
  *       secondaryColor: HexColor,         ← design.secondaryColor
+ *                                            ?? CONFIGURATOR_DEFAULTS.secondaryColor
  *       accentColor: HexColor,            ← design.accentColor
+ *                                            ?? CONFIGURATOR_DEFAULTS.accentColor
  *       stitchingPattern: StitchingPattern, ← design.pattern
  *       materialFinish: MaterialFinish,   ← design.finish
  *       logoUrl: string | null,           ← design.logo === null
@@ -314,6 +332,7 @@ import type {
 } from '../../api/designs';
 import { onAuthStateChanged } from '../../auth/firebase-client';
 import {
+  CONFIGURATOR_DEFAULTS,
   type LoadedDesignPayload,
   type MaterialFinish,
   type StitchingPattern,
@@ -450,7 +469,9 @@ function narrowMaterialFinish(wireValue: string): MaterialFinish {
  *   - title             ← title
  *   - primaryColor      ← design.primaryColor
  *   - secondaryColor    ← design.secondaryColor
+ *                            ?? CONFIGURATOR_DEFAULTS.secondaryColor
  *   - accentColor       ← design.accentColor
+ *                            ?? CONFIGURATOR_DEFAULTS.accentColor
  *   - stitchingPattern  ← design.pattern
  *   - materialFinish    ← design.finish
  *   - logoUrl           ← design.logo === null
@@ -470,6 +491,18 @@ function narrowMaterialFinish(wireValue: string): MaterialFinish {
  *     placement)
  *   - scale          → 1.0 when omitted (native size)
  *
+ * QA Final B — Issue #2 (BOTH-OPTIONAL pivot, per AAP §0.6.4 Gate
+ * T1-C): the wire-format `secondaryColor` and `accentColor` are
+ * OPTIONAL on the backend Zod schema (the verbatim Gate T1-C curl
+ * sends only `primaryColor`, and that minimal payload MUST yield
+ * 201). The store-side `LoadedDesignPayload` requires concrete
+ * `HexColor` values, so the mapper hydrates any omitted colour from
+ * `CONFIGURATOR_DEFAULTS` — keeping the load flow lossless from the
+ * user's perspective. Under normal operation `SaveDesignCta.tsx`
+ * sends all three colours, so the fallbacks are exercised only for
+ * legacy designs created via the minimal Gate-T1-C-shaped curl or
+ * via a future client that elects to omit these fields.
+ *
  * @param view - The wire-format projection from getSharedDesign().
  * @returns The store-format payload ready for loadDesign().
  */
@@ -482,13 +515,22 @@ function mapSharedToLoaded(view: SharedDesignView): LoadedDesignPayload {
   const stitchingPattern = narrowStitchingPattern(design.pattern);
   const materialFinish = narrowMaterialFinish(design.finish);
 
+  // QA Final B — Issue #2 (BOTH-OPTIONAL pivot): the wire-format
+  // `secondaryColor` / `accentColor` are OPTIONAL on the backend Zod
+  // schema (per AAP §0.6.4 Gate T1-C verbatim curl), but the store
+  // side requires concrete `HexColor` values. Hydrate any omitted
+  // colour from CONFIGURATOR_DEFAULTS so the load flow is lossless.
+  const secondaryColor =
+    design.secondaryColor ?? CONFIGURATOR_DEFAULTS.secondaryColor;
+  const accentColor = design.accentColor ?? CONFIGURATOR_DEFAULTS.accentColor;
+
   if (design.logo === null) {
     return {
       id: designId,
       title,
       primaryColor: design.primaryColor,
-      secondaryColor: design.secondaryColor,
-      accentColor: design.accentColor,
+      secondaryColor,
+      accentColor,
       stitchingPattern,
       materialFinish,
       logoUrl: null,
@@ -502,8 +544,8 @@ function mapSharedToLoaded(view: SharedDesignView): LoadedDesignPayload {
     id: designId,
     title,
     primaryColor: design.primaryColor,
-    secondaryColor: design.secondaryColor,
-    accentColor: design.accentColor,
+    secondaryColor,
+    accentColor,
     stitchingPattern,
     materialFinish,
     logoUrl: design.logo.objectKey,

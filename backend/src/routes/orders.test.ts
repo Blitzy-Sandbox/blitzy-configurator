@@ -411,7 +411,7 @@ describe('POST /api/orders — ST-032 success path', () => {
     const res = await request(app)
       .post('/api/orders')
       .send({
-        items: [{ designId: 'design-uuid-1', quantity: 2 }],
+        items: [{ designId: '11111111-1111-4111-8111-111111111111', quantity: 2 }],
       });
 
     expect(res.status).toBe(201);
@@ -430,14 +430,14 @@ describe('POST /api/orders — ST-032 success path', () => {
     await request(app)
       .post('/api/orders')
       .send({
-        items: [{ designId: 'design-uuid-1', quantity: 2 }],
+        items: [{ designId: '11111111-1111-4111-8111-111111111111', quantity: 2 }],
       });
 
     expect(orderService.createOrder).toHaveBeenCalledTimes(1);
     expect(orderService.createOrder).toHaveBeenCalledWith({
       userId: TEST_UID,
       cartItems: [
-        { designId: 'design-uuid-1', quantity: 2, metadata: {} },
+        { designId: '11111111-1111-4111-8111-111111111111', quantity: 2, metadata: {} },
       ],
     });
   });
@@ -453,8 +453,8 @@ describe('POST /api/orders — ST-032 success path', () => {
       .post('/api/orders')
       .send({
         items: [
-          { designId: 'design-A', quantity: 1 },
-          { designId: 'design-B', quantity: 5 },
+          { designId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', quantity: 1 },
+          { designId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', quantity: 5 },
         ],
       });
 
@@ -462,8 +462,8 @@ describe('POST /api/orders — ST-032 success path', () => {
     expect(callArgs).toEqual({
       userId: TEST_UID,
       cartItems: [
-        { designId: 'design-A', quantity: 1, metadata: {} },
-        { designId: 'design-B', quantity: 5, metadata: {} },
+        { designId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', quantity: 1, metadata: {} },
+        { designId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', quantity: 5, metadata: {} },
       ],
     });
   });
@@ -482,14 +482,14 @@ describe('POST /api/orders — ST-032 success path', () => {
       .post('/api/orders')
       .send({
         items: [
-          { designId: 'design-A', quantity: 1, metadata: richMetadata },
+          { designId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', quantity: 1, metadata: richMetadata },
         ],
       });
 
     expect(orderService.createOrder).toHaveBeenCalledWith({
       userId: TEST_UID,
       cartItems: [
-        { designId: 'design-A', quantity: 1, metadata: richMetadata },
+        { designId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', quantity: 1, metadata: richMetadata },
       ],
     });
   });
@@ -502,7 +502,7 @@ describe('POST /api/orders — ST-032 success path', () => {
     const res = await request(app)
       .post('/api/orders')
       .send({
-        items: [{ designId: 'design-A', quantity: 1 }],
+        items: [{ designId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', quantity: 1 }],
       });
 
     expect(res.status).toBe(201);
@@ -569,7 +569,7 @@ describe('POST /api/orders — ST-032-AC3 validation failures', () => {
     const res = await request(app)
       .post('/api/orders')
       .send({
-        items: [{ designId: 'design-A', quantity: 0 }],
+        items: [{ designId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', quantity: 0 }],
       });
 
     expect(res.status).toBe(400);
@@ -585,7 +585,7 @@ describe('POST /api/orders — ST-032-AC3 validation failures', () => {
     const res = await request(app)
       .post('/api/orders')
       .send({
-        items: [{ designId: 'design-A', quantity: -3 }],
+        items: [{ designId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', quantity: -3 }],
       });
 
     expect(res.status).toBe(400);
@@ -597,7 +597,7 @@ describe('POST /api/orders — ST-032-AC3 validation failures', () => {
     const res = await request(app)
       .post('/api/orders')
       .send({
-        items: [{ designId: 'design-A', quantity: 2.5 }],
+        items: [{ designId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', quantity: 2.5 }],
       });
 
     expect(res.status).toBe(400);
@@ -612,7 +612,7 @@ describe('POST /api/orders — ST-032-AC3 validation failures', () => {
       .send({
         items: [
           {
-            designId: 'design-A',
+            designId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
             quantity: 1,
             unauthorizedExtraField: 'attacker-controlled',
           },
@@ -640,7 +640,7 @@ describe('POST /api/orders — ST-032-AC3 validation failures', () => {
     const res = await request(app)
       .post('/api/orders')
       .send({
-        items: [{ designId: 'design-A', quantity: 1 }],
+        items: [{ designId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', quantity: 1 }],
         unauthorizedExtraField: 'attacker-controlled',
       });
 
@@ -722,13 +722,13 @@ describe('POST /api/orders/:id/finalize — ST-034 success path', () => {
     // state. Per Rule R9 / AC4 the state field MUST be exactly
     // 'finalized' — never 'paid', 'charged', 'authorized', etc.
     const finalized = buildOrderFixture({
-      id: 'order-uuid-bbbb-2222',
+      id: '22222222-2222-4222-8222-222222222222',
       state: 'finalized',
       lastModifiedAt: '2025-01-15T11:00:00.000Z',
     });
     orderService.finalizeOrder.mockResolvedValueOnce(finalized);
 
-    const res = await request(app).post('/api/orders/order-uuid-bbbb-2222/finalize').send();
+    const res = await request(app).post('/api/orders/22222222-2222-4222-8222-222222222222/finalize').send();
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(finalized);
@@ -739,22 +739,22 @@ describe('POST /api/orders/:id/finalize — ST-034 success path', () => {
 
   it('forwards req.uid and :id to orderService.finalizeOrder (#21 AC1)', async () => {
     orderService.finalizeOrder.mockResolvedValueOnce(
-      buildOrderFixture({ id: 'order-uuid-cccc-3333', state: 'finalized' }),
+      buildOrderFixture({ id: '33333333-3333-4333-8333-333333333333', state: 'finalized' }),
     );
 
-    await request(app).post('/api/orders/order-uuid-cccc-3333/finalize').send();
+    await request(app).post('/api/orders/33333333-3333-4333-8333-333333333333/finalize').send();
 
     expect(orderService.finalizeOrder).toHaveBeenCalledTimes(1);
     expect(orderService.finalizeOrder).toHaveBeenCalledWith({
       userId: TEST_UID,
-      orderId: 'order-uuid-cccc-3333',
+      orderId: '33333333-3333-4333-8333-333333333333',
     });
   });
 
   it('does not call createOrder during finalize (route isolation)', async () => {
     orderService.finalizeOrder.mockResolvedValueOnce(buildOrderFixture({ state: 'finalized' }));
 
-    await request(app).post('/api/orders/some-id/finalize').send();
+    await request(app).post('/api/orders/44444444-4444-4444-8444-444444444444/finalize').send();
 
     expect(orderService.createOrder).not.toHaveBeenCalled();
     expect(orderService.getCart).not.toHaveBeenCalled();
@@ -817,7 +817,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
 
     const res = await request(app)
       .post('/api/orders')
-      .send({ items: [{ designId: 'a', quantity: 1 }] });
+      .send({ items: [{ designId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', quantity: 1 }] });
 
     expect(res.status).toBe(400);
     expect(res.body).toEqual({
@@ -847,7 +847,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
 
     const res = await request(app)
       .post('/api/orders')
-      .send({ items: [{ designId: 'design-X', quantity: 1 }] });
+      .send({ items: [{ designId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', quantity: 1 }] });
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('DESIGN_NOT_FOUND');
@@ -872,7 +872,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
 
     const res = await request(app)
       .post('/api/orders')
-      .send({ items: [{ designId: 'design-X', quantity: 1 }] });
+      .send({ items: [{ designId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', quantity: 1 }] });
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('DESIGN_NOT_FOUND');
@@ -892,7 +892,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
     );
     const app = buildApp({ orderService, uid: TEST_UID });
 
-    const res = await request(app).post('/api/orders/missing-id/finalize').send();
+    const res = await request(app).post('/api/orders/55555555-5555-4555-8555-555555555555/finalize').send();
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('ORDER_NOT_FOUND');
@@ -916,7 +916,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
     );
     const app = buildApp({ orderService, uid: TEST_UID });
 
-    const res = await request(app).post('/api/orders/x/finalize').send();
+    const res = await request(app).post('/api/orders/66666666-6666-4666-8666-666666666666/finalize').send();
 
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('ORDER_STATE_INVALID');
@@ -944,7 +944,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
     );
     const app = buildApp({ orderService, uid: TEST_UID });
 
-    const res = await request(app).post('/api/orders/y/finalize').send();
+    const res = await request(app).post('/api/orders/77777777-7777-4777-8777-777777777777/finalize').send();
 
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('ORDER_STATE_CONCURRENT_CHANGE');
@@ -963,7 +963,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
 
     const res = await request(app)
       .post('/api/orders')
-      .send({ items: [{ designId: 'a', quantity: 1 }] });
+      .send({ items: [{ designId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', quantity: 1 }] });
 
     expect(res.status).toBe(500);
     expect(res.body).toEqual({
@@ -987,7 +987,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
 
     const res = await request(app)
       .post('/api/orders')
-      .send({ items: [{ designId: 'a', quantity: 1 }] });
+      .send({ items: [{ designId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', quantity: 1 }] });
 
     expect(res.status).toBe(500);
     expect(logSpy.error).toHaveBeenCalledTimes(1);
@@ -1013,7 +1013,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
 
     const res = await request(app)
       .post('/api/orders')
-      .send({ items: [{ designId: 'a', quantity: 1 }] });
+      .send({ items: [{ designId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', quantity: 1 }] });
 
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe('INTERNAL_ERROR');
@@ -1028,7 +1028,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
 
     const res = await request(app)
       .post('/api/orders')
-      .send({ items: [{ designId: 'a', quantity: 1 }] });
+      .send({ items: [{ designId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', quantity: 1 }] });
 
     expect(res.status).toBe(500);
     expect(res.body).toEqual({
@@ -1046,7 +1046,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
 
     const res = await request(app)
       .post('/api/orders')
-      .send({ items: [{ designId: 'a', quantity: 1 }] });
+      .send({ items: [{ designId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', quantity: 1 }] });
 
     expect(res.status).toBe(400);
     expect(res.body).toEqual({
@@ -1063,7 +1063,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
 
     const res = await request(app)
       .post('/api/orders')
-      .send({ items: [{ designId: 'a', quantity: 1 }] });
+      .send({ items: [{ designId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', quantity: 1 }] });
 
     expect(res.status).toBe(404);
     expect(res.body).toEqual({
@@ -1078,7 +1078,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
     orderService.finalizeOrder.mockRejectedValueOnce({ name: 'ConflictError' });
     const app = buildApp({ orderService, uid: TEST_UID });
 
-    const res = await request(app).post('/api/orders/some-id/finalize').send();
+    const res = await request(app).post('/api/orders/44444444-4444-4444-8444-444444444444/finalize').send();
 
     expect(res.status).toBe(409);
     expect(res.body).toEqual({
@@ -1098,7 +1098,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
 
     const res = await request(app)
       .post('/api/orders')
-      .send({ items: [{ designId: 'a', quantity: 1 }] });
+      .send({ items: [{ designId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', quantity: 1 }] });
 
     expect(res.status).toBe(500);
     expect(logSpy.error).toHaveBeenCalledTimes(1);
@@ -1150,7 +1150,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
 
     const res = await request(app)
       .post('/api/orders')
-      .send({ items: [{ designId: 'a', quantity: 1 }] });
+      .send({ items: [{ designId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', quantity: 1 }] });
 
     expect(res.status).toBe(500);
     expect(errorHandlerSpy).toHaveBeenCalledTimes(1);
@@ -1188,7 +1188,7 @@ describe('POST /api/orders — error translation (Rule R8 fail-closed)', () => {
     app.use('/api/orders', router);
     app.use(errorHandlerSpy);
 
-    const res = await request(app).post('/api/orders/order-x/finalize').send();
+    const res = await request(app).post('/api/orders/88888888-8888-4888-8888-888888888888/finalize').send();
 
     expect(res.status).toBe(500);
     expect(errorHandlerSpy).toHaveBeenCalledTimes(1);

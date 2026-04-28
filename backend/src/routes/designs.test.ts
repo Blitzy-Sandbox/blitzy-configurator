@@ -1298,7 +1298,13 @@ describe('POST /api/designs/:id/share-link — ST-029 (issue share-link)', () =>
   let designService: DesignServiceMock;
   let shareLinkService: ShareLinkServiceMock;
   let app: express.Express;
-  const TEST_DESIGN_ID = 'design-uuid-1';
+  // QA Final B Issue #5 (MAJOR): the share-link route now validates
+  // `:id` as a UUID at the route boundary using `z.string().uuid()`.
+  // The previous fixture value `'design-uuid-1'` is NOT a valid UUID
+  // and would now fail the route-level validation (400) before reaching
+  // the service layer. Use a deterministic UUID v4 so every test in
+  // this describe block exercises the canonical happy-path URL.
+  const TEST_DESIGN_ID = '11111111-1111-4111-8111-111111111111';
 
   beforeEach(() => {
     designService = buildDesignService();
@@ -1472,6 +1478,24 @@ describe('POST /api/designs/:id/share-link — ST-029 (issue share-link)', () =>
         message: 'Design id is required',
       },
     });
+    expect(shareLinkService.issue).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 VALIDATION_FAILED when :id is not a UUID (Issue #5)', async () => {
+    // QA Final B Issue #5 (MAJOR): the previous behavior was that any
+    // non-empty string was forwarded to the service, which then cast it
+    // to `::uuid` in SQL and Postgres returned error 22P02 → leaked
+    // through as a generic 500. The fix validates the path parameter
+    // as a UUID at the route boundary and returns a structured 400 +
+    // Zod error envelope.
+    const res = await request(app).post('/api/designs/not-a-uuid/share-link');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_FAILED');
+    expect(res.body.error.message).toBe('Invalid request body or query');
+    expect(Array.isArray(res.body.error.details)).toBe(true);
+    expect(res.body.error.details.length).toBeGreaterThanOrEqual(1);
+    expect(res.body.error.details[0].message).toBe('Design id must be a UUID');
     expect(shareLinkService.issue).not.toHaveBeenCalled();
   });
 

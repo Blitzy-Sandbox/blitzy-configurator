@@ -970,6 +970,148 @@ describe('createSessionService', () => {
       await expect(service.isRevoked(USER_ID, RAW_TOKEN)).rejects.toThrow(/pg connection lost/);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // ensureUser (QA Final B Issue #7)
+  //
+  // The `ensureUser` method is invoked by the session middleware on every
+  // authenticated request to mirror Firebase-authenticated users into the
+  // local `users` table. The method is idempotent and must:
+  //   1) Fast-path: skip the INSERT when a row already exists.
+  //   2) Insert with email as loginIdentifier when email is present
+  //      (parity with `register`).
+  //   3) Insert with uid as loginIdentifier when email is absent.
+  //   4) Treat PG `23505` (UNIQUE/PK violation) as success — covers the
+  //      concurrent-first-request race.
+  //   5) Propagate any other repository error (Rule R8 fail-closed).
+  //   6) Reject empty uid with ValidationError (defensive).
+  //   7) Never log raw email or any credential material (Rule R2).
+  // -------------------------------------------------------------------------
+  describe('ensureUser', () => {
+    it('fast path: returns early when findByFirebaseUid resolves with an existing row (no insert)', async () => {
+      const deps = buildDeps();
+      deps.userRepository.findByFirebaseUid.mockResolvedValueOnce(makeUserFixture());
+
+      const service = createSessionService(deps);
+      await service.ensureUser({ uid: USER_ID, email: EMAIL });
+
+      expect(deps.userRepository.findByFirebaseUid).toHaveBeenCalledWith(USER_ID);
+      expect(deps.userRepository.insert).not.toHaveBeenCalled();
+    });
+
+    it('JIT insert: inserts new user with email as loginIdentifier when email is present', async () => {
+      const deps = buildDeps();
+      deps.userRepository.findByFirebaseUid.mockResolvedValueOnce(null);
+      deps.userRepository.insert.mockResolvedValueOnce(makeUserFixture());
+
+      const service = createSessionService(deps);
+      await service.ensureUser({ uid: USER_ID, email: EMAIL });
+
+      expect(deps.userRepository.insert).toHaveBeenCalledTimes(1);
+      expect(deps.userRepository.insert).toHaveBeenCalledWith({
+        firebaseUid: USER_ID,
+        loginIdentifier: EMAIL,
+      });
+    });
+
+    it('JIT insert: uses uid as loginIdentifier when email is absent (undefined)', async () => {
+      const deps = buildDeps();
+      deps.userRepository.findByFirebaseUid.mockResolvedValueOnce(null);
+      deps.userRepository.insert.mockResolvedValueOnce(
+        makeUserFixture({ loginIdentifier: USER_ID }),
+      );
+
+      const service = createSessionService(deps);
+      await service.ensureUser({ uid: USER_ID });
+
+      expect(deps.userRepository.insert).toHaveBeenCalledWith({
+        firebaseUid: USER_ID,
+        loginIdentifier: USER_ID,
+      });
+    });
+
+    it('JIT insert: uses uid as loginIdentifier when email is the empty string', async () => {
+      const deps = buildDeps();
+      deps.userRepository.findByFirebaseUid.mockResolvedValueOnce(null);
+      deps.userRepository.insert.mockResolvedValueOnce(
+        makeUserFixture({ loginIdentifier: USER_ID }),
+      );
+
+      const service = createSessionService(deps);
+      await service.ensureUser({ uid: USER_ID, email: '' });
+
+      expect(deps.userRepository.insert).toHaveBeenCalledWith({
+        firebaseUid: USER_ID,
+        loginIdentifier: USER_ID,
+      });
+    });
+
+    it('race-resolution: treats PG 23505 (UNIQUE violation) on insert as success', async () => {
+      const deps = buildDeps();
+      deps.userRepository.findByFirebaseUid.mockResolvedValueOnce(null);
+
+      // Simulate a concurrent first-request race where another worker
+      // inserted the same uid first. PG raises SQLSTATE 23505 which the
+      // `pg` driver attaches as `code` on the thrown Error.
+      const uniqueViolation: Error & { code?: string } = Object.assign(
+        new Error('duplicate key value violates unique constraint "users_pkey"'),
+        { code: '23505' },
+      );
+      deps.userRepository.insert.mockRejectedValueOnce(uniqueViolation);
+
+      const service = createSessionService(deps);
+      await expect(service.ensureUser({ uid: USER_ID, email: EMAIL })).resolves.toBeUndefined();
+    });
+
+    it('Rule R8: propagates non-unique repository errors unchanged (e.g. connection failure)', async () => {
+      const deps = buildDeps();
+      deps.userRepository.findByFirebaseUid.mockResolvedValueOnce(null);
+      const connErr: Error & { code?: string } = Object.assign(
+        new Error('pg connection lost'),
+        { code: '08006' }, // connection_failure — NOT 23505
+      );
+      deps.userRepository.insert.mockRejectedValueOnce(connErr);
+
+      const service = createSessionService(deps);
+      await expect(service.ensureUser({ uid: USER_ID, email: EMAIL })).rejects.toThrow(
+        /pg connection lost/,
+      );
+    });
+
+    it('Rule R8: propagates findByFirebaseUid errors unchanged', async () => {
+      const deps = buildDeps();
+      deps.userRepository.findByFirebaseUid.mockRejectedValueOnce(
+        new Error('lookup index unavailable'),
+      );
+
+      const service = createSessionService(deps);
+      await expect(service.ensureUser({ uid: USER_ID, email: EMAIL })).rejects.toThrow(
+        /lookup index unavailable/,
+      );
+      expect(deps.userRepository.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects empty uid with ValidationError', async () => {
+      const service = createSessionService(buildDeps());
+      await expect(service.ensureUser({ uid: '', email: EMAIL })).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+    });
+
+    it('Rule R2: never logs raw email value, even when email is present', async () => {
+      const deps = buildDeps();
+      deps.userRepository.findByFirebaseUid.mockResolvedValueOnce(null);
+      deps.userRepository.insert.mockResolvedValueOnce(makeUserFixture());
+
+      const service = createSessionService(deps);
+      const distinctiveEmail = 'sentinel-jit-cred@example.com';
+      await service.ensureUser({ uid: USER_ID, email: distinctiveEmail });
+
+      const serialized = JSON.stringify(gatherLogArgs());
+      expect(serialized).not.toContain(distinctiveEmail);
+      expect(serialized).not.toContain('sentinel-jit-cred');
+    });
+  });
 });
 
 // ===========================================================================

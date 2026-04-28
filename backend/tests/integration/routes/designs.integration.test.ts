@@ -593,11 +593,29 @@ async function setupAuthenticatedUser(
  *
  * The shape is:
  *   {
- *     primaryColor: '#FF0000',
- *     pattern:      'classic',
- *     finish:       'matte',
+ *     primaryColor:   '#FF0000',
+ *     secondaryColor: '#00FF00',
+ *     accentColor:    '#0000FF',
+ *     pattern:        'classic',
+ *     finish:         'matte',
  *     ...overrides,
  *   }
+ *
+ * QA Final B Issue #2 (BOTH-OPTIONAL pivot): `secondaryColor` and
+ * `accentColor` remain `.optional()` on the production
+ * `designPayloadSchema` so the AAP §0.6.4 Gate T1-C verbatim curl
+ * payload (which sends only `{primaryColor, pattern, finish}`) still
+ * yields 201. The frontend `DesignPayload` was relaxed to mark these
+ * two fields optional in lock-step, eliminating the previous contract
+ * asymmetry. This integration fixture nevertheless populates all
+ * three colors so tests that assert color round-trip behaviour can
+ * distinguish the three fields uniquely; tests that exercise the
+ * minimal Gate-T1-C payload override these fields explicitly.
+ *
+ * QA Final B Issue #3: all color values must match the canonical
+ * `#RRGGBB` hex regex when present. The fixture uses three distinct
+ * primary-channel colors (red, green, blue) so tests that assert
+ * color persistence can distinguish the three fields uniquely.
  *
  * @param overrides Optional field overrides; merged via `{...defaults, ...overrides}`.
  * @returns A fresh payload object suitable for `POST /api/designs`.
@@ -605,6 +623,8 @@ async function setupAuthenticatedUser(
 function buildValidPayload(overrides?: Record<string, unknown>): Record<string, unknown> {
   return {
     primaryColor: '#FF0000',
+    secondaryColor: '#00FF00',
+    accentColor: '#0000FF',
     pattern: 'classic',
     finish: 'matte',
     ...(overrides ?? {}),

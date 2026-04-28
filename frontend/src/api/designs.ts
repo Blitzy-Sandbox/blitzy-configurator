@@ -200,21 +200,35 @@ export interface DesignLogo {
 export interface DesignPayload {
   /**
    * Hex color string for the primary panel color (ST-006). Canonical
-   * form is `#RRGGBB` with uppercase hex digits.
+   * form is `#RRGGBB` with uppercase hex digits. REQUIRED on the wire.
    */
   primaryColor: string;
 
   /**
    * Hex color string for the secondary panel color (ST-007). Canonical
    * form is `#RRGGBB` with uppercase hex digits.
+   *
+   * QA Final B Issue #2 (MINOR): marked OPTIONAL to align with the
+   * backend `designPayloadSchema` which permits a minimal
+   * `{primaryColor, pattern, finish}` payload (per AAP §0.6.4 Gate
+   * T1-C verbatim curl example). The configurator UI populates this
+   * field for every save operation, but the wire contract permits
+   * its absence — declaring it optional eliminates the previous
+   * contract drift between this interface (which documented it as
+   * required) and the backend Zod schema (which accepted absence).
    */
-  secondaryColor: string;
+  secondaryColor?: string;
 
   /**
    * Hex color string for the accent color (ST-008). Canonical form is
    * `#RRGGBB` with uppercase hex digits.
+   *
+   * QA Final B Issue #2 (MINOR): marked OPTIONAL for the same reason
+   * as `secondaryColor` — the backend wire contract accepts a payload
+   * lacking this field per AAP §0.6.4 Gate T1-C, while the
+   * configurator UI populates it on every save.
    */
-  accentColor: string;
+  accentColor?: string;
 
   /**
    * One of the six documented stitching pattern identifiers (ST-010).
@@ -274,6 +288,34 @@ export interface Design {
    * Treated as opaque by the frontend.
    */
   id: string;
+
+  /**
+   * Owner Firebase UID — the `users.id` PRIMARY KEY value of the
+   * authenticated user who created this design (QA Final B Issue #1
+   * fix). Returned verbatim by the backend in every design response
+   * body and list item. The frontend treats this field as OPAQUE: it
+   * is used to render "owned by" indicators or to filter
+   * client-side caches by owner, but it is NEVER parsed, exposed in
+   * URLs, or sent to other endpoints (ownership enforcement lives
+   * entirely on the backend per Rule R3 and the AAP §0.5.6 session
+   * middleware contract).
+   *
+   * Why this field is declared even though the frontend does not
+   * currently render it:
+   *   1. The backend already returns `userId` in every response; the
+   *      previous `Design` interface omitted it, which TypeScript's
+   *      excess-property checking allowed but documentation- and
+   *      audit-tools flagged as a contract drift (QA Final B Issue
+   *      #1 — MINOR, Contract Drift).
+   *   2. Declaring the field makes the cross-layer contract explicit
+   *      and aligns the static type with the runtime payload, which
+   *      is the AAP §0.2.2 "documented architectural requirement"
+   *      that "every story's acceptance criteria are authoritative".
+   *   3. Future features (e.g., a "shared with me" indicator, a
+   *      personal vs. team-owned distinction) can read this field
+   *      without a contract change.
+   */
+  userId: string;
 
   /**
    * Human-readable design title authored by the user via the Save

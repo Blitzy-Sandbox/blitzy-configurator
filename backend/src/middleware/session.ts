@@ -213,6 +213,39 @@ export interface SessionService {
    *   rejects the request when this throws.
    */
   isRevoked(uid: string, rawBearerToken: string): Promise<boolean>;
+
+  /**
+   * Ensure a local `users` row exists for the supplied uid —
+   * QA Final B Issue #7 fix (Just-In-Time user mirroring).
+   *
+   * The frontend authenticates end users directly via the Firebase JS
+   * SDK and bypasses the backend `/api/auth/register` endpoint, so a
+   * Firebase-authenticated user reaching a protected route may NOT have
+   * a corresponding row in our local `users` table. The first attempt
+   * to persist a design (which has a foreign key to `users`) would
+   * therefore surface as a generic HTTP 500 (PostgreSQL `23503` FK
+   * violation). This method idempotently creates the missing row.
+   *
+   * Concrete implementation lives in
+   * `backend/src/services/session.service.ts`. The middleware MUST
+   * call this method on every authenticated request AFTER `verifyToken`
+   * and `isRevoked` succeed and BEFORE `req.uid` is set.
+   *
+   * Per Rule R8 (fail-closed): if this method throws, the middleware
+   * MUST treat it as `INVALID_SESSION` and respond with HTTP 401 — we
+   * cannot prove the user can be safely admitted, so we reject.
+   *
+   * Per Rule R2 (no credential material in logs): the implementation
+   * logs ONLY `uid` and `emailPresent` (boolean). Raw email values are
+   * NEVER logged.
+   *
+   * @param params Object with `uid` (required) and `email` (optional).
+   * @returns Resolves when a row is guaranteed to exist for `uid`.
+   * @throws if the underlying find or insert fails for any reason
+   *   other than a UNIQUE-violation race condition (which is treated
+   *   as success internally).
+   */
+  ensureUser(params: { uid: string; email?: string }): Promise<void>;
 }
 
 /**
@@ -476,6 +509,15 @@ export function sessionMiddleware(deps: SessionMiddlewareDeps): RequestHandler {
   if (typeof sessionService.isRevoked !== 'function') {
     throw new Error('sessionMiddleware: sessionService.isRevoked is required');
   }
+  // QA Final B Issue #7 — JIT user creation. The middleware MUST be
+  // able to call `ensureUser` on every authenticated request to mirror
+  // Firebase-authenticated users into the local `users` table before
+  // they reach any FK-bearing route handler. A missing `ensureUser` is
+  // a developer error and MUST surface at app boot per Rule R4 fail-
+  // fast posture.
+  if (typeof sessionService.ensureUser !== 'function') {
+    throw new Error('sessionMiddleware: sessionService.ensureUser is required');
+  }
 
   /**
    * The actual session-validation middleware.
@@ -696,6 +738,87 @@ async function runSessionValidation(
         uid,
       },
       'session validation rejected: session is revoked',
+    );
+    respondUnauthorized(res, ERROR_CODES.INVALID_SESSION);
+    return;
+  }
+
+  // -------------------------------------------------------------------
+  // Step 3b: Just-In-Time user mirroring — QA Final B Issue #7 fix.
+  //
+  // Background:
+  //   The frontend (`frontend/src/auth/firebase-client.ts`)
+  //   authenticates end users directly via the Firebase JS SDK and
+  //   never invokes our `/api/auth/register` endpoint. As a result,
+  //   the very first protected request from a Firebase-authenticated
+  //   user reaches this middleware with NO corresponding row in the
+  //   local `users` table. Without remediation, the next FK-bearing
+  //   write (e.g. `INSERT INTO designs ... user_id = uid`) surfaces
+  //   as PostgreSQL `23503` (foreign key violation) which the global
+  //   error handler maps to a generic HTTP 500 — observed by QA as
+  //   "first design save returns 500".
+  //
+  // Resolution:
+  //   Call `sessionService.ensureUser({ uid, email })` to idempotently
+  //   create the missing row. Implementations MUST be:
+  //     - O(1)/O(log n) on the common path (PK index lookup) so this
+  //       step does not regress ST-026-AC4 latency.
+  //     - Idempotent (calling twice returns the same outcome).
+  //     - Concurrency-safe (two simultaneous first-requests for the
+  //       same uid resolve to one inserted row, not two errors).
+  //
+  // Ordering:
+  //   This step runs AFTER `verifyToken` and `isRevoked` succeed (so
+  //   we know the token is valid and the session is not revoked) and
+  //   BEFORE `req.uid = uid` (so a JIT failure produces 401 INVALID_
+  //   SESSION rather than allowing the request to proceed without a
+  //   local row).
+  //
+  // Rule R8 fail-closed:
+  //   If the JIT step throws (database unreachable, FK violation
+  //   against an unrelated row, permission error), we CANNOT prove
+  //   the user can be safely admitted to FK-bearing routes and MUST
+  //   reject with 401 INVALID_SESSION. A naive implementation might
+  //   admit the user anyway and let the downstream FK violation
+  //   surface as 500, but Rule R8 mandates the opposite: a tooling
+  //   failure produces a failed verdict, not a silent pass.
+  //
+  // Rule R2 (no credential material in logs):
+  //   The decoded Firebase idToken's `email` claim is passed to
+  //   `ensureUser` so the JIT-created row can be populated with a
+  //   meaningful loginIdentifier. The middleware itself NEVER logs
+  //   the email — log records emitted by `ensureUser` use only
+  //   `emailPresent` (boolean).
+  // -------------------------------------------------------------------
+  try {
+    // Read `email` from the decoded token via index access to avoid
+    // the implicit 'undefined' return with TypeScript's strict mode
+    // when `email` is not on the DecodedIdToken type's required
+    // fields. The Firebase Admin SDK declares `email` as optional.
+    const tokenEmail: unknown = (decodedToken as unknown as Record<string, unknown>)['email'];
+    const emailParam: string | undefined =
+      typeof tokenEmail === 'string' && tokenEmail.length > 0 ? tokenEmail : undefined;
+
+    await sessionService.ensureUser({ uid, email: emailParam });
+  } catch (err) {
+    // Per Rule R2: log the error CLASS NAME and a length-bounded
+    // message only. Tokens, emails, and stack traces are NEVER
+    // logged. Per Rule R8: respond 401 INVALID_SESSION (a tooling
+    // failure cannot prove the user is admissible).
+    const errorName: string = err instanceof Error ? err.name : 'UnknownError';
+    const errorMessage: string =
+      err instanceof Error ? String(err.message).slice(0, 200) : 'JIT user creation failed';
+
+    logger.error(
+      {
+        event: 'session.rejected',
+        reason: 'jit_user_create_failed',
+        code: ERROR_CODES.INVALID_SESSION,
+        errorName,
+        errorMessage,
+        uid,
+      },
+      'session validation rejected: JIT user creation failed (fail-closed per R8)',
     );
     respondUnauthorized(res, ERROR_CODES.INVALID_SESSION);
     return;
