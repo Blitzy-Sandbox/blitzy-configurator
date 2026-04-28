@@ -360,55 +360,68 @@ async function mockBackendApi(
   // ---------------------------------------------------------------------
   // Single dispatching handler for every `/api/**` request. Branches
   // are ordered most-specific first.
+  //
+  // The glob '**/api/**' matches BOTH real backend `/api/*` calls AND
+  // the Vite-served frontend source files at `/src/api/*.ts` (because
+  // the path segment "api" appears in both). Letting the catch-all
+  // fulfill the source-file requests with a `{}` JSON body breaks the
+  // browser's strict-MIME-type enforcement for ES modules and prevents
+  // the React tree from mounting. Fix: filter at routing time using a
+  // function predicate that requires the URL pathname to start with
+  // `/api/` (no `/src/` prefix), so Vite serves frontend source files
+  // normally.
   // ---------------------------------------------------------------------
-  await page.route('**/api/**', async (route: Route, request: Request) => {
-    const url = request.url();
-    const method = request.method();
+  await page.route(
+    (url) => url.pathname.startsWith('/api/'),
+    async (route: Route, request: Request) => {
+      const url = request.url();
+      const method = request.method();
 
-    // GET /api/cart — return the seeded cart fixture per ST-033.
-    // Per ST-033-AC3, an empty cart still returns 200 with an empty
-    // representation (never 404). Per ST-033-AC4 the endpoint is
-    // side-effect-free, so any non-GET method is benign — we still
-    // respond 200 with a generic body so the SPA does not surface a
-    // network error during navigation.
-    if (url.includes('/api/cart') && method === 'GET') {
+      // GET /api/cart — return the seeded cart fixture per ST-033.
+      // Per ST-033-AC3, an empty cart still returns 200 with an empty
+      // representation (never 404). Per ST-033-AC4 the endpoint is
+      // side-effect-free, so any non-GET method is benign — we still
+      // respond 200 with a generic body so the SPA does not surface a
+      // network error during navigation.
+      if (url.includes('/api/cart') && method === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(
+            options.cart ?? { items: [], subtotal: 0, currency: 'USD' },
+          ),
+        });
+        return;
+      }
+
+      // GET /api/designs (and any `?cursor=...` variant) — return the
+      // seeded design list per ST-028. Some cart implementations refetch
+      // the saved designs list to render the cart's line item titles
+      // when the line item itself does not include a denormalised
+      // `designTitle`. The fixture ensures both code paths render
+      // deterministically.
+      if (url.includes('/api/designs') && method === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ items: options.designs ?? [], nextCursor: null }),
+        });
+        return;
+      }
+
+      // Fallback — every other `/api/**` request (including any non-GET
+      // hit on `/api/cart` or `/api/designs`, which the cart panel
+      // should never trigger but a stray handler might) resolves to an
+      // empty 200 so the SPA does not surface a network error in the
+      // snapshot. This intentionally covers future endpoints we have
+      // not yet characterised; the empty body is conservative.
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(
-          options.cart ?? { items: [], subtotal: 0, currency: 'USD' },
-        ),
+        body: '{}',
       });
-      return;
-    }
-
-    // GET /api/designs (and any `?cursor=...` variant) — return the
-    // seeded design list per ST-028. Some cart implementations refetch
-    // the saved designs list to render the cart's line item titles
-    // when the line item itself does not include a denormalised
-    // `designTitle`. The fixture ensures both code paths render
-    // deterministically.
-    if (url.includes('/api/designs') && method === 'GET') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ items: options.designs ?? [], nextCursor: null }),
-      });
-      return;
-    }
-
-    // Fallback — every other `/api/**` request (including any non-GET
-    // hit on `/api/cart` or `/api/designs`, which the cart panel
-    // should never trigger but a stray handler might) resolves to an
-    // empty 200 so the SPA does not surface a network error in the
-    // snapshot. This intentionally covers future endpoints we have
-    // not yet characterised; the empty body is conservative.
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: '{}',
-    });
-  });
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------

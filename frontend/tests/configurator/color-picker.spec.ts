@@ -420,31 +420,43 @@ async function mockBackendApi(page: Page): Promise<void> {
   await page.route('**/securetoken.googleapis.com/**', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
   );
-  await page.route('**/api/**', async (route, request) => {
-    const url = request.url();
-    const method = request.method();
-    if (url.includes('/api/designs') && method === 'GET') {
+  // The glob '**/api/**' matches BOTH real backend `/api/*` calls AND
+  // the Vite-served frontend source files at `/src/api/*.ts` (because
+  // the path segment "api" appears in both). Letting the catch-all
+  // fulfill the source-file requests with a `{}` JSON body breaks the
+  // browser's strict-MIME-type enforcement for ES modules and prevents
+  // the React tree from mounting. Fix: filter at routing time using a
+  // function predicate that requires the URL pathname to start with
+  // `/api/` (no `/src/` prefix), so Vite serves frontend source files
+  // normally.
+  await page.route(
+    (url) => url.pathname.startsWith('/api/'),
+    async (route, request) => {
+      const url = request.url();
+      const method = request.method();
+      if (url.includes('/api/designs') && method === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ items: [], nextCursor: null }),
+        });
+        return;
+      }
+      if (url.includes('/api/cart') && method === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ items: [], subtotal: 0, currency: 'USD' }),
+        });
+        return;
+      }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ items: [], nextCursor: null }),
+        body: '{}',
       });
-      return;
-    }
-    if (url.includes('/api/cart') && method === 'GET') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ items: [], subtotal: 0, currency: 'USD' }),
-      });
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: '{}',
-    });
-  });
+    },
+  );
 }
 
 /**

@@ -402,83 +402,96 @@ async function mockBackendApi(
   // ---------------------------------------------------------------------
   // Single dispatching handler for every `/api/**` request. Branches
   // are ordered most-specific first.
+  //
+  // The glob '**/api/**' matches BOTH real backend `/api/*` calls AND
+  // the Vite-served frontend source files at `/src/api/*.ts` (because
+  // the path segment "api" appears in both). Letting the catch-all
+  // fulfill the source-file requests with a `{}` JSON body breaks the
+  // browser's strict-MIME-type enforcement for ES modules and prevents
+  // the React tree from mounting. Fix: filter at routing time using a
+  // function predicate that requires the URL pathname to start with
+  // `/api/` (no `/src/` prefix), so Vite serves frontend source files
+  // normally.
   // ---------------------------------------------------------------------
-  await page.route('**/api/**', async (route: Route, request: Request) => {
-    const url = request.url();
-    const method = request.method();
+  await page.route(
+    (url) => url.pathname.startsWith('/api/'),
+    async (route: Route, request: Request) => {
+      const url = request.url();
+      const method = request.method();
 
-    // POST /api/orders/:id/finalize — finalize the order.
-    // Per ST-034-AC1 / ST-034-AC2: the order transitions to a
-    // finalized state and runs the documented post-processing.
-    // Per Rule R9: no payment processing happens here — the response
-    // contains state, items, subtotal display data, and timestamps
-    // ONLY.
-    if (/\/api\/orders\/[^/]+\/finalize$/.test(url) && method === 'POST') {
+      // POST /api/orders/:id/finalize — finalize the order.
+      // Per ST-034-AC1 / ST-034-AC2: the order transitions to a
+      // finalized state and runs the documented post-processing.
+      // Per Rule R9: no payment processing happens here — the response
+      // contains state, items, subtotal display data, and timestamps
+      // ONLY.
+      if (/\/api\/orders\/[^/]+\/finalize$/.test(url) && method === 'POST') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ ...baseOrder, state: 'finalized' as OrderState }),
+        });
+        return;
+      }
+
+      // GET /api/orders/:id — refetch the (now finalized) order. Some
+      // implementations refetch the order on the confirmation surface
+      // to display the canonical post-finalize representation; this
+      // branch services that lookup with the same finalized fixture.
+      if (/\/api\/orders\/[^/]+$/.test(url) && method === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ ...baseOrder, state: 'finalized' as OrderState }),
+        });
+        return;
+      }
+
+      // POST /api/orders — create the order from cart contents per
+      // ST-032. Returns the canonical persisted order with HTTP 201
+      // and state 'created'.
+      if (/\/api\/orders$/.test(url) && method === 'POST') {
+        await route.fulfill({
+          status: 201,
+          contentType: 'application/json',
+          body: JSON.stringify({ ...baseOrder, state: 'created' as OrderState }),
+        });
+        return;
+      }
+
+      // GET /api/cart — return the seeded cart fixture per ST-033.
+      if (url.includes('/api/cart') && method === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(options.cart ?? { items: [], subtotal: 0, currency: 'USD' }),
+        });
+        return;
+      }
+
+      // GET /api/designs (and any `?cursor=...` variant) — return the
+      // seeded design list per ST-028. The cart panel may render the
+      // design list as a backdrop or context sidebar.
+      if (url.includes('/api/designs') && method === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ items: options.designs ?? [], nextCursor: null }),
+        });
+        return;
+      }
+
+      // Fallback — every other `/api/**` request resolves to an empty
+      // 200 so the SPA does not surface a network error in the
+      // snapshot. This includes future endpoints we have not yet
+      // characterised; the empty body is conservative.
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ ...baseOrder, state: 'finalized' as OrderState }),
+        body: '{}',
       });
-      return;
-    }
-
-    // GET /api/orders/:id — refetch the (now finalized) order. Some
-    // implementations refetch the order on the confirmation surface
-    // to display the canonical post-finalize representation; this
-    // branch services that lookup with the same finalized fixture.
-    if (/\/api\/orders\/[^/]+$/.test(url) && method === 'GET') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ ...baseOrder, state: 'finalized' as OrderState }),
-      });
-      return;
-    }
-
-    // POST /api/orders — create the order from cart contents per
-    // ST-032. Returns the canonical persisted order with HTTP 201
-    // and state 'created'.
-    if (/\/api\/orders$/.test(url) && method === 'POST') {
-      await route.fulfill({
-        status: 201,
-        contentType: 'application/json',
-        body: JSON.stringify({ ...baseOrder, state: 'created' as OrderState }),
-      });
-      return;
-    }
-
-    // GET /api/cart — return the seeded cart fixture per ST-033.
-    if (url.includes('/api/cart') && method === 'GET') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify(options.cart ?? { items: [], subtotal: 0, currency: 'USD' }),
-      });
-      return;
-    }
-
-    // GET /api/designs (and any `?cursor=...` variant) — return the
-    // seeded design list per ST-028. The cart panel may render the
-    // design list as a backdrop or context sidebar.
-    if (url.includes('/api/designs') && method === 'GET') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ items: options.designs ?? [], nextCursor: null }),
-      });
-      return;
-    }
-
-    // Fallback — every other `/api/**` request resolves to an empty
-    // 200 so the SPA does not surface a network error in the
-    // snapshot. This includes future endpoints we have not yet
-    // characterised; the empty body is conservative.
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: '{}',
-    });
-  });
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -248,47 +248,60 @@ async function mockBackendApi(page: Page): Promise<void> {
   // -------------------------------------------------------------------
   // Single dispatching handler for every /api/** request. Branches
   // are ordered most-specific first.
+  //
+  // The glob '**/api/**' matches BOTH real backend `/api/*` calls AND
+  // the Vite-served frontend source files at `/src/api/*.ts` (because
+  // the path segment "api" appears in both). Letting the catch-all
+  // fulfill the source-file requests with a `{}` JSON body breaks the
+  // browser's strict-MIME-type enforcement for ES modules and prevents
+  // the React tree from mounting. Fix: filter at routing time using a
+  // function predicate that requires the URL pathname to start with
+  // `/api/` (no `/src/` prefix), so Vite serves frontend source files
+  // normally.
   // -------------------------------------------------------------------
-  await page.route('**/api/**', async (route: Route, request: Request) => {
-    const url = request.url();
-    const method = request.method();
+  await page.route(
+    (url) => url.pathname.startsWith('/api/'),
+    async (route: Route, request: Request) => {
+      const url = request.url();
+      const method = request.method();
 
-    // GET /api/designs (and any ?cursor=… variant) — return an empty
-    // saved-design list per ST-028 so the LoadDesignList component
-    // (when mounted in the configurator surface) renders a stable
-    // empty state instead of a loading spinner or an error.
-    if (url.includes('/api/designs') && method === 'GET') {
+      // GET /api/designs (and any ?cursor=… variant) — return an empty
+      // saved-design list per ST-028 so the LoadDesignList component
+      // (when mounted in the configurator surface) renders a stable
+      // empty state instead of a loading spinner or an error.
+      if (url.includes('/api/designs') && method === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ items: [], nextCursor: null }),
+        });
+        return;
+      }
+
+      // GET /api/cart — return an empty cart per ST-033-AC3 (an empty
+      // cart still returns 200 with an empty representation, never
+      // 404). This prevents any startup cart-trigger badge from
+      // showing a loading state in the snapshot.
+      if (url.includes('/api/cart') && method === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ items: [], subtotal: 0, currency: 'USD' }),
+        });
+        return;
+      }
+
+      // Fallback — every other /api/** request resolves to an empty
+      // 200 so the SPA does not surface a network error in the
+      // snapshot. This intentionally covers any future endpoints not
+      // yet characterised; the empty body is conservative.
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ items: [], nextCursor: null }),
+        body: '{}',
       });
-      return;
-    }
-
-    // GET /api/cart — return an empty cart per ST-033-AC3 (an empty
-    // cart still returns 200 with an empty representation, never
-    // 404). This prevents any startup cart-trigger badge from
-    // showing a loading state in the snapshot.
-    if (url.includes('/api/cart') && method === 'GET') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ items: [], subtotal: 0, currency: 'USD' }),
-      });
-      return;
-    }
-
-    // Fallback — every other /api/** request resolves to an empty
-    // 200 so the SPA does not surface a network error in the
-    // snapshot. This intentionally covers any future endpoints not
-    // yet characterised; the empty body is conservative.
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: '{}',
-    });
-  });
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
