@@ -388,8 +388,15 @@ function buildPublicApp(opts: {
   if (opts.logSpy !== undefined) {
     const spy = opts.logSpy;
     app.use((req: Request, _res: Response, next: NextFunction) => {
-      const reqWithLog = req as Request & { log?: { error: jest.Mock } };
-      reqWithLog.log = spy;
+      // Bypass the `pino-http` module augmentation of
+      // `IncomingMessage.log: pino.Logger`. The augmentation is
+      // activated project-wide as soon as `pino-http` is imported by
+      // `backend/src/index.ts`. In production, pino-http itself
+      // replaces `req.log` with a real Logger; in this unit test we
+      // are deliberately injecting a minimal `{ error: jest.Mock }`
+      // spy, so we cast through `unknown` (twice) to substitute a
+      // thin structural mock for the richer Logger interface.
+      (req as unknown as { log: LogSpy }).log = spy;
       next();
     });
   }
@@ -437,8 +444,8 @@ function buildAuthenticatedApp(opts: {
   if (opts.logSpy !== undefined) {
     const spy = opts.logSpy;
     app.use((req: Request, _res: Response, next: NextFunction) => {
-      const reqWithLog = req as Request & { log?: { error: jest.Mock } };
-      reqWithLog.log = spy;
+      // See `buildPublicApp` for the rationale on the unknown-cast.
+      (req as unknown as { log: LogSpy }).log = spy;
       next();
     });
   }

@@ -207,10 +207,15 @@ function buildApp(opts: {
   if (opts.logSpy !== undefined) {
     const spy = opts.logSpy;
     app.use((req: Request, _res: Response, next: NextFunction) => {
-      const reqWithLog = req as Request & {
-        log?: { error: jest.Mock };
-      };
-      reqWithLog.log = spy;
+      // Bypass the `pino-http` module augmentation of
+      // `IncomingMessage.log: pino.Logger`. The augmentation is
+      // activated project-wide as soon as `pino-http` is imported by
+      // `backend/src/index.ts`. In production, pino-http itself
+      // replaces `req.log` with a real Logger; in this unit test we
+      // are deliberately injecting a minimal `{ error: jest.Mock }`
+      // spy, so we cast through `unknown` to substitute a thin
+      // structural mock for the richer Logger interface.
+      (req as unknown as { log: LogSpy }).log = spy;
       next();
     });
   }
@@ -687,8 +692,10 @@ describe('GET /api/cart — error translation (Rule R8 fail-closed)', () => {
 
     const app = express();
     app.use((req: Request, _res: Response, next: NextFunction) => {
-      const reqWithLog = req as Request & { log?: { error: jest.Mock } };
-      reqWithLog.log = malformedLog;
+      // Cast through `unknown` to bypass the `pino-http` module
+      // augmentation (IncomingMessage.log: pino.Logger) so a thin
+      // throwing spy can be substituted for the rich Logger interface.
+      (req as unknown as { log: LogSpy }).log = malformedLog;
       req.uid = TEST_UID;
       next();
     });
