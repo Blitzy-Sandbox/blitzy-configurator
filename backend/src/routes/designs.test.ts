@@ -1312,16 +1312,29 @@ describe('POST /api/designs/:id/share-link — ST-029 (issue share-link)', () =>
     );
 
     expect(res.status).toBe(200);
+    // The route augments the bare ShareLink with a derived `url` field
+    // (per ST-021-AC1: the frontend writes `shareLink.url` to the
+    // clipboard via `navigator.clipboard.writeText`). The url is
+    // computed at the route boundary as
+    // `${SHARE_BASE_URL}/share/${encodeURIComponent(token)}`. When
+    // `SHARE_BASE_URL` is unset (the test environment), the route
+    // falls back to `http://localhost:5173`. The fixture token is
+    // URL-safe (alphanumeric + `_-`), so encodeURIComponent is a no-op.
     expect(res.body).toEqual({
       ...shareLink,
       issuedAt: shareLink.issuedAt.toISOString(),
       expiresAt: shareLink.expiresAt.toISOString(),
       revokedAt: shareLink.revokedAt,
+      url: `http://localhost:5173/share/${shareLink.token}`,
     });
     // AC2 — token + expiresAt are included.
     expect(typeof res.body.token).toBe('string');
     expect(res.body.token.length).toBeGreaterThan(0);
     expect(typeof res.body.expiresAt).toBe('string');
+    // ST-021-AC1 — url is a non-empty string the frontend writes to
+    // the clipboard.
+    expect(typeof res.body.url).toBe('string');
+    expect(res.body.url.length).toBeGreaterThan(0);
   });
 
   it('forwards req.uid as ownerUid and :id as designId to issue (AC1)', async () => {
