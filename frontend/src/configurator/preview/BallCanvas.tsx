@@ -44,6 +44,7 @@
 
 import { Canvas } from '@react-three/fiber';
 import { useEffect, useRef } from 'react';
+import { SRGBColorSpace } from 'three';
 
 import { Sphere } from './Sphere';
 import { initializePerformanceInstrumentation } from './performance';
@@ -359,6 +360,28 @@ export function BallCanvas(props: BallCanvasProps): JSX.Element {
           // visual-regression `toHaveScreenshot()` to capture the
           // canvas pixels reliably (ST-046).
           preserveDrawingBuffer: true,
+        }}
+        // ---------------------------------------------------------------
+        // ST-001-AC4 — ZERO console errors during initial render.
+        //
+        // The configurator's `threeTexture.ts` singleton sets
+        // `texture.colorSpace = SRGBColorSpace` (per the texture-pipeline
+        // contract). Three.js requires the WebGLRenderer's
+        // `outputColorSpace` to MATCH the source texture's color space,
+        // otherwise it logs a runtime deprecation warning ("THREE.WebGL
+        // Renderer: outputEncoding has been removed; use outputColorSpace
+        // instead.") on the console. That warning would violate ST-001-AC4
+        // ("initial render produces no console-level error output").
+        //
+        // The `onCreated` callback is R3F's canonical lifecycle hook for
+        // one-time WebGLRenderer configuration — it fires exactly once,
+        // synchronously, immediately after R3F instantiates the renderer
+        // and before the first frame is rendered. Setting
+        // `outputColorSpace` here guarantees the value is applied before
+        // any draw call, so the deprecation warning is never emitted.
+        // ---------------------------------------------------------------
+        onCreated={({ gl }) => {
+          gl.outputColorSpace = SRGBColorSpace;
         }}
         // R3F's `frameloop="always"` keeps the render loop ticking
         // even when there's no scene change — required so
