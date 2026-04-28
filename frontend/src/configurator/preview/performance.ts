@@ -411,7 +411,24 @@ export function initializePerformanceInstrumentation(): () => void {
     // frame" — a meaningless metric.
     if (!_firstFrameSeen) {
       _firstFrameSeen = true;
-      _initialLoadMs = timestampMs - _initializationStartTimeMs;
+      // Evaluate `performance.now()` here (rather than reusing the rAF
+      // `timestampMs` argument) for the FIRST-FRAME branch only. The
+      // rAF spec defines `timestampMs` as the time of the frame the
+      // callback is being invoked for, but in practice some browser
+      // implementations (notably Chromium when a frame was already in
+      // flight at the moment `requestAnimationFrame` was scheduled) can
+      // pass a `timestampMs` that predates `_initializationStartTimeMs`,
+      // producing a negative `_initialLoadMs`. A negative initial-load
+      // value violates ST-005-AC4 (auditable performance measurements)
+      // because release-artifact consumers must be able to reason about
+      // it as a non-negative duration. `performance.now()` evaluated
+      // inside the callback is guaranteed to be ≥ `_initializationStart-
+      // TimeMs` (both read the same monotonic clock and the callback
+      // necessarily executes after init), so the computed difference is
+      // always non-negative. The per-frame syscall optimization
+      // documented above does not apply here because this branch fires
+      // exactly ONCE in the lifetime of the loop.
+      _initialLoadMs = performance.now() - _initializationStartTimeMs;
     }
 
     _sampleFrameCount += 1;
