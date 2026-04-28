@@ -59,7 +59,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 
-import App from './App';
+import { App } from './App';
 import { initializeFirebaseClient } from './auth/firebase-client';
 import './styles/global.css';
 
