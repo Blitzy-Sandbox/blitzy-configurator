@@ -139,8 +139,80 @@ export interface CorrelationContext {
  * inside `correlationMiddleware`. The store object reference is stable for
  * the duration of the request callback's async continuation; mutations to
  * `.uid` are visible to all later continuations in the same request.
+ *
+ * PROCESS-SHARED SINGLETON (anchored on `http`) — RATIONALE:
+ *
+ * The bare `new AsyncLocalStorage<CorrelationContext>()` form would create a
+ * fresh ALS instance per CommonJS module evaluation. Under `jest.resetModules`
+ * — and, more importantly, under Jest's per-test-file fresh module registry
+ * (each test file gets its own `Module` cache by design) — re-evaluating this
+ * file produces a brand-new ALS instance. That alone would be benign, EXCEPT
+ * that the `patchHttpModule` block lower in this file installs `Symbol.for`-
+ * keyed sentinels on the GLOBAL `node:http` and `node:https` modules. Those
+ * sentinels are registered exactly once per Node process (the http/https
+ * core modules are interned by Node), so the first test file's wrappers —
+ * which close over THAT file's ALS instance — remain installed for the
+ * lifetime of the worker. Subsequent test files create their own ALS
+ * instance, run middleware against that instance, but the http/https
+ * wrappers (still pointing at the FIRST file's ALS) read from the wrong
+ * store. Net effect: outbound `x-correlation-id` injection breaks across
+ * suite boundaries (cross-suite state leak — ST-044-AC2 violation).
+ *
+ * Empirical sandboxing-model finding (verified by adhoc Jest tests):
+ *
+ *   Object                      | Default-import (`import x from`)  | Cross-test-file shared?
+ *   ----------------------------|-----------------------------------|------------------------
+ *   `node:http` core module     | YES — `import http from 'node:http'`  | YES (process singleton)
+ *   `node:async_hooks` class    | YES — `import {AsyncLocalStorage}`    | YES (process singleton)
+ *   `globalThis`                | n/a (intrinsic)                       | NO — per-Jest-VM
+ *   `process`                   | n/a (intrinsic)                       | NO — Jest replaces per VM
+ *
+ *   The first attempt at this fix used `globalThis[Symbol.for(...)]`, which
+ *   would have been correct in a non-Jest runtime. In Jest with
+ *   `testEnvironment: 'node'`, however, each test file runs inside its own
+ *   `vm.createContext` sandbox with its own globalThis. `Symbol.for(name)` IS
+ *   shared across sandboxes (V8 engine-level intern), but the storage object
+ *   is not. Storing the ALS on globalThis therefore reproduced the same
+ *   per-file-fresh-instance problem the fix was supposed to solve.
+ *
+ *   The correct fix anchors the singleton on a process-shared object. The
+ *   `http` core module is the natural choice because (a) it's already where
+ *   the existing `__blitzy_correlation_http_patched__` sentinel lives, and
+ *   (b) the http patches close over the ALS — keeping the ALS on the same
+ *   object the patches mutate ensures both stay in lock-step. `import http
+ *   from 'node:http'` (default import) returns the same object across all
+ *   Jest test files in the same worker (verified empirically), so the
+ *   Symbol.for-keyed property is genuinely shared.
+ *
+ *   Both the http patches (installed by file A) and the middleware logic
+ *   (run by file B) target the SAME store. This restores the original spec
+ *   invariant that "the store object reference is stable" across the
+ *   entire process.
+ *
+ * The `Symbol.for` registry approach is preferred over a string-keyed property
+ * on `http` because the former cannot collide with arbitrary user code or
+ * third-party modules walking `http` keys; symbols are non-enumerable in the
+ * default `Object.keys` traversal.
  */
-export const correlationStore = new AsyncLocalStorage<CorrelationContext>();
+const CORRELATION_STORE_SENTINEL: unique symbol = Symbol.for(
+  '__blitzy_correlation_store__',
+) as never;
+// Anchor the singleton on the process-shared `http` core-module object.
+// `import http from 'node:http'` is a default import; per TypeScript CJS
+// interop this resolves to the require()'d module object (the same object
+// across all Jest test-file sandboxes in the worker). This makes the
+// Symbol-keyed property genuinely process-singleton, unlike a globalThis-
+// keyed property which is per-Jest-VM-context.
+const __httpForStore = http as unknown as Record<
+  symbol,
+  AsyncLocalStorage<CorrelationContext> | undefined
+>;
+if (__httpForStore[CORRELATION_STORE_SENTINEL] === undefined) {
+  __httpForStore[CORRELATION_STORE_SENTINEL] =
+    new AsyncLocalStorage<CorrelationContext>();
+}
+export const correlationStore: AsyncLocalStorage<CorrelationContext> =
+  __httpForStore[CORRELATION_STORE_SENTINEL] as AsyncLocalStorage<CorrelationContext>;
 
 // ---------------------------------------------------------------------------
 // Header constants

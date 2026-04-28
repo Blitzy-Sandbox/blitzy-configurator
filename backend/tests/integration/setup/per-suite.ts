@@ -107,6 +107,31 @@
  *   failure categories are unambiguously distinguishable in the report.
  */
 
+import * as nodeHttp from 'node:http';
+import * as nodeHttps from 'node:https';
+
+// Imported lazily inside the suite-teardown `afterAll` to keep per-suite.ts
+// itself decoupled from application-module startup work. The dynamic
+// require keeps test-bootstrap and src boundaries clean: per-suite.ts
+// touches `src/db/pool` only at teardown to dispose any lazily-initialised
+// pg pool that lingered after the suite's last test.
+//
+// QA Issue #2 (MAJOR) — TCPWRAP open handle: `pg.Pool` opens a TCP socket
+// to PostgreSQL on first query (`pool.connect()` is invoked lazily). That
+// socket is a `TCPWRAP` from `async_hooks`'s perspective. With Jest's
+// `--detectOpenHandles` enabled (per `jest.config.integration.ts`
+// detectOpenHandles: true), and because the pool is a process-singleton
+// that no test file explicitly disposes, the pg socket remains alive when
+// Jest takes its post-suite snapshot. Jest's stack-trace heuristic then
+// reports the supertest invocation site (e.g.,
+// `health.integration.test.ts:657`) as the responsible code path, because
+// that line is where the request that triggered the lazy pool
+// initialisation entered the user-test layer — even though the actual
+// open handle is the pg client socket inside the pool, not the
+// supertest-managed listening server. The fix is to close the pool at
+// suite teardown so the pg socket(s) are torn down before the open-handle
+// snapshot fires.
+
 // Set the per-test timeout. Matches `testTimeout: 30000` in
 // `backend/jest.config.integration.ts`. Setting it explicitly here is
 // defensive — if a future engineer changes the config, this file's value
@@ -347,6 +372,127 @@ afterEach(() => {
         .join('; ')}`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Suite teardown — TCPWRAP open-handle prevention (pg pool + http agents)
+// ---------------------------------------------------------------------------
+//
+// QA Issue #2 (MAJOR): integration runs end with Jest's open-handle detector
+// reporting a TCPWRAP at supertest's `Test.serverAddress` call site
+// (specifically `tests/integration/routes/health.integration.test.ts:657`,
+// which is the `await request(app).get('/readyz')` line in the readiness
+// happy-path test).
+//
+// Diagnostic empirical finding (verified by isolating /healthz and /readyz
+// test groups via `-t` filter):
+//   - Running ONLY `/healthz` tests (which never call `pool.query`): NO
+//     TCPWRAP open-handle warning.
+//   - Running ONLY `/readyz` tests (which call `pool.query('SELECT 1')` to
+//     verify DB reachability): TCPWRAP open-handle warning appears.
+//
+// This isolates the leaking handle to the **pg client socket**, NOT the
+// supertest-managed ephemeral HTTP listening server. supertest closes the
+// listening server inside its `Test.end()` callback via
+// `server.close(localAssert)` and `await request(app).get(...)` resolves
+// only after `localAssert` fires (which fires only on the server's
+// `'close'` event). The listening TCPWRAP is therefore disposed before
+// the test's `await` resolves, so it cannot be the leaking handle.
+//
+// The pg pool is a module-scoped process singleton (see
+// `backend/src/db/pool.ts`): on the first `pool.query(...)` invocation,
+// `pg` opens a TCP socket to PostgreSQL and holds it in the pool's
+// idle-client list. Subsequent queries reuse that socket. The pool's
+// underlying TCP socket is a `TCPWRAP` from `async_hooks`'s perspective.
+// With Jest's `--detectOpenHandles` enabled (per
+// `jest.config.integration.ts` `detectOpenHandles: true`) — which is
+// intentional for ST-044-AC2 deterministic-fixture verification — and
+// because no test file explicitly disposes the pool, the pg socket
+// remains alive when Jest takes its post-suite snapshot at the end of
+// each test file. Jest's stack-trace heuristic then reports the FIRST
+// supertest call that transitively caused the TCPWRAP creation
+// (`request(app).get('/readyz')` on `health.integration.test.ts:657`)
+// as the responsible code path — the trace is misleading: the actual
+// open handle is the pg client socket inside the pool, but the test
+// function on the call stack at TCPWRAP creation time happens to be
+// the supertest invocation that triggered the route which queried pg.
+//
+// Fix: dispose the pg pool at suite teardown. `closePool()` clears the
+// module-scoped `pool` reference FIRST, then awaits `pool.end()` which
+// drains active queries and closes every underlying socket before
+// resolving. Subsequent test files in the same Jest worker re-load
+// `src/db/pool` in their own VM context (Jest's module isolation
+// guarantees one fresh module graph per test file), so closing the
+// pool here does not affect later suites.
+//
+// We additionally drain the http/https global agents to defend against
+// any incidental keep-alive client sockets created by code paths we
+// haven't audited (e.g., outbound HTTP calls from middleware to the
+// Firebase emulator that bypass supertest's request lifecycle). These
+// destroy() calls are no-ops when no sockets are pooled, so they are
+// always safe.
+//
+// `await new Promise(resolve => setImmediate(resolve))` yields one
+// event-loop tick so the destroyed sockets' `'close'` events flush
+// cleanly before Jest's `afterAll` returns. Without this, Jest's
+// open-handle detector may still observe FIN-ACK packets in flight
+// when it takes its post-suite snapshot.
+//
+// This `afterAll` runs in EVERY integration suite (because `per-suite.ts`
+// is the global `setupFilesAfterEnv`), so the cleanup is applied
+// uniformly without each individual suite needing to remember it. The
+// hook ordering (Jest documented LIFO afterAll execution) means
+// per-suite.ts's afterAll runs AFTER any test-file-local afterAll, so
+// suite-specific cleanup completes before pool disposal.
+//
+// Story coverage / decision-log entry:
+//   - QA Issue #2 (MAJOR): TCPWRAP open handle from pg pool's lazy
+//     socket — resolved by closing the pool at suite teardown.
+//   - QA Issue #3 (MINOR): Indirect contribution — fewer alive handles
+//     after suite reduces the surface for OTel exporter timer callbacks
+//     to fire after Jest VM teardown.
+//   - ST-044-AC2 (deterministic fixtures): no socket state can bleed
+//     across suite boundaries when each suite closes its own pool.
+
+afterAll(async () => {
+  // Dispose the pg pool's TCP socket(s) BEFORE Jest's open-handle
+  // snapshot fires. Lazy-require avoids forcing pool import on test
+  // files that never use the database (e.g., pure logging unit tests
+  // that import per-suite.ts via setupFilesAfterEnv).
+  //
+  // `closePool()` is safe to call when no pool exists — it returns
+  // immediately if the module-scoped `pool` reference is null, which
+  // is the case for any test file that did not invoke `getPool()` or
+  // `pool.query()` directly or transitively.
+  try {
+    const poolModule = (await import('../../../src/db/pool')) as {
+      closePool: () => Promise<void>;
+    };
+    await poolModule.closePool();
+  } catch {
+    // Best-effort cleanup: a load failure here would be unusual (the
+    // module is part of the same compilation unit as the test code)
+    // and should NOT mask test results. The TCPWRAP warning would
+    // re-appear in the next CI run, surfacing the regression at that
+    // point. We intentionally swallow because cleanup errors must not
+    // convert a passing test run into a failing one (matching the
+    // policy already documented in `global-teardown.ts`).
+  }
+
+  // Synchronously dispose every pooled keep-alive socket on the
+  // default global HTTP agents. Both calls are no-ops when no
+  // sockets are pooled, so they are safe to invoke even in suites
+  // that never made an outbound HTTP request.
+  nodeHttp.globalAgent.destroy();
+  nodeHttps.globalAgent.destroy();
+
+  // Yield one event-loop tick so the destroyed sockets' close events
+  // flush before Jest's afterAll returns. Without this, Jest's open-
+  // handle detector may still observe the FIN-ACK in flight when it
+  // takes its post-suite snapshot.
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
 });
 
 // Mark this file as a module so `declare global` works as expected.

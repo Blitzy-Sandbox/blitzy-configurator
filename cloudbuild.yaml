@@ -206,7 +206,7 @@ steps:
         # docker-cli installation in any step image works against the
         # host daemon (this is the documented Cloud Build behavior for
         # docker-in-docker workloads).
-        apk add --no-cache bash git docker-cli docker-cli-compose
+        apk add --no-cache bash git jq docker-cli docker-cli-compose
         mkdir -p /workspace/reports
         cd /workspace
         # ----- Bring up the LocalGCP profile -----
@@ -243,11 +243,93 @@ steps:
         # Per ST-044-AC3, environment-vs-assertion failures are
         # distinguished in the Jest report. `--ci --json` produces a
         # machine-parseable artifact for downstream review.
+        #
+        # We capture the Jest exit code with `|| EXIT_CODE=$?` so the
+        # step does not abort under `set -eu` before we have a chance
+        # to render a human-readable failure summary on stderr. This
+        # implements ST-044-AC3 in two complementary ways:
+        #   1) The JSON report at /workspace/reports/jest-integration-
+        #      results.json (machine-readable, uploaded to GCS).
+        #   2) A jq-rendered stderr summary visible in Cloud Build's
+        #      log viewer for at-a-glance triage of failed CI builds
+        #      without requiring operators to download and parse JSON.
+        #
+        # The summary categorises failure ROOTS so that operators can
+        # triage assertion failures (test logic / contract violations)
+        # from environment failures (DB unreachable, emulator died,
+        # OTel SDK init throw, etc.). Per Jest's JSON schema:
+        #   - testResults[].testExecError    -> ENVIRONMENT failure
+        #     (suite-level: setup / teardown / require-time crash —
+        #     these never produce assertionResults)
+        #   - assertionResults[].status="failed" -> ASSERTION failure
+        #     (test-level: the test ran and an assertion or expected
+        #     throw did not match)
+        # Both categories are surfaced; their headings make the
+        # distinction explicit for ST-044-AC3 reviewers.
+        #
+        # The exit code is preserved verbatim so Rule R8 fail-closed
+        # is honoured: any non-zero Jest exit propagates to the step.
+        EXIT_CODE=0
         npx jest --config jest.config.integration.ts \
           --forceExit \
           --ci \
           --json \
-          --outputFile=/workspace/reports/jest-integration-results.json
+          --outputFile=/workspace/reports/jest-integration-results.json \
+          || EXIT_CODE=$?
+        if [ "$EXIT_CODE" -ne 0 ]; then
+          echo '' >&2
+          echo '======================================================' >&2
+          echo 'Integration suite FAILED — failure summary (ST-044-AC3)' >&2
+          echo '======================================================' >&2
+          if [ -f /workspace/reports/jest-integration-results.json ]; then
+            # Environment failures: suite-level errors that prevented
+            # tests from running (setup/teardown/require-time crashes).
+            ENV_FAILS=$(jq -r '
+              .testResults
+              | map(select((.testExecError // null) != null))
+              | length
+            ' /workspace/reports/jest-integration-results.json 2>/dev/null || echo 0)
+            # Assertion failures: tests that ran but failed expectations.
+            ASSERT_FAILS=$(jq -r '
+              [ .testResults[]
+                | .assertionResults[]
+                | select(.status == "failed") ]
+              | length
+            ' /workspace/reports/jest-integration-results.json 2>/dev/null || echo 0)
+            echo "  environment failures: $ENV_FAILS" >&2
+            echo "  assertion   failures: $ASSERT_FAILS" >&2
+            echo '' >&2
+            if [ "$ENV_FAILS" != "0" ]; then
+              echo '--- Environment failures (suite-level) ---' >&2
+              jq -r '
+                .testResults[]
+                | select((.testExecError // null) != null)
+                | "SUITE: " + .name + "\n  ERROR: "
+                  + ((.testExecError.message // .testExecError | tostring)
+                     | gsub("\n"; "\n  "))
+              ' /workspace/reports/jest-integration-results.json >&2 || true
+              echo '' >&2
+            fi
+            if [ "$ASSERT_FAILS" != "0" ]; then
+              echo '--- Assertion failures (test-level) ---' >&2
+              jq -r '
+                .testResults[]
+                | . as $suite
+                | .assertionResults[]
+                | select(.status == "failed")
+                | "SUITE: " + $suite.name
+                  + "\n  TEST: " + .fullName
+                  + "\n  " + ((.failureMessages // []) | join("\n  ") | gsub("\n"; "\n  "))
+              ' /workspace/reports/jest-integration-results.json >&2 || true
+              echo '' >&2
+            fi
+          else
+            echo '  (jest-integration-results.json was not produced;' >&2
+            echo '   Jest may have crashed before writing the report)' >&2
+          fi
+          echo '======================================================' >&2
+          exit "$EXIT_CODE"
+        fi
 
   # -------------------------------------------------------------------
   # Step 5 — build (ST-040)
