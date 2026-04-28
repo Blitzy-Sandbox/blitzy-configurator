@@ -181,10 +181,7 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import request from 'supertest';
 
-import type {
-  ShareLinkService,
-  SharedDesignView,
-} from '../services/share-link.service';
+import type { ShareLinkService, SharedDesignView } from '../services/share-link.service';
 
 import { createShareRoutes } from './share';
 import type { CreateShareRoutesDeps } from './share';
@@ -325,28 +322,28 @@ describe('createShareRoutes — factory wiring', () => {
   });
 
   it('throws when deps argument is null', () => {
-    expect(() =>
-      createShareRoutes(null as unknown as CreateShareRoutesDeps),
-    ).toThrow(/deps argument is required/);
+    expect(() => createShareRoutes(null as unknown as CreateShareRoutesDeps)).toThrow(
+      /deps argument is required/,
+    );
   });
 
   it('throws when deps argument is undefined', () => {
-    expect(() =>
-      createShareRoutes(undefined as unknown as CreateShareRoutesDeps),
-    ).toThrow(/deps argument is required/);
+    expect(() => createShareRoutes(undefined as unknown as CreateShareRoutesDeps)).toThrow(
+      /deps argument is required/,
+    );
   });
 
   it('throws when deps argument is a non-object primitive', () => {
     // Defensive — JS callers using `any` casts could pass a primitive.
-    expect(() =>
-      createShareRoutes('not-an-object' as unknown as CreateShareRoutesDeps),
-    ).toThrow(/deps argument is required/);
+    expect(() => createShareRoutes('not-an-object' as unknown as CreateShareRoutesDeps)).toThrow(
+      /deps argument is required/,
+    );
   });
 
   it('throws when deps.shareLinkService is missing', () => {
-    expect(() =>
-      createShareRoutes({} as unknown as CreateShareRoutesDeps),
-    ).toThrow(/shareLinkService dependency is required/);
+    expect(() => createShareRoutes({} as unknown as CreateShareRoutesDeps)).toThrow(
+      /shareLinkService dependency is required/,
+    );
   });
 
   it('throws when deps.shareLinkService is null', () => {
@@ -359,16 +356,16 @@ describe('createShareRoutes — factory wiring', () => {
 
   it('throws when deps.shareLinkService.getByToken is not a function', () => {
     const broken = { shareLinkService: { getByToken: 'not a function' } };
-    expect(() =>
-      createShareRoutes(broken as unknown as CreateShareRoutesDeps),
-    ).toThrow(/shareLinkService must implement getByToken/);
+    expect(() => createShareRoutes(broken as unknown as CreateShareRoutesDeps)).toThrow(
+      /shareLinkService must implement getByToken/,
+    );
   });
 
   it('throws when deps.shareLinkService.getByToken is undefined', () => {
     const broken = { shareLinkService: { issue: jest.fn(), revoke: jest.fn() } };
-    expect(() =>
-      createShareRoutes(broken as unknown as CreateShareRoutesDeps),
-    ).toThrow(/shareLinkService must implement getByToken/);
+    expect(() => createShareRoutes(broken as unknown as CreateShareRoutesDeps)).toThrow(
+      /shareLinkService must implement getByToken/,
+    );
   });
 
   it('produces independent routers across calls (no module-level singleton)', () => {
@@ -739,10 +736,7 @@ describe('GET /api/share/:token — error translation (Rule R8 fail-closed)', ()
 
     expect(res.status).toBe(500);
     expect(logSpy.error).toHaveBeenCalledTimes(1);
-    const [logArgs, logMsg] = logSpy.error.mock.calls[0] as [
-      Record<string, unknown>,
-      string,
-    ];
+    const [logArgs, logMsg] = logSpy.error.mock.calls[0] as [Record<string, unknown>, string];
     expect(logMsg).toBe('share route error');
     expect(logArgs).toMatchObject({
       event: 'share.route.error',
@@ -828,9 +822,7 @@ describe('GET /api/share/:token — error translation (Rule R8 fail-closed)', ()
     const shareLinkService = buildShareLinkService();
     // The originating error — handleRouteError will fall through to
     // its 500 INTERNAL_ERROR branch and try to call `req.log.error`.
-    shareLinkService.getByToken.mockRejectedValueOnce(
-      new Error('original failure'),
-    );
+    shareLinkService.getByToken.mockRejectedValueOnce(new Error('original failure'));
     // The malicious log spy throws when invoked. Because this is
     // inside handleRouteError's (synchronous) 500 branch, the throw
     // propagates out of runGetShare's catch.
@@ -866,9 +858,7 @@ describe('GET /api/share/:token — error translation (Rule R8 fail-closed)', ()
     // our terminal error handler caught it and responded 500.
     expect(res.status).toBe(500);
     expect(errorHandlerSpy).toHaveBeenCalledTimes(1);
-    expect(errorHandlerSpy.mock.calls[0]?.[0]?.message).toBe(
-      'log subsystem failure',
-    );
+    expect(errorHandlerSpy.mock.calls[0]?.[0]?.message).toBe('log subsystem failure');
   });
 });
 
@@ -935,6 +925,79 @@ describe('Rule R2 — no token leakage in responses or logs', () => {
 });
 
 // ---------------------------------------------------------------------------
+// HTTP method scoping — only GET is bound to /api/share/:token
+// ---------------------------------------------------------------------------
+//
+// The route file declares EXACTLY ONE handler:
+//
+//     router.get('/api/share/:token', ...);
+//
+// No `router.post`, `router.put`, `router.delete`, or `router.patch` is
+// registered. Express's default behaviour for a path that has at least
+// one matching method but not the requested one is to fall through to
+// the next middleware (here: the catch-all 404 since the test app has
+// no other routes), so non-GET requests should produce 404 or 405. The
+// `agent_prompt`'s Phase 4 test matrix names this scoping explicitly,
+// and the test pins the invariant against accidental future expansions
+// of the share router (e.g. an admin "revoke via share token" verb that
+// would dangerously expand the unauthenticated surface).
+//
+// Per AAP §0.7.2 / §0.5.2: this router is the ONE unauthenticated route
+// under `/api/*`. Adding a non-GET handler here would silently expand
+// the unauthenticated attack surface — this test pins the verb whitelist.
+// ---------------------------------------------------------------------------
+
+describe('GET /api/share/:token — HTTP method scoping', () => {
+  // The route MUST only respond to GET. Other verbs reaching the same
+  // path MUST NOT invoke the service (a defense-in-depth pin against
+  // accidental future verb expansion that would expose
+  // `shareLinkService.revoke` or `shareLinkService.issue` over the
+  // unauthenticated surface).
+  let shareLinkService: ShareLinkServiceMock;
+  let app: express.Express;
+  const TEST_TOKEN = 'method-scoping-token-abcdef';
+
+  beforeEach(() => {
+    shareLinkService = buildShareLinkService();
+    app = buildApp({ shareLinkService });
+  });
+
+  it('rejects POST /api/share/:token with 404 or 405', async () => {
+    const res = await request(app).post(`/api/share/${TEST_TOKEN}`).send();
+    expect([404, 405]).toContain(res.status);
+    // The service was NEVER reached — no method dispatch fired.
+    expect(shareLinkService.getByToken).not.toHaveBeenCalled();
+    expect(shareLinkService.issue).not.toHaveBeenCalled();
+    expect(shareLinkService.revoke).not.toHaveBeenCalled();
+  });
+
+  it('rejects PUT /api/share/:token with 404 or 405', async () => {
+    const res = await request(app).put(`/api/share/${TEST_TOKEN}`).send();
+    expect([404, 405]).toContain(res.status);
+    expect(shareLinkService.getByToken).not.toHaveBeenCalled();
+    expect(shareLinkService.issue).not.toHaveBeenCalled();
+    expect(shareLinkService.revoke).not.toHaveBeenCalled();
+  });
+
+  it('rejects DELETE /api/share/:token with 404 or 405', async () => {
+    const res = await request(app).delete(`/api/share/${TEST_TOKEN}`).send();
+    expect([404, 405]).toContain(res.status);
+    expect(shareLinkService.getByToken).not.toHaveBeenCalled();
+    expect(shareLinkService.issue).not.toHaveBeenCalled();
+    expect(shareLinkService.revoke).not.toHaveBeenCalled();
+  });
+
+  it('rejects PATCH /api/share/:token with 404 or 405', async () => {
+    // Defense-in-depth — PATCH is also not a registered verb.
+    const res = await request(app).patch(`/api/share/${TEST_TOKEN}`).send();
+    expect([404, 405]).toContain(res.status);
+    expect(shareLinkService.getByToken).not.toHaveBeenCalled();
+    expect(shareLinkService.issue).not.toHaveBeenCalled();
+    expect(shareLinkService.revoke).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Source-file invariants — verified by reading share.ts off disk
 // ---------------------------------------------------------------------------
 
@@ -976,9 +1039,7 @@ describe('share.ts source-file invariants', () => {
       if (/\breq\.uid\b/.test(line)) {
         const trimmed = line.trim();
         const isComment =
-          trimmed.startsWith('//') ||
-          trimmed.startsWith('*') ||
-          trimmed.startsWith('/*');
+          trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*');
         if (!isComment) {
           offendingLines.push({ lineNumber: idx + 1, content: line });
         }
@@ -995,16 +1056,11 @@ describe('share.ts source-file invariants', () => {
     //
     // Strategy: extract every line beginning with `import` and
     // confirm the source string matches the whitelist.
-    const importLines = source
-      .split('\n')
-      .filter((line) => /^import\s/.test(line.trim()));
+    const importLines = source.split('\n').filter((line) => /^import\s/.test(line.trim()));
 
     expect(importLines.length).toBeGreaterThan(0);
 
-    const ALLOWED_SOURCES = new Set([
-      'express',
-      '../services/share-link.service',
-    ]);
+    const ALLOWED_SOURCES = new Set(['express', '../services/share-link.service']);
 
     for (const line of importLines) {
       // Extract the quoted source string from `import ... from '...';`
