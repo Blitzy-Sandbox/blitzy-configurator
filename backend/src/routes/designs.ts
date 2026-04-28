@@ -207,14 +207,7 @@ const logoSchema = z
  *
  * Order matches the frontend order for consistency in error messages.
  */
-const PATTERN_VALUES = [
-  'classic',
-  'hexagonal',
-  'diamond',
-  'spiral',
-  'star',
-  'grid',
-] as const;
+const PATTERN_VALUES = ['classic', 'hexagonal', 'diamond', 'spiral', 'star', 'grid'] as const;
 
 /**
  * Canonical finish enum (ST-011 — three material finishes).
@@ -740,9 +733,7 @@ async function runIssueShareLink(
   // rather than handing `''` to the service layer.
   const rawId: string = req.params['id'] ?? '';
   if (typeof rawId !== 'string' || rawId.trim().length === 0) {
-    res
-      .status(400)
-      .json(buildError('VALIDATION_DESIGN_ID_MISSING', 'Design id is required'));
+    res.status(400).json(buildError('VALIDATION_DESIGN_ID_MISSING', 'Design id is required'));
     return;
   }
 
@@ -777,8 +768,7 @@ async function runIssueShareLink(
     // frontend reads `:token` from the path and calls the backend's
     // `GET /api/share/:token` companion endpoint.
     const shareBaseUrl =
-      process.env['SHARE_BASE_URL'] !== undefined &&
-      process.env['SHARE_BASE_URL'] !== ''
+      process.env['SHARE_BASE_URL'] !== undefined && process.env['SHARE_BASE_URL'] !== ''
         ? process.env['SHARE_BASE_URL']
         : 'http://localhost:5173';
     const url = `${shareBaseUrl.replace(/\/$/, '')}/share/${encodeURIComponent(shareLink.token)}`;
@@ -836,10 +826,7 @@ function handleRouteError(
 
   // Defensive narrowing: cast to a partial-shape object and check
   // each field by typeof. Avoids `instanceof` realm-mismatch bugs.
-  const errObj = err as
-    | { name?: unknown; code?: unknown; message?: unknown }
-    | null
-    | undefined;
+  const errObj = err as { name?: unknown; code?: unknown; message?: unknown } | null | undefined;
 
   const name: string | undefined =
     errObj && typeof errObj.name === 'string' ? errObj.name : undefined;
@@ -853,9 +840,7 @@ function handleRouteError(
   // throws this error when the middleware was bypassed or wired
   // incorrectly — fail-closed posture.
   if (name === 'UnauthenticatedError') {
-    res
-      .status(401)
-      .json(buildError('UNAUTHENTICATED', 'Authentication required'));
+    res.status(401).json(buildError('UNAUTHENTICATED', 'Authentication required'));
     return;
   }
 
@@ -870,14 +855,10 @@ function handleRouteError(
   // compatibility and translate to 404 in both cases.
   if (name === 'ValidationError') {
     if (code === 'DESIGN_NOT_FOUND') {
-      res
-        .status(404)
-        .json(buildError(code, message ?? 'Design not found or not accessible'));
+      res.status(404).json(buildError(code, message ?? 'Design not found or not accessible'));
       return;
     }
-    res
-      .status(400)
-      .json(buildError(code ?? 'VALIDATION_FAILED', message ?? 'Invalid input'));
+    res.status(400).json(buildError(code ?? 'VALIDATION_FAILED', message ?? 'Invalid input'));
     return;
   }
 
@@ -886,9 +867,7 @@ function handleRouteError(
   // ST-029-AC1 + AAP §0.2.2 anti-enumeration, the message MUST NOT
   // distinguish "does not exist" from "exists but not yours".
   if (name === 'NotFoundError') {
-    res
-      .status(404)
-      .json(buildError(code ?? 'NOT_FOUND', message ?? 'Resource not found'));
+    res.status(404).json(buildError(code ?? 'NOT_FOUND', message ?? 'Resource not found'));
     return;
   }
 
@@ -904,10 +883,7 @@ function handleRouteError(
   // status code at info level, providing operator visibility.
   const reqWithLog = req as Request & {
     log?: {
-      error: (
-        meta: Record<string, unknown>,
-        msg: string,
-      ) => void;
+      error: (meta: Record<string, unknown>, msg: string) => void;
     };
   };
   if (reqWithLog.log !== undefined && typeof reqWithLog.log.error === 'function') {
@@ -916,8 +892,7 @@ function handleRouteError(
         event: 'designs.route.error',
         errorName: name,
         errorCode: code,
-        errorMessage:
-          typeof message === 'string' ? message.slice(0, 200) : undefined,
+        errorMessage: typeof message === 'string' ? message.slice(0, 200) : undefined,
       },
       'designs route error',
     );
