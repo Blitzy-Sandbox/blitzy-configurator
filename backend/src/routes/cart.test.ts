@@ -719,6 +719,265 @@ describe('GET /api/cart — error translation (Rule R8 fail-closed)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// HTTP method scoping — only GET is supported on /api/cart
+// ---------------------------------------------------------------------------
+//
+// Per AAP §0.6.4 Track 1 Backend (T1-C) and ST-033 narrative, the cart
+// endpoint exposes ONLY a GET handler at `/api/cart`. Mutation methods
+// (POST, PUT, DELETE) MUST NOT be wired by the cart router — Express
+// surfaces them as 404 (no matching route) or 405 (Method Not Allowed)
+// per default semantics. This block pins that contract so a future
+// refactor that accidentally adds a `router.post(...)` or
+// `router.delete(...)` call is caught by the test gate.
+//
+// The contract is also a Rule R9 (no payment processing) reinforcement:
+// any future "POST /api/cart/checkout" or "DELETE /api/cart/items/:id"
+// would constitute a side-effecting cart-mutation surface that is
+// explicitly OUT OF SCOPE for ST-033's read-only retrieval mandate
+// (ST-033-AC4).
+// ---------------------------------------------------------------------------
+
+describe('GET /api/cart — only GET is supported (other methods rejected)', () => {
+  // Single shared fixture is sufficient — every assertion here is
+  // method-only and shares no per-test state. Per ST-033-AC4
+  // (no side effects) the service should never be invoked even if
+  // a mutation method somehow reached the handler; this fixture
+  // includes a fresh `OrderServiceMock` so we can assert that
+  // negative invariant.
+  const TEST_UID = 'method-test-uid';
+
+  it('rejects POST /api/cart with 404 or 405 (only GET is wired)', async () => {
+    const orderService = buildOrderService();
+    const app = buildApp({ orderService, uid: TEST_UID });
+
+    const res = await request(app).post('/api/cart').send({});
+
+    // Express returns 404 by default when no router matches the
+    // method+path combination. Some servers (with explicit method-
+    // not-allowed wiring) would return 405. Both are acceptable
+    // per the AAP test coverage matrix (ST-033 §0.6 supports
+    // either status), and either status confirms the cart router
+    // does NOT accept POST.
+    expect([404, 405]).toContain(res.status);
+    // Critical: the service MUST NOT have been invoked.
+    expect(orderService.getCart).not.toHaveBeenCalled();
+    expect(orderService.createOrder).not.toHaveBeenCalled();
+    expect(orderService.finalizeOrder).not.toHaveBeenCalled();
+    expect(orderService.getById).not.toHaveBeenCalled();
+  });
+
+  it('rejects PUT /api/cart with 404 or 405 (only GET is wired)', async () => {
+    const orderService = buildOrderService();
+    const app = buildApp({ orderService, uid: TEST_UID });
+
+    const res = await request(app).put('/api/cart').send({});
+
+    expect([404, 405]).toContain(res.status);
+    expect(orderService.getCart).not.toHaveBeenCalled();
+    expect(orderService.createOrder).not.toHaveBeenCalled();
+    expect(orderService.finalizeOrder).not.toHaveBeenCalled();
+    expect(orderService.getById).not.toHaveBeenCalled();
+  });
+
+  it('rejects DELETE /api/cart with 404 or 405 (only GET is wired)', async () => {
+    const orderService = buildOrderService();
+    const app = buildApp({ orderService, uid: TEST_UID });
+
+    const res = await request(app).delete('/api/cart').send();
+
+    expect([404, 405]).toContain(res.status);
+    expect(orderService.getCart).not.toHaveBeenCalled();
+    expect(orderService.createOrder).not.toHaveBeenCalled();
+    expect(orderService.finalizeOrder).not.toHaveBeenCalled();
+    expect(orderService.getById).not.toHaveBeenCalled();
+  });
+
+  it('rejects PATCH /api/cart with 404 or 405 (only GET is wired)', async () => {
+    // PATCH coverage is included for completeness — the cart
+    // surface is read-only by design, and PATCH is the most
+    // common HTTP verb for partial mutations. Pinning that
+    // PATCH is rejected gives the test gate the broadest
+    // possible defense against accidental mutation surfaces.
+    const orderService = buildOrderService();
+    const app = buildApp({ orderService, uid: TEST_UID });
+
+    const res = await request(app).patch('/api/cart').send({});
+
+    expect([404, 405]).toContain(res.status);
+    expect(orderService.getCart).not.toHaveBeenCalled();
+    expect(orderService.createOrder).not.toHaveBeenCalled();
+    expect(orderService.finalizeOrder).not.toHaveBeenCalled();
+    expect(orderService.getById).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rule R9 verification — no payment vocabulary in the response body
+// ---------------------------------------------------------------------------
+//
+// Per AAP §0.8.1 R9 the cart route MUST NOT introduce any payment-
+// processor vocabulary into the API surface. The complementary
+// source-file check below grep-matches the file on disk; this block
+// is the runtime sibling — it drives the route through supertest with
+// representative payloads and asserts the serialized JSON response
+// body is free of payment-processor terminology.
+//
+// The two checks together provide layered defense:
+//   - The source-file grep catches code-time leaks (e.g. a comment
+//     mentioning "Stripe" or a constant named PAYPAL_REGION).
+//   - The runtime body sweep catches data-shape leaks (e.g. a
+//     service returning `{ paymentIntent: ... }` that the route
+//     would forward verbatim).
+//
+// Verification mirrors the AAP `grep -ri` command applied to the
+// response body's JSON serialization, lower-cased to match the `-i`
+// flag's case-insensitive semantics.
+// ---------------------------------------------------------------------------
+
+describe('Rule R9 — no payment-processor vocabulary in response body', () => {
+  const TEST_UID = 'r9-body-sweep-uid';
+
+  it('200 cart response body contains zero matches for the AAP forbidden-vocabulary grep', async () => {
+    const orderService = buildOrderService();
+    // Representative cart payload — a non-trivial item shape
+    // exercises the JSON serialization of every documented field.
+    orderService.getCart.mockResolvedValueOnce({
+      userId: TEST_UID,
+      items: [
+        {
+          id: 'item-id-1',
+          orderId: 'cart-order-id-1',
+          designId: 'design-uuid-1',
+          quantity: 2,
+          metadata: { unitPrice: '25.00', title: 'StrikeForge Pro' },
+          createdAt: '2025-01-15T10:30:00.000Z',
+        },
+      ],
+      subtotal: '50.00',
+    });
+    const app = buildApp({ orderService, uid: TEST_UID });
+
+    const res = await request(app).get('/api/cart');
+
+    expect(res.status).toBe(200);
+    // The serialized body — JSON.stringify on the parsed body
+    // round-trips the response shape and lower-cases for the
+    // case-insensitive AAP grep equivalence.
+    const serialized = JSON.stringify(res.body).toLowerCase();
+    // Each forbidden term from AAP §0.7.2 / §0.8.1 R9.
+    expect(serialized).not.toContain('stripe');
+    expect(serialized).not.toContain('paypal');
+    expect(serialized).not.toContain('braintree');
+    expect(serialized).not.toContain('payment_intent');
+    expect(serialized).not.toContain('paymentintent');
+    expect(serialized).not.toContain('charge');
+    expect(serialized).not.toContain('refund');
+    expect(serialized).not.toContain('tokenize');
+  });
+
+  it('200 empty-cart response body contains zero matches for the AAP forbidden-vocabulary grep', async () => {
+    // The empty-cart path has a different serialized shape (zero
+    // items, '0.00' subtotal). Sweeping it independently confirms
+    // the empty representation is also free of forbidden tokens —
+    // a Rule R9 belt-and-suspenders posture.
+    const orderService = buildOrderService();
+    orderService.getCart.mockResolvedValueOnce({
+      userId: TEST_UID,
+      items: [],
+      subtotal: '0.00',
+    });
+    const app = buildApp({ orderService, uid: TEST_UID });
+
+    const res = await request(app).get('/api/cart');
+
+    expect(res.status).toBe(200);
+    const serialized = JSON.stringify(res.body).toLowerCase();
+    expect(serialized).not.toContain('stripe');
+    expect(serialized).not.toContain('paypal');
+    expect(serialized).not.toContain('braintree');
+    expect(serialized).not.toContain('payment_intent');
+    expect(serialized).not.toContain('paymentintent');
+    expect(serialized).not.toContain('charge');
+    expect(serialized).not.toContain('refund');
+    expect(serialized).not.toContain('tokenize');
+  });
+
+  it('500 error response body contains zero matches for the AAP forbidden-vocabulary grep', async () => {
+    // The error envelope has yet another serialized shape (a
+    // single `error: { code, message }` object). Sweeping it
+    // independently confirms even the failure path is free of
+    // forbidden tokens. Per Rule R8 (fail-closed) we trigger
+    // a 500 by rejecting the service call.
+    const orderService = buildOrderService();
+    orderService.getCart.mockRejectedValueOnce(new Error('synthetic failure'));
+    const app = buildApp({ orderService, uid: TEST_UID });
+
+    const res = await request(app).get('/api/cart');
+
+    expect(res.status).toBe(500);
+    const serialized = JSON.stringify(res.body).toLowerCase();
+    expect(serialized).not.toContain('stripe');
+    expect(serialized).not.toContain('paypal');
+    expect(serialized).not.toContain('braintree');
+    expect(serialized).not.toContain('payment_intent');
+    expect(serialized).not.toContain('paymentintent');
+    expect(serialized).not.toContain('charge');
+    expect(serialized).not.toContain('refund');
+    expect(serialized).not.toContain('tokenize');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rule R2 verification — no infrastructure detail leaked in error response
+// ---------------------------------------------------------------------------
+//
+// Per Rule R2 (no credential material in logs) and Rule R8
+// (gates fail closed), an unexpected error path MUST produce a
+// generic, non-leaking 500 envelope. This block exercises the
+// AAP-specified test scenario: `database connection refused`-style
+// errors must NOT have their raw message echoed in the response
+// body. The route's error translator pins to the static
+// 'Internal server error' string for INTERNAL_ERROR responses,
+// satisfying this contract.
+// ---------------------------------------------------------------------------
+
+describe('Rule R2 — no infrastructure detail leaked in 500 response body', () => {
+  const TEST_UID = 'r2-leak-test-uid';
+
+  it('database-style error message is NOT echoed in response body', async () => {
+    // The AAP test coverage matrix (§0.6 Phase 3 of cart.test.ts
+    // requirements) specifies that infrastructure detail must not
+    // leak per Rule R2. Drive a representative pg-style error and
+    // assert the response body is free of low-level diagnostic
+    // tokens (database, refused, connection).
+    const orderService = buildOrderService();
+    orderService.getCart.mockRejectedValueOnce(
+      new Error('database connection refused at 127.0.0.1:5432'),
+    );
+    const app = buildApp({ orderService, uid: TEST_UID });
+
+    const res = await request(app).get('/api/cart');
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+    // The original error message MUST be redacted from the
+    // response body. Lower-case the body to make the match
+    // case-insensitive — `Database` and `database` both fail.
+    const responseMessage =
+      typeof res.body.error.message === 'string'
+        ? res.body.error.message.toLowerCase()
+        : '';
+    expect(responseMessage).not.toContain('database');
+    expect(responseMessage).not.toContain('refused');
+    expect(responseMessage).not.toContain('connection');
+    expect(responseMessage).not.toContain('127.0.0.1');
+    expect(responseMessage).not.toContain('5432');
+    // The allowed message is the generic envelope.
+    expect(res.body.error.message).toBe('Internal server error');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Rule R9 verification — no settlement vocabulary in cart.ts
 // ---------------------------------------------------------------------------
 
