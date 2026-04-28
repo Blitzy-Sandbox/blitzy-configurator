@@ -44,13 +44,13 @@
 
 import { Canvas } from '@react-three/fiber';
 import { useEffect, useRef } from 'react';
-import { Quaternion } from 'three';
 
 import { Sphere } from './Sphere';
 import { initializePerformanceInstrumentation } from './performance';
 import { installTestBridge } from './testBridge';
 import { useDragRotation } from './useDragRotation';
 import { useIdleAutoRotate } from './useIdleAutoRotate';
+import { useMaterialSwatch } from './useMaterialSwatch';
 
 // ---------------------------------------------------------------------------
 // Component props
@@ -161,21 +161,23 @@ export function BallCanvas(props: BallCanvasProps): JSX.Element {
   const idleAutoRotateRef = useIdleAutoRotate(wrapperRef);
 
   // -----------------------------------------------------------------------
-  // Auto-rotation accumulator quaternion.
+  // ST-004 — Material parameters from the current finish.
   //
-  // Owned at the BallCanvas level (not inside `useIdleAutoRotate`)
-  // because the read-side (`Sphere.tsx`) integrates the per-frame
-  // velocity into this accumulator, AND the dev-only test bridge
-  // reads this accumulator to verify auto-rotation progress.
-  // Centralizing the accumulator here keeps a single source of truth
-  // for both consumers.
+  // `useMaterialSwatch` subscribes via Zustand selector to the
+  // `materialFinish` store slice and returns one of three
+  // module-scoped `MaterialParams` objects (matte, glossy, metallic).
+  // The reference is stable per finish: identical finishes return
+  // identical references, so React skips the downstream
+  // `<meshStandardMaterial>` re-render when the finish hasn't
+  // changed.
   //
-  // The accumulator is mutated in place by `Sphere.tsx`'s `useFrame`
-  // loop; it is never reset (auto-rotation resumes from the previous
-  // orientation after each pause/resume cycle, which matches the
-  // turntable mental model).
+  // The hook is called HERE (in `BallCanvas.tsx`) rather than inside
+  // `Sphere.tsx` so that `Sphere` remains a pure rendering primitive
+  // with no store coupling. Per AAP §0.6.7 / Sphere's schema, the
+  // `materialParams` flow into `Sphere` as a prop, not via an
+  // internal subscription.
   // -----------------------------------------------------------------------
-  const autoRotationAccumRef = useRef<Quaternion>(new Quaternion());
+  const materialParams = useMaterialSwatch();
 
   // -----------------------------------------------------------------------
   // ST-002 — Drag rotation hook.
@@ -285,7 +287,6 @@ export function BallCanvas(props: BallCanvasProps): JSX.Element {
 
     const uninstallBridge = installTestBridge({
       dragRotationRef,
-      autoRotationAccumRef,
       isDraggingRef,
       idleAutoRotateRef,
       wrapperRef,
@@ -375,15 +376,18 @@ export function BallCanvas(props: BallCanvasProps): JSX.Element {
         <directionalLight position={[-2.5, 1, -2]} intensity={0.35} color="#FFFFFF" />
 
         {/* -------------------------------------------------------------
-            The configurator sphere. Rotation refs and the per-frame
-            tick callback are forwarded so the mesh can compose the
-            final orientation per QA Report Issue #5 (composition
-            order: autoRotation . clone() . multiply(dragRotation)).
+            The configurator sphere. The drag and idle-velocity refs
+            are forwarded so the mesh can compose the final orientation
+            per QA Report Issue #5 (composition order: autoRotation .
+            multiply(dragRotation) inside Sphere's `useFrame`). The
+            material parameters flow as a value prop (not a ref)
+            because finish changes are infrequent — React's prop
+            diffing handles the propagation cheaply.
         ------------------------------------------------------------- */}
         <Sphere
           dragRotationRef={dragRotationRef}
           idleAutoRotateRef={idleAutoRotateRef}
-          autoRotationAccumRef={autoRotationAccumRef}
+          materialParams={materialParams}
         />
       </Canvas>
     </div>

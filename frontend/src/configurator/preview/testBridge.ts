@@ -214,7 +214,7 @@ declare global {
 
 /**
  * The set of refs the bridge needs from `BallCanvas.tsx` to fulfill
- * its contract. All five fields are `MutableRefObject` instances
+ * its contract. All four fields are `MutableRefObject` instances
  * returned from React `useRef(...)` calls (or — in the case of
  * `idleAutoRotateRef` — a structurally compatible `IdleAutoRotateRef`
  * whose `current` is the angular velocity in rad/s), which means they
@@ -225,8 +225,6 @@ declare global {
  *   - dragRotationRef       — drag-rotation accumulator (mutated in
  *                             place by `useDragRotation` pointer
  *                             handlers).
- *   - autoRotationAccumRef  — auto-rotation accumulator (mutated in
- *                             place by `Sphere.tsx`'s `useFrame`).
  *   - isDraggingRef         — boolean flag (true while primary
  *                             pointer is captured by `useDragRotation`).
  *   - idleAutoRotateRef     — read-only velocity ref from
@@ -235,10 +233,18 @@ declare global {
  *                             auto-rotating.
  *   - wrapperRef            — DOM ref to the canvas wrapper element
  *                             (target for synthetic pointer dispatch).
+ *
+ * NOTE: there is intentionally NO `autoRotationAccumRef` field in
+ * this contract. `Sphere.tsx`'s schema mandates an INTERNAL auto-
+ * rotation accumulator (per the agent prompt's `useMemo(() => new
+ * Quaternion(), [])` pattern). The bridge surfaces auto-rotation
+ * progress to tests via the dev-only `window.__strikeforge_internal__`
+ * mirror that `Sphere.tsx` writes to inside `useFrame` under the
+ * `import.meta.env.DEV` gate. See `getAutoRotation` /
+ * `getComposedRotation` below.
  */
 export interface TestBridgeRefs {
   readonly dragRotationRef: React.MutableRefObject<Quaternion>;
-  readonly autoRotationAccumRef: React.MutableRefObject<Quaternion>;
   readonly isDraggingRef: React.MutableRefObject<boolean>;
   readonly idleAutoRotateRef: IdleAutoRotateRef;
   readonly wrapperRef: React.MutableRefObject<HTMLElement | null>;
@@ -310,19 +316,68 @@ function quaternionToPlain(q: Quaternion): QuaternionLike {
 }
 
 /**
- * Compute the Hamilton product `a * b` of two quaternions and return
- * the result as a plain object. Used by `getComposedRotation()` to
- * mirror `Sphere.tsx`'s per-frame composition formula
- * (`composed.copy(auto).multiply(drag)`) without mutating either
- * source quaternion.
+ * Shape of the dev-only window mirror that `Sphere.tsx` writes to
+ * inside `useFrame`. Production builds tree-shake the mirror entirely
+ * (the assignments are gated by `import.meta.env.DEV`).
+ *
+ * The mirror exposes:
+ *   - `autoRotation`     — the integrated angular-velocity accumulator
+ *                          (auto-rotation only, no drag contribution).
+ *   - `composedRotation` — the composed orientation written to the
+ *                          mesh's quaternion each frame
+ *                          (`autoRotation * dragRotation`).
  */
-function multiplyQuaternionsPlain(a: Quaternion, b: Quaternion): QuaternionLike {
-  return {
-    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-  };
+interface SphereInternalMirror {
+  autoRotation: { x: number; y: number; z: number; w: number };
+  composedRotation: { x: number; y: number; z: number; w: number };
+}
+
+/**
+ * Read the dev-only Sphere internal-state mirror window slot.
+ * Returns `undefined` if the mirror has not yet been initialized
+ * (production build, SSR context, or before the first `useFrame`
+ * tick after mount).
+ */
+function readSphereInternalMirror(): SphereInternalMirror | undefined {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+  const w = window as Window & { __strikeforge_internal__?: SphereInternalMirror };
+  return w.__strikeforge_internal__;
+}
+
+/**
+ * Snapshot the auto-rotation accumulator from the dev-only mirror.
+ * Returns the identity quaternion when the mirror is absent (which
+ * happens in production builds, in SSR contexts, and before the
+ * first `useFrame` tick after mount).
+ */
+function readAutoRotationFromMirror(): QuaternionLike {
+  const mirror = readSphereInternalMirror();
+  if (mirror === undefined) {
+    return { x: 0, y: 0, z: 0, w: 1 };
+  }
+  const q = mirror.autoRotation;
+  return { x: q.x, y: q.y, z: q.z, w: q.w };
+}
+
+/**
+ * Snapshot the composed (auto * drag) rotation from the dev-only
+ * mirror. Returns the identity quaternion when the mirror is absent.
+ *
+ * `Sphere.tsx`'s `useFrame` writes the same composed quaternion that
+ * is copied onto the mesh, so this read is the canonical "what is
+ * the visible orientation right now" value — the same value
+ * Playwright would observe via `canvas.toDataURL()` pixel inspection,
+ * but as a Quaternion plain-object instead of a pixel buffer.
+ */
+function readComposedRotationFromMirror(): QuaternionLike {
+  const mirror = readSphereInternalMirror();
+  if (mirror === undefined) {
+    return { x: 0, y: 0, z: 0, w: 1 };
+  }
+  const q = mirror.composedRotation;
+  return { x: q.x, y: q.y, z: q.z, w: q.w };
 }
 
 // ---------------------------------------------------------------------------
@@ -366,9 +421,19 @@ export function installTestBridge(refs: TestBridgeRefs): () => void {
 
   const api: StrikeForgeTestApi = {
     getDragRotation: () => quaternionToPlain(refs.dragRotationRef.current),
-    getAutoRotation: () => quaternionToPlain(refs.autoRotationAccumRef.current),
-    getComposedRotation: () =>
-      multiplyQuaternionsPlain(refs.autoRotationAccumRef.current, refs.dragRotationRef.current),
+    // The auto-rotation accumulator lives INSIDE `Sphere.tsx` (per the
+    // schema's strict 3-prop interface). The Sphere mirrors it to
+    // `window.__strikeforge_internal__` on every `useFrame` tick under
+    // an `import.meta.env.DEV` gate. We read from the mirror here so
+    // tests retain end-to-end visibility into the integrated
+    // accumulator without coupling Sphere's API to the bridge.
+    getAutoRotation: () => readAutoRotationFromMirror(),
+    // The composed quaternion (`autoRotation * dragRotation`) is the
+    // exact value `Sphere.tsx`'s `useFrame` writes to the mesh's
+    // `quaternion` field. Reading it from the mirror is equivalent to
+    // observing the visible orientation, but as a Quaternion plain
+    // object instead of a pixel buffer.
+    getComposedRotation: () => readComposedRotationFromMirror(),
     getIsDragging: () => refs.isDraggingRef.current,
     // "Auto-rotating" maps to "the idle hook's angular velocity is
     // non-zero". Per the `IdleAutoRotateRef` binary contract, this
