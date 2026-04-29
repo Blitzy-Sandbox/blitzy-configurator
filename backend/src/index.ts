@@ -19,6 +19,16 @@
  *       7. routes/*                  — business logic
  *       8. error handler             — last; logs via pino with allow-list
  *
+ *   - QA Final H (security-headers preamble — added BEFORE step 2 above
+ *     so headers apply to every response, including body-parser failures
+ *     and CORS preflights):
+ *       1a. app.disable('x-powered-by') — defense-in-depth
+ *       1b. helmet()                    — CSP, HSTS, X-Content-Type-Options,
+ *                                          X-Frame-Options, Referrer-Policy,
+ *                                          Cross-Origin-* policies
+ *       1c. Permissions-Policy header   — disables unused browser features
+ *       1d. Cache-Control: no-store     — applied to every `/api/*` path
+ *
  * Per the user-provided Observability Rule, the application is not
  * complete until it is observable. This bootstrap layer brings up
  * the four foundation pillars at startup:
@@ -101,6 +111,21 @@ import type { CorsOptions } from 'cors';
 // references throughout the file.
 import express from 'express';
 import type { Express, NextFunction, Request, Response } from 'express';
+
+// `helmet` — production security-header middleware. QA Final H Issue #1
+// (MAJOR) identified the absence of an industry-standard set of HTTP
+// security response headers (Content-Security-Policy, Strict-Transport-
+// Security, X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
+// Cross-Origin-* policies). Helmet ships these as a single composed
+// middleware; it is mounted at the very top of the chain so the headers
+// are emitted on EVERY response — including body-parser-failure 400s
+// and 413s, CORS preflight 204s, 401 unauthenticated rejections, 404
+// unmatched routes, and 5xx terminal-error responses. The package is
+// not enumerated in the AAP §0.4.1 dependency table; this addition is
+// recorded in the decision log alongside the QA-driven `cors` addition
+// already documented there. Helmet's `xPoweredBy` removal also resolves
+// QA Final H Issue #2 (MINOR) — `X-Powered-By: Express` disclosure.
+import helmet from 'helmet';
 
 // `pino-http` — Express middleware that attaches a request-scoped
 // pino logger to every request (`req.log`) and emits a "request
@@ -276,9 +301,23 @@ function sanitiseBodyParserError(err: BodyParserError): void {
 /**
  * Application entry point.
  *
- * The middleware chain order matches AAP §0.5.6 verbatim:
+ * The middleware chain order matches AAP §0.5.6 verbatim, with the
+ * security-headers preamble (steps 0a–0d) added in the QA Final H
+ * remediation pass. The preamble runs BEFORE every other middleware so
+ * that security response headers are emitted on EVERY response — even
+ * body-parser failures (400/413), CORS preflight 204s, 401 session
+ * rejections, 404s, and terminal 5xx responses:
  *
- *   0. `import './tracing'`        — auto-instrumentations (FIRST IMPORT)
+ *   0.  `import './tracing'`        — auto-instrumentations (FIRST IMPORT)
+ *   0a. `app.disable('x-powered-by')` — defense-in-depth (QA Final H Issue #2)
+ *   0b. `helmet({ ... })`          — security response headers
+ *                                     (CSP, HSTS, X-Content-Type-Options,
+ *                                     X-Frame-Options, Referrer-Policy,
+ *                                     Cross-Origin-* policies; QA Final H
+ *                                     Issue #1)
+ *   0c. Permissions-Policy middleware — disables browser features that
+ *                                     a JSON API never legitimately needs
+ *   0d. Cache-Control: no-store     — applied to every `/api/*` route
  *   1. `express.json({ limit })`   — body parsing
  *   1a. body-parser sanitiser      — strips err.body BEFORE the error
  *                                     propagates (Rule R2 / ST-047-AC4)
@@ -461,6 +500,175 @@ async function bootstrap(): Promise<http.Server> {
   // Step 5: Build the Express app with middleware chain (AAP §0.5.6)
   // -------------------------------------------------------------------
   const app: Express = express();
+
+  // Step 5_pre_a: Defense-in-depth `X-Powered-By` removal.
+  //
+  // QA Final H Issue #2 (MINOR) flagged the `X-Powered-By: Express`
+  // response header as information disclosure. Helmet's default config
+  // (mounted next) ALREADY removes this header via its `hidePoweredBy`
+  // module — the explicit `app.disable(...)` here is BELT-AND-SUSPENDERS
+  // protection. If a future agent passes `xPoweredBy: false` (alias
+  // `hidePoweredBy: false`) to helmet, Express's intrinsic
+  // `x-powered-by` setting being disabled here ensures the header is
+  // still suppressed. Express applies the `app.disable('x-powered-by')`
+  // setting at the framework level — it is not a middleware and therefore
+  // executes regardless of helmet's mount status or option overrides.
+  app.disable('x-powered-by');
+
+  // Step 5_pre_b: Helmet — production security response headers.
+  //
+  // QA Final H Issue #1 (MAJOR) identified the absence of every
+  // industry-standard security response header on every endpoint
+  // (`/healthz`, `/readyz`, `/metrics`, `/api/auth/login`,
+  // `/api/designs`, etc.). Helmet emits the following set on EVERY
+  // response (including error responses) at this composition position:
+  //
+  //   • Content-Security-Policy — directive set sourced from helmet's
+  //     `useDefaults: true` (the default) merged with the explicit
+  //     `default-src 'none'` and `frame-ancestors 'none'` overrides
+  //     below. Browsers ignore CSP for application/json responses
+  //     because CSP applies only when a resource is interpreted as an
+  //     HTML document; declaring it here defends against the
+  //     hypothetical case where a misconfigured middleware mislabels
+  //     a JSON response as text/html and an attacker tries to abuse
+  //     it as a script source.
+  //   • Strict-Transport-Security — `max-age=31536000` (one year),
+  //     `includeSubDomains`, and `preload` direct browsers to refuse
+  //     HTTP transport for any subdomain of the deployed origin for
+  //     a year, and qualify the origin for inclusion in the HSTS
+  //     preload list maintained by browser vendors. The header is
+  //     ignored by browsers when the response is delivered over
+  //     plain HTTP (the local-dev case) and engaged on HTTPS in
+  //     production behind Cloud Run (Cloud Run terminates TLS at the
+  //     load balancer; the Cloud Run-issued certificate ensures HTTPS
+  //     is the only public scheme).
+  //   • X-Content-Type-Options: nosniff — denies the browser MIME-
+  //     sniffing escape hatch, ensuring every response is treated
+  //     according to its declared `Content-Type`.
+  //   • X-Frame-Options: SAMEORIGIN — helmet default; CSP
+  //     `frame-ancestors 'none'` is the modern superseding directive,
+  //     but X-Frame-Options remains for legacy browsers.
+  //   • Referrer-Policy: strict-origin-when-cross-origin — sends the
+  //     full origin (no path/query) on cross-origin requests and the
+  //     full URL on same-origin requests, the modern privacy-preserving
+  //     default that does not leak query parameters across origins.
+  //   • Cross-Origin-Opener-Policy: same-origin — helmet default; isolates
+  //     the browsing context from cross-origin windows.
+  //   • Cross-Origin-Resource-Policy: cross-origin — overridden from
+  //     helmet's default `same-origin`. The backend is consumed via
+  //     CORS-protected `fetch()` from the Vite dev server (different
+  //     origin than the API), so a `same-origin` CORP would block
+  //     legitimate cross-origin loads in browsers that honour CORP.
+  //     The CORS allow-list (see Step 5c) remains the primary access
+  //     control; CORP is one layer of defense-in-depth that we
+  //     deliberately relax to `cross-origin` because CORS is already
+  //     enforcing the access policy explicitly.
+  //   • crossOriginEmbedderPolicy: false — disabled; COEP is meaningful
+  //     only for HTML documents that embed cross-origin resources,
+  //     which a JSON API never serves. Setting this to `false`
+  //     suppresses the `Cross-Origin-Embedder-Policy` header entirely
+  //     so it does not surprise downstream tooling that interprets the
+  //     header as gating loads.
+  //   • Origin-Agent-Cluster, X-DNS-Prefetch-Control, X-Download-Options,
+  //     X-Permitted-Cross-Domain-Policies, X-XSS-Protection — all
+  //     enabled with helmet's hardening defaults.
+  //
+  // Mount position: FIRST after `const app = express()` and BEFORE body
+  // parsing. This placement ensures helmet's headers are applied to
+  // every response, including:
+  //   - Body-parser failures (400 entity.parse.failed, 413 entity.too.large)
+  //   - CORS preflight responses (OPTIONS 204)
+  //   - Session-validation rejections (401)
+  //   - 404 unmatched routes
+  //   - Terminal-error 500 responses
+  // If helmet were mounted later in the chain, any of the above paths
+  // that short-circuit before reaching helmet would emit responses
+  // without security headers — a regression of QA Final H Issue #1.
+  //
+  // CSP directive overrides:
+  //   - `default-src 'none'` — for a JSON API, no resources should be
+  //     loadable by browser parsers from the API surface. The override
+  //     replaces helmet's permissive `'self'` default. Subordinate
+  //     directives (script-src, style-src, etc.) inherit from
+  //     `default-src`, so this single override yields the strictest
+  //     possible CSP.
+  //   - `frame-ancestors 'none'` — denies any origin from embedding the
+  //     API endpoints in an `<iframe>`, `<frame>`, `<embed>`, or
+  //     `<object>`. The X-Frame-Options: SAMEORIGIN header is the
+  //     legacy fallback for older browsers; `frame-ancestors 'none'`
+  //     is the modern equivalent and stronger (rejects all framing,
+  //     not just cross-origin framing).
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'none'"],
+          frameAncestors: ["'none'"],
+        },
+      },
+      crossOriginEmbedderPolicy: false,
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+      strictTransportSecurity: {
+        maxAge: 31536000,
+        includeSubDomains: true,
+        preload: true,
+      },
+    }),
+  );
+
+  // Step 5_pre_c: Permissions-Policy — disable browser-level feature
+  // access for any user-agent that interprets the API URL as a
+  // top-level document (an unusual but possible interaction surface).
+  //
+  // Helmet 7.x does NOT ship a Permissions-Policy module; the previous
+  // `Feature-Policy` header was removed from the spec and helmet has
+  // not yet adopted the replacement. We set it manually with a
+  // restrictive policy that disables every browser feature this API
+  // never legitimately needs (the API is a JSON service that is never
+  // rendered as an interactive document). Each `feature=()` entry is
+  // an empty allow-list — no origin is permitted to use the feature.
+  //
+  // The directive is encoded as a single header value per the
+  // Permissions-Policy specification
+  // (https://www.w3.org/TR/permissions-policy/#permissions-policy-http-header-field):
+  // each feature-name=allow-list pair separated by `, ` (comma-space).
+  // Unknown features are gracefully ignored by browsers, so the policy
+  // value is forward-compatible across user-agent versions.
+  app.use((_req: Request, res: Response, next: NextFunction): void => {
+    res.setHeader(
+      'Permissions-Policy',
+      'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()',
+    );
+    next();
+  });
+
+  // Step 5_pre_d: Cache-Control: no-store on every `/api/*` route.
+  //
+  // Authenticated API responses must NEVER be cached by the browser,
+  // browser extensions, intermediate proxies, or shared caches. Even
+  // an idempotent `GET /api/designs` response carries user-scoped data
+  // (the requesting `uid`'s designs) and sharing it with another user
+  // — for example by a back-button replay on a shared computer — would
+  // leak personal data. The `Cache-Control: no-store` directive is the
+  // most strict of the cache-control family: it instructs every cache
+  // (browser, proxy, CDN) to neither store the response nor serve a
+  // cached copy on a subsequent identical request.
+  //
+  // Mount path: `/api` — applies to every authenticated route under
+  // `/api/auth/logout`, `/api/designs`, `/api/cart`, `/api/orders`,
+  // AND to the unauthenticated `/api/auth/register`, `/api/auth/login`,
+  // and `/api/share/:token` routes (which also surface user-controlled
+  // content and should not be cached).
+  //
+  // `/healthz`, `/readyz`, `/metrics` are intentionally NOT covered
+  // here — Prometheus scrape behavior is a known caller and Cloud Run
+  // health probes do not honour Cache-Control either way; the omission
+  // is documented in the decision log.
+  app.use('/api', (_req: Request, res: Response, next: NextFunction): void => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
 
   // Step 5a: body parsing.
   //

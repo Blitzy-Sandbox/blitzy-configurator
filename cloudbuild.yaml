@@ -72,6 +72,18 @@ steps:
         # `--include-workspace-root` ensures shared lint/format tools
         # at the repo root are also installed.
         npm ci --workspaces --include-workspace-root --no-audit --no-fund
+        # ----------------------------------------------------------------
+        # QA Final H Issue #3 (MAJOR) — fabric.js SVG-export CVE guard.
+        # Runs BEFORE eslint so a vulnerable SVG-export/import call site
+        # fails the pipeline at the cheapest gate. Script enforces that
+        # NO production source file calls `toSVG`, `toSvg`,
+        # `loadSVGFromURL`, or `loadSVGFromString` — the call surface
+        # that triggers CVE-2026-27013 in fabric@6.x. Non-zero exit on
+        # any hit. See `docs/decisions/README.md` for the full non-
+        # exploitability rationale and the rationale for keeping fabric
+        # pinned at the AAP §0.4.2 `^6.x` range rather than upgrading.
+        # ----------------------------------------------------------------
+        bash /workspace/scripts/guard-fabric-svg.sh
         # Backend lint — fails non-zero on any warning.
         cd /workspace/backend
         npx eslint src/ --max-warnings 0 --format json \
