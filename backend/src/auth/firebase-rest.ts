@@ -93,13 +93,24 @@
  *
  * Per Constraint C5 (correlation ID propagation):
  *   The adapter does NOT manually attach the `x-correlation-id` header
- *   to outbound REST calls. The OTel auto-instrumentation of the
- *   underlying HTTP client propagates the W3C `traceparent` header
- *   automatically, and the correlation-ID middleware's outbound HTTP
- *   interceptor (registered globally during composition root
- *   initialization) injects `x-correlation-id` into every outbound
- *   request. This module's HTTP-side concerns are therefore confined
- *   to the request body and response decoding.
+ *   to outbound REST calls. Two independent telemetry layers attach
+ *   identifying headers transparently:
+ *     1. OTel undici instrumentation
+ *        (`@opentelemetry/instrumentation-undici`, bundled in
+ *        `@opentelemetry/auto-instrumentations-node`) attaches the
+ *        W3C `traceparent` header at undici's request-dispatch
+ *        boundary.
+ *     2. The correlation-ID middleware's `globalThis.fetch` wrapper
+ *        (`backend/src/middleware/correlation.ts`) attaches
+ *        `x-correlation-id` at the public fetch surface using the
+ *        request's ALS-bound correlation context. Because Node 20
+ *        LTS's global `fetch` is built on undici and bypasses
+ *        `node:http` entirely, the http/https monkey-patches in
+ *        `correlation.ts` would NOT cover this call path on their
+ *        own — the dedicated fetch wrapper is what closes the gap
+ *        documented in QA Final F Issue #1.
+ *   This module's HTTP-side concerns are therefore confined to the
+ *   request body and response decoding.
  *
  * Composition root usage (excerpt from backend/src/index.ts):
  *
@@ -633,9 +644,18 @@ export function createSignInWithPassword(): SignInWithPasswordFn {
     };
 
     // Issue the REST call via Node 20 LTS's native global `fetch`.
-    // OTel auto-instrumentation produces an outbound HTTP span
-    // automatically (Rule R6 / C4) and the correlation-ID middleware's
-    // outbound interceptor injects `x-correlation-id` (Rule C5).
+    //
+    // Telemetry attaches transparently:
+    //   - OTel undici instrumentation produces an outbound HTTP span
+    //     and attaches `traceparent` (Rule R6 / C4).
+    //   - The correlation-ID middleware's `globalThis.fetch` wrapper
+    //     attaches `x-correlation-id` from the active ALS context
+    //     (Rule C5). The wrapper is installed at module load time in
+    //     `backend/src/middleware/correlation.ts` and is what closes
+    //     the QA Final F Issue #1 gap (a prior version relied on the
+    //     http/https patches alone, which do NOT cover fetch because
+    //     Node 20 LTS's global fetch is built on undici and bypasses
+    //     `node:http` / `node:https` entirely).
     //
     // The try/catch wrapper covers ONLY transport-layer failures
     // (DNS, TCP reset, TLS error, etc.). HTTP-status failures (non-

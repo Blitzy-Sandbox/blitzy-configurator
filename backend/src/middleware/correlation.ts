@@ -17,7 +17,17 @@
  *      the correlation ID header. This is the Rule C5 "every outbound
  *      HTTP client call MUST attach the correlation ID" enforcement
  *      point — it covers Firebase Admin SDK, @google-cloud/storage, and
- *      any direct outbound traffic from application code.
+ *      any direct outbound traffic from application code that uses the
+ *      `node:http` / `node:https` core modules.
+ *   7. Monkey-patch `globalThis.fetch` so every outbound `fetch()` call
+ *      ALSO carries the correlation ID header. Node 20 LTS's global
+ *      `fetch` is built on undici and bypasses `node:http` entirely —
+ *      without this patch, fetch-based outbound calls (notably the
+ *      Firebase Auth REST adapter in `auth/firebase-rest.ts`) would
+ *      escape the C5 contract. Both transports are patched independently
+ *      so the C5 invariant ("every outbound HTTP client call MUST attach
+ *      the correlation ID") holds for the entire backend regardless of
+ *      which client library a service chooses.
  *
  * Rule R2 compliance:
  *   The ALS store's shape (`CorrelationContext`) is strictly
@@ -68,7 +78,21 @@ import { URL } from 'node:url';
 
 import { v4 as uuidv4 } from 'uuid';
 
-import type { Request, Response, NextFunction, RequestHandler } from 'express';
+// `Request` from `express` is aliased to `ExpressRequest` to avoid
+// shadowing the global WHATWG `Request` constructor (Node 20 `fetch`
+// global), which is referenced as a value at the fetch-wrapper site
+// below (e.g. `input instanceof Request`). Without the alias, the
+// type-only import name `Request` shadows the global value, producing
+// `@typescript-eslint/consistent-type-imports` "Type import 'Request'
+// is used by decorator metadata" diagnostics. Aliasing keeps the
+// Express type usable at the middleware boundary while leaving the
+// global `Request` constructor visible to the fetch wrapper below.
+import type {
+  Request as ExpressRequest,
+  Response,
+  NextFunction,
+  RequestHandler,
+} from 'express';
 
 // ---------------------------------------------------------------------------
 // Express request augmentation
@@ -353,7 +377,7 @@ export function getCorrelationId(): string | undefined {
  *     it depends on a service instance.
  */
 export const correlationMiddleware: RequestHandler = function correlationMiddleware(
-  req: Request,
+  req: ExpressRequest,
   res: Response,
   next: NextFunction,
 ): void {
@@ -539,6 +563,274 @@ function patchHttpModule(mod: typeof http | typeof https): void {
 }
 
 // ---------------------------------------------------------------------------
+// Outbound fetch correlation injection (undici / WHATWG fetch)
+// ---------------------------------------------------------------------------
+//
+// QA finding (Final F, Issue #1, MAJOR — Constraint C5 partial violation):
+//   tcpdump captures during the login flow showed the Firebase REST
+//   adapter's outbound call to
+//   `/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword`
+//   carried `traceparent` (via OTel auto-instrumentation of undici) but
+//   NOT `x-correlation-id` — because Node 20's global `fetch` is
+//   implemented on top of undici and bypasses `node:http` / `node:https`
+//   entirely. The http/https monkey-patches above therefore do NOT cover
+//   fetch-based outbound calls. The C5 invariant "every outbound HTTP
+//   client call MUST attach the correlation ID" was violated for the
+//   single most security-relevant outbound call in the system.
+//
+// Resolution:
+//   Wrap `globalThis.fetch` with a thin correlation-injecting layer that
+//   mirrors the http patch's contract:
+//     - Read the active correlation ID from the ALS store; if no frame
+//       is active, no-op (no header attached).
+//     - Locate / synthesise a `Headers`-shaped value on `init`.
+//     - Skip injection if the caller explicitly supplied an
+//       `x-correlation-id` header (case-insensitive). Caller intent
+//       always wins.
+//     - Otherwise, attach the correlation ID and forward to the
+//       underlying fetch implementation unchanged.
+//   Wrap fetch in try/catch so any pathological argument NEVER breaks
+//   the underlying request — exactly as the http patch does.
+
+/**
+ * The minimal subset of the `fetch` Headers parameter we need to support.
+ *
+ * The fetch standard accepts three shapes:
+ *   - A `Headers` instance.
+ *   - An array of `[name, value]` tuples (`[string, string][]`).
+ *   - A plain object with string-or-string-array values (record form).
+ *
+ * Our injection logic handles all three by upgrading the value to a
+ * `Headers` instance whenever needed (the standard's algorithm constructs
+ * a `Headers` internally anyway, so this matches its observable behaviour).
+ */
+type FetchHeadersLike = Headers | [string, string][] | Record<string, string | string[]>;
+
+/**
+ * Case-insensitive existence check on a fetch-compatible headers value.
+ *
+ * Returns `true` if the headers already declare an `x-correlation-id` (in
+ * any case) so the caller's explicit value is preserved. The check covers
+ * all three input shapes the fetch standard supports.
+ */
+function fetchHeadersHasCorrelation(headers: FetchHeadersLike | undefined): boolean {
+  if (headers === undefined || headers === null) {
+    return false;
+  }
+  // `Headers` has `.has()` which is case-insensitive by spec.
+  if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+    return headers.has(OUTBOUND_HEADER);
+  }
+  if (Array.isArray(headers)) {
+    return headers.some(
+      (entry) =>
+        Array.isArray(entry) &&
+        typeof entry[0] === 'string' &&
+        entry[0].toLowerCase() === OUTBOUND_HEADER,
+    );
+  }
+  if (typeof headers === 'object') {
+    return Object.keys(headers as object).some(
+      (key) => key.toLowerCase() === OUTBOUND_HEADER,
+    );
+  }
+  return false;
+}
+
+/**
+ * Attach `x-correlation-id` to a fetch-compatible headers value, returning
+ * the (possibly new) headers value. Pure: never mutates the caller-supplied
+ * object beyond well-defined `Headers.set` / array push / property write.
+ *
+ * The return value is whichever shape the caller passed in, so the resulting
+ * `init.headers` is structurally compatible with anything fetch already
+ * accepts. When `headers` is `undefined`, we synthesise a plain record (the
+ * least-surprising default — matches what most callers pass).
+ */
+function fetchHeadersWithCorrelation(
+  headers: FetchHeadersLike | undefined,
+  correlationId: string,
+): FetchHeadersLike {
+  // No headers supplied → synthesise a plain record. We DO NOT use a
+  // `Headers` instance here because the global `Headers` constructor is
+  // present in Node 20 LTS but creating one always allocates more than a
+  // simple object literal; plain records are valid `RequestInit.headers`.
+  if (headers === undefined || headers === null) {
+    return { [OUTBOUND_HEADER]: correlationId };
+  }
+  if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+    headers.set(OUTBOUND_HEADER, correlationId);
+    return headers;
+  }
+  if (Array.isArray(headers)) {
+    headers.push([OUTBOUND_HEADER, correlationId]);
+    return headers;
+  }
+  if (typeof headers === 'object') {
+    (headers as Record<string, string>)[OUTBOUND_HEADER] = correlationId;
+    return headers;
+  }
+  // Non-object, non-array, non-Headers value (e.g. a string). The fetch
+  // standard would reject this and throw `TypeError`; we defensively skip
+  // injection rather than coerce, so we never break a request that would
+  // have failed on fetch's own validation path.
+  return headers;
+}
+
+/**
+ * Pure helper: given the variadic argument list of a `fetch(input, init?)`
+ * call and an active correlation ID, return a NEW `init` object with the
+ * correlation header attached.
+ *
+ * Input shapes handled:
+ *   - `fetch(string)`                — no init; we synthesise one with
+ *                                       headers carrying the correlation ID.
+ *   - `fetch(string, init)`          — extend `init.headers`.
+ *   - `fetch(URL)`                   — same as string-input case.
+ *   - `fetch(URL, init)`             — extend `init.headers`.
+ *   - `fetch(Request)`               — Request objects already encapsulate
+ *                                       headers; we MUST NOT mutate the
+ *                                       Request (it may be in use elsewhere).
+ *                                       Instead we synthesise an `init` with
+ *                                       headers carrying ONLY the correlation
+ *                                       ID — the underlying fetch then merges
+ *                                       this with the Request's own headers.
+ *   - `fetch(Request, init)`         — extend the supplied `init`.
+ *
+ * Returns the NEW init object that the caller MUST forward to the original
+ * fetch implementation as its second argument. Never mutates the input
+ * `init` if the input has an own `headers` property of `Headers` type — the
+ * mutation through `Headers.set` is observable on the input only because
+ * the headers ARE the storage; the spec considers this acceptable since
+ * the `Headers` instance was supplied explicitly to fetch and is therefore
+ * owned by the call.
+ *
+ * Skips injection (returns `init` unchanged or a synthesised init without
+ * the correlation header) if the caller supplied an explicit
+ * `x-correlation-id` header — caller intent always wins.
+ *
+ * Exported for unit-test introspection (the `_` prefix signals "intended
+ * for tests / internal use"). Tests can call it directly without going
+ * through the global fetch, providing a pure-function surface for the
+ * outbound-propagation contract.
+ */
+export function _injectCorrelationHeaderIntoFetchInit(
+  input: unknown,
+  init: unknown,
+  correlationId: string,
+): unknown {
+  // If the caller supplied an init with an explicit x-correlation-id
+  // (any case), preserve their intent — return init unchanged.
+  if (init !== undefined && init !== null && typeof init === 'object') {
+    const initObj = init as { headers?: FetchHeadersLike };
+    if (fetchHeadersHasCorrelation(initObj.headers)) {
+      return init;
+    }
+  }
+
+  // If the caller supplied a Request as `input` and that Request already
+  // has the correlation header set on its own headers object, preserve
+  // their intent — leave init untouched (we still pass it through).
+  if (
+    typeof Request !== 'undefined' &&
+    input !== null &&
+    typeof input === 'object' &&
+    input instanceof Request
+  ) {
+    if (input.headers.has(OUTBOUND_HEADER)) {
+      return init;
+    }
+  }
+
+  // No explicit caller header — inject. Build (or extend) init.
+  if (init === undefined || init === null) {
+    return {
+      headers: { [OUTBOUND_HEADER]: correlationId },
+    };
+  }
+  if (typeof init !== 'object') {
+    // Non-object init (e.g. a string passed by mistake). The fetch
+    // standard would reject this; defensively pass through unchanged.
+    return init;
+  }
+
+  const initObj = init as { headers?: FetchHeadersLike };
+  initObj.headers = fetchHeadersWithCorrelation(initObj.headers, correlationId);
+  return init;
+}
+
+/**
+ * Monkey-patch `globalThis.fetch` so outbound calls from within an ALS
+ * context automatically carry the correlation header.
+ *
+ * Coexistence with OTel undici instrumentation:
+ *   `@opentelemetry/auto-instrumentations-node` includes
+ *   `@opentelemetry/instrumentation-undici`, which patches undici's
+ *   internal dispatcher to attach the W3C `traceparent` header. That
+ *   patching layer operates BELOW the public fetch surface (at undici's
+ *   request-dispatch boundary) and is independent of fetch wrapping at
+ *   the public surface. Both layers therefore coexist: a single outbound
+ *   `fetch()` call carries `x-correlation-id` (this layer) and
+ *   `traceparent` (OTel's undici layer) without interference.
+ *
+ * Error handling: a `try { ... } catch {}` around the injection logic is
+ * intentional. If something in our injection logic throws (e.g., a
+ * pathological arguments object), we MUST NOT break outbound fetch calls.
+ * Production reliability trumps perfect telemetry — a missing correlation
+ * header is a debugging nuisance; a thrown exception in `fetch` is a
+ * service outage.
+ *
+ * Idempotency: the caller is responsible for ensuring this function runs
+ * exactly once per process via the sentinel block below. Re-running
+ * unconditionally would compound wrapper layers indefinitely on every
+ * `jest.resetModules()` call.
+ */
+function patchFetch(): void {
+  // `globalThis.fetch` may be undefined in extremely old Node versions;
+  // guard so the patch is a strict no-op when fetch is not present
+  // (preserves backward compatibility — though Node 20 LTS, our minimum,
+  // has fetch globally available since v18).
+  const target = globalThis as unknown as { fetch?: typeof globalThis.fetch };
+  const originalFetch = target.fetch;
+  if (typeof originalFetch !== 'function') {
+    return;
+  }
+
+  const wrappedFetch = function wrappedFetch(
+    this: unknown,
+    input: Parameters<typeof globalThis.fetch>[0],
+    init?: Parameters<typeof globalThis.fetch>[1],
+  ): ReturnType<typeof globalThis.fetch> {
+    let effectiveInit: unknown = init;
+    try {
+      const ctx = correlationStore.getStore();
+      if (ctx?.correlationId !== undefined) {
+        effectiveInit = _injectCorrelationHeaderIntoFetchInit(
+          input,
+          init,
+          ctx.correlationId,
+        );
+      }
+    } catch {
+      // Swallow — never let a patch failure break an outbound fetch
+      // call. The fetch will proceed without the correlation header,
+      // matching the behaviour of any pre-patch caller.
+      effectiveInit = init;
+    }
+    return originalFetch.call(
+      this,
+      input,
+      effectiveInit as Parameters<typeof globalThis.fetch>[1],
+    );
+  };
+
+  // Preserve function name metadata for debugger/profiler clarity.
+  Object.defineProperty(wrappedFetch, 'name', { value: 'fetch' });
+
+  target.fetch = wrappedFetch as typeof globalThis.fetch;
+}
+
+// ---------------------------------------------------------------------------
 // Idempotent module-load patch installation
 // ---------------------------------------------------------------------------
 
@@ -561,6 +853,21 @@ function patchHttpModule(mod: typeof http | typeof https): void {
  */
 const PATCHED_SENTINEL = Symbol.for('__blitzy_correlation_http_patched__');
 
+/**
+ * Separate sentinel for the fetch wrapper. Anchored on the same `http`
+ * core-module object as the http/https sentinel for the same process-
+ * shared-singleton reasoning documented above on `correlationStore` —
+ * the `http` module is interned per-process and survives Jest test-file
+ * sandbox boundaries, whereas `globalThis` is per-Jest-VM-context and
+ * therefore unsuitable as the sentinel anchor.
+ *
+ * The fetch sentinel is intentionally distinct from the http sentinel
+ * because the two patches operate on different transport surfaces — a
+ * future refactor that disables fetch patching but keeps http patching
+ * (or vice versa) MUST be expressible without flipping a shared boolean.
+ */
+const FETCH_PATCHED_SENTINEL = Symbol.for('__blitzy_correlation_fetch_patched__');
+
 interface Patchable {
   [key: symbol]: unknown;
 }
@@ -570,4 +877,9 @@ if (!(http as unknown as Patchable)[PATCHED_SENTINEL]) {
   patchHttpModule(https);
   (http as unknown as Patchable)[PATCHED_SENTINEL] = true;
   (https as unknown as Patchable)[PATCHED_SENTINEL] = true;
+}
+
+if (!(http as unknown as Patchable)[FETCH_PATCHED_SENTINEL]) {
+  patchFetch();
+  (http as unknown as Patchable)[FETCH_PATCHED_SENTINEL] = true;
 }

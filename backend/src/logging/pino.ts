@@ -277,6 +277,162 @@ const REDACT_PATHS: readonly string[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Error serializer — scalar-only allow-list, defends against pg.Client leak
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum recursion depth followed when serialising an error's `.cause`
+ * chain. Typical chains are 1-2 deep; the bound exists to defend against
+ * a (pathological) self-referencing cause chain that would otherwise
+ * recurse without bound.
+ */
+const ERR_CAUSE_MAX_DEPTH = 5;
+
+/**
+ * Custom error serializer used by the pino logger's `err` slot.
+ *
+ * Why custom rather than `pino.stdSerializers.err`:
+ *   The canonical pino error serializer constructs its output as
+ *     `{ type, message, stack, ...err }`
+ *   — a spread of EVERY enumerable own property of the error instance.
+ *   For ordinary `Error` and `Error`-subclass instances this is fine
+ *   (the relevant own properties are the standard scalar fields), but
+ *   third-party error classes routinely attach large internal-state
+ *   objects as own properties. The most consequential offender in this
+ *   backend is `pg.DatabaseError`: when the connection pool encounters a
+ *   broken-connection or admin-shutdown error, the thrown error carries
+ *   an `err.client` field referencing the entire `pg.Client` instance —
+ *   sockets, type registries, the connection-parameters block (host,
+ *   port, database, user), and the pg-protocol cancel `secretKey`. The
+ *   `pino.stdSerializers.err` spread copies all of that into the log
+ *   record, producing single records of ~4KB and disclosing internal
+ *   database topology unnecessarily.
+ *
+ * Strategy:
+ *   1. Pass through non-Error values unchanged (preserves pino's
+ *      default no-op behaviour when something other than an Error is
+ *      logged at the `err` slot).
+ *   2. Always emit the canonical fields: `type` (constructor name),
+ *      `message`, `stack`. The standard tooling shape stays intact.
+ *   3. Include the own `name` field if present — `pg.DatabaseError`
+ *      sets `name = 'error'` (lowercase, intentional), and other
+ *      libraries similarly shadow `Error.prototype.name` with their own
+ *      value; preserving it aids dashboard aggregations.
+ *   4. Iterate every other own enumerable property and INCLUDE ONLY
+ *      scalar primitives (`string`, `number`, `boolean`). Nested
+ *      objects, arrays, and functions are silently dropped. This keeps
+ *      pg-specific scalar metadata that is operationally useful for
+ *      debugging — `code` (e.g. `'57P01'`, `'23505'`), `severity`
+ *      (`'FATAL'`, `'ERROR'`, `'WARNING'`), `detail`, `hint`,
+ *      `position`, `where`, `schema`, `table`, `column`, `dataType`,
+ *      `constraint`, `file`, `line`, `routine`, `length` — without
+ *      retaining the bloated `client`, `connection`, `_events`, or
+ *      `_types` objects.
+ *   5. Recursively process `err.cause` (Node 16.9+ error-cause chain)
+ *      with a depth bound — typical chains are 1-2 deep and the bound
+ *      defends against a pathological self-referencing cause.
+ *
+ * What is intentionally DROPPED, with rationale:
+ *   - `err.client` (pg.DatabaseError) — internal `pg.Client` instance.
+ *     ~4KB per error; reveals internal database topology and the
+ *     pg-protocol cancel `secretKey`.
+ *   - `err.connection` — internal pg connection state.
+ *   - `err._events`, `err._eventsCount` — EventEmitter internals.
+ *   - `err.body` — body-parser raw request bytes (already redacted
+ *     upstream by `sanitiseBodyParserError`, but defence-in-depth
+ *     drops any object-shaped body slipping past that middleware).
+ *   - Any other nested object, array, or function value.
+ *
+ * What is preserved (scalar primitives only):
+ *   - All standard `Error` fields (`type`, `message`, `stack`, `name`).
+ *   - All scalar pg metadata (code, severity, detail, hint, position,
+ *     where, schema, table, column, dataType, constraint, file, line,
+ *     routine, length, internalPosition).
+ *   - `err.cause` (recursed under the same allow-list).
+ *
+ * Rule R2 posture:
+ *   This serializer's allow-list intentionally REJECTS object values
+ *   wholesale. Even if a future library attaches a credential-bearing
+ *   object as an enumerable own property of an error (e.g.
+ *   `err.headers = { authorization: 'Bearer ...' }`), the scalar-only
+ *   filter drops it before it reaches the log writer. The pino-options
+ *   `redact.paths` array still applies on the OUTSIDE of the
+ *   serializer's output for the same field names (e.g. an `err.code`
+ *   value coincidentally named like a credential header would be
+ *   redacted by the path matcher).
+ *
+ * Exported for unit-test surface only — the production code path
+ * references this function via the `serializers.err` slot below.
+ *
+ * @param err The value passed by pino at the `err` slot of a log call.
+ * @param depth Internal recursion depth tracker; callers MUST omit.
+ * @returns A scalar-only projection of the error suitable for emission
+ *          as a JSON log record.
+ */
+export function errSerializer(err: unknown, depth: number = 0): unknown {
+  // Non-Error pass-through. Pino's default behaviour passes any
+  // non-Error value at the `err` slot through unchanged; we preserve
+  // that to avoid surprising callers that occasionally log non-Error
+  // values (e.g., a string or a plain object) at the `err` slot.
+  if (!(err instanceof Error)) {
+    return err;
+  }
+
+  // Canonical pino error envelope — these three fields are what every
+  // downstream tool expects.
+  const result: Record<string, unknown> = {
+    type: err.constructor.name,
+    message: err.message,
+    stack: err.stack,
+  };
+
+  // Preserve `name` if it's an own property (Error subclasses sometimes
+  // shadow Error.prototype.name with their own value, e.g.
+  // `pg.DatabaseError` sets `name = 'error'` lowercase as part of its
+  // type discriminator). The `Object.prototype.hasOwnProperty.call`
+  // form defends against the (uncommon) case of an Error subclass that
+  // overrides `hasOwnProperty` itself.
+  if (Object.prototype.hasOwnProperty.call(err, 'name')) {
+    const ownName = (err as unknown as Record<string, unknown>)['name'];
+    if (typeof ownName === 'string') {
+      result['name'] = ownName;
+    }
+  }
+
+  // Iterate every other own enumerable property; preserve only scalar
+  // primitives. This is the single mechanism that keeps the bloated
+  // `pg.DatabaseError.client` object (and analogous fields on other
+  // libraries' error classes) out of log records.
+  for (const key of Object.keys(err)) {
+    // Skip fields already emitted above and the recursive `cause`
+    // (handled separately below to allow controlled-depth recursion).
+    if (key === 'message' || key === 'stack' || key === 'name' || key === 'cause') {
+      continue;
+    }
+    const value = (err as unknown as Record<string, unknown>)[key];
+    if (
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
+      result[key] = value;
+    }
+  }
+
+  // Handle the `error.cause` chain (Node 16.9+). Bounded recursion
+  // protects against a pathological self-referencing cause chain that
+  // would otherwise blow the call stack.
+  if ('cause' in err) {
+    const cause = (err as Error & { cause?: unknown }).cause;
+    if (cause !== undefined && depth < ERR_CAUSE_MAX_DEPTH) {
+      result['cause'] = errSerializer(cause, depth + 1);
+    }
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Pino options — exported for test parity
 // ---------------------------------------------------------------------------
 
@@ -427,13 +583,28 @@ export const pinoOptions: LoggerOptions = {
    * headers (which can carry `Set-Cookie`) and response bodies are
    * dropped entirely.
    *
-   * `err` — pino's standard error serializer. The body-parser
-   * `err.body` leak surface (raw JSON request body attached when
-   * parsing fails) is handled UPSTREAM in `backend/src/index.ts` via
-   * the `sanitiseBodyParserError` middleware that runs before any
-   * error reaches the logger. Using `pino.stdSerializers.err` here
-   * keeps the serialized error shape compatible with downstream
-   * tooling (Cloud Logging, Sentry-compatible parsers, etc.).
+   * `err` — custom scalar-only error serializer (see {@link errSerializer}).
+   * This serializer emits the canonical pino fields (`type`, `message`,
+   * `stack`, `name`) plus an explicit allow-list of useful pg-error
+   * scalar metadata (`code`, `severity`, `detail`, `hint`, etc.), and
+   * DROPS every nested-object own property — most importantly the
+   * `pg.DatabaseError.client` field, which carries the entire Client
+   * instance (sockets, connection parameters, type registries, the
+   * pg-protocol cancel `secretKey`) and bloats every connection-pool
+   * error log to ~4KB. Using `pino.stdSerializers.err` would
+   * spread-include all enumerable own properties via `...err`, which
+   * leaks that internal state into logs.
+   *
+   * Body-parser `err.body` (raw JSON request body attached when parsing
+   * fails) is still handled UPSTREAM in `backend/src/index.ts` via the
+   * `sanitiseBodyParserError` middleware that runs before any error
+   * reaches the logger; the present serializer is defence-in-depth in
+   * case any parser regression slips an `err.body` past that middleware
+   * (an object-typed `err.body` is dropped here regardless).
+   *
+   * The emitted shape (`type`, `message`, `stack`, plus scalar fields)
+   * remains compatible with downstream tooling that consumes pino's
+   * canonical error envelope (Cloud Logging, Sentry-compatible parsers).
    */
   serializers: {
     req: (req: { method?: string; url?: string; headers?: Record<string, unknown> }) => ({
@@ -444,7 +615,7 @@ export const pinoOptions: LoggerOptions = {
     res: (res: { statusCode?: number }) => ({
       statusCode: res.statusCode,
     }),
-    err: pino.stdSerializers.err,
+    err: errSerializer,
   },
 
   /**

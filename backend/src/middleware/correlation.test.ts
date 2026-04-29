@@ -85,7 +85,12 @@
 import { setTimeout as setTimeoutPromise } from 'node:timers/promises';
 import http from 'node:http';
 
-import { correlationMiddleware, correlationStore, getCorrelationId } from './correlation';
+import {
+  correlationMiddleware,
+  correlationStore,
+  getCorrelationId,
+  _injectCorrelationHeaderIntoFetchInit,
+} from './correlation';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -1031,6 +1036,467 @@ describe('outbound HTTP correlation ID propagation', () => {
     });
 
     correlationMiddleware(req, res, next);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Outbound fetch correlation propagation — Issue #1 (QA Final F)
+// ---------------------------------------------------------------------------
+//
+// Why a separate top-level describe:
+//   The http/https patches operate on `node:http`'s `request` / `get`
+//   functions and are exercised by the block above. The fetch patch
+//   operates on `globalThis.fetch` (Node 20 LTS's undici-backed WHATWG
+//   fetch), which is a SEPARATE transport surface that does NOT route
+//   through `node:http`. Without dedicated tests, an OTel-undici
+//   instrumentation upgrade or a Node major-version bump that changed
+//   undici internals could silently regress the C5 contract for
+//   fetch-based outbound calls — exactly the failure mode QA Final F
+//   Issue #1 documented. These tests close that gap and become the
+//   regression baseline.
+//
+// Strategy:
+//   - Pure-function tests on `_injectCorrelationHeaderIntoFetchInit`
+//     verify every input shape the WHATWG fetch standard accepts:
+//       fetch(string)
+//       fetch(string, init)
+//       fetch(URL)
+//       fetch(URL, init)
+//       fetch(Request)
+//       fetch(Request, init)
+//     plus the three `init.headers` shapes (undefined, plain object,
+//     array of tuples, Headers instance) and the case-insensitive
+//     skip-on-explicit-caller-header rule.
+//
+//   - End-to-end tests on the wrapped `globalThis.fetch` install a
+//     mock fetch via `jest.spyOn(global, 'fetch').mockImplementation(...)`.
+//     With the spy in place, the wrapper still runs (it was installed
+//     at module load time), invokes the spy, and the spy's call args
+//     are inspected for the `x-correlation-id` header. This is the
+//     analogue of the http test pattern that spies on
+//     `http.globalAgent.addRequest` and reads `clientReq.getHeader(...)`.
+//   - No real network I/O occurs — the spy short-circuits the call.
+
+describe('outbound fetch correlation ID propagation (Issue #1, C5)', () => {
+  // -------------------------------------------------------------------------
+  // Pure-function unit tests — _injectCorrelationHeaderIntoFetchInit
+  // -------------------------------------------------------------------------
+
+  describe('_injectCorrelationHeaderIntoFetchInit (pure function)', () => {
+    const corrId = 'unit-test-corr-id';
+
+    it('synthesises an init with the correlation header when none is supplied (string input)', () => {
+      const result = _injectCorrelationHeaderIntoFetchInit(
+        'https://example.test/path',
+        undefined,
+        corrId,
+      ) as { headers: Record<string, string> };
+
+      expect(result).toBeDefined();
+      expect(result.headers).toBeDefined();
+      expect(result.headers['x-correlation-id']).toBe(corrId);
+    });
+
+    it('synthesises an init with the correlation header when none is supplied (URL input)', () => {
+      const url = new URL('https://example.test/path');
+      const result = _injectCorrelationHeaderIntoFetchInit(url, undefined, corrId) as {
+        headers: Record<string, string>;
+      };
+
+      expect(result.headers['x-correlation-id']).toBe(corrId);
+    });
+
+    it('extends a plain-object headers map with the correlation header', () => {
+      const init = { method: 'POST', headers: { 'content-type': 'application/json' } };
+
+      const result = _injectCorrelationHeaderIntoFetchInit(
+        'https://example.test/x',
+        init,
+        corrId,
+      ) as typeof init & { headers: Record<string, string> };
+
+      // Original headers preserved.
+      expect(result.headers['content-type']).toBe('application/json');
+      // New header attached.
+      expect(result.headers['x-correlation-id']).toBe(corrId);
+    });
+
+    it('extends an array-of-tuples headers value with the correlation header', () => {
+      const init = {
+        method: 'POST',
+        headers: [['content-type', 'application/json']] as [string, string][],
+      };
+
+      const result = _injectCorrelationHeaderIntoFetchInit(
+        'https://example.test/x',
+        init,
+        corrId,
+      ) as { headers: [string, string][] };
+
+      expect(result.headers).toEqual(
+        expect.arrayContaining([['x-correlation-id', corrId]]),
+      );
+      // Pre-existing entry preserved.
+      expect(result.headers).toEqual(
+        expect.arrayContaining([['content-type', 'application/json']]),
+      );
+    });
+
+    it('extends a Headers instance with the correlation header', () => {
+      // The `Headers` global is part of WHATWG fetch and is available in
+      // Node 20 LTS without an import.
+      const headers = new Headers({ 'content-type': 'application/json' });
+      const init = { method: 'POST', headers };
+
+      const result = _injectCorrelationHeaderIntoFetchInit(
+        'https://example.test/x',
+        init,
+        corrId,
+      ) as { headers: Headers };
+
+      expect(result.headers.get('x-correlation-id')).toBe(corrId);
+      // Pre-existing entry preserved.
+      expect(result.headers.get('content-type')).toBe('application/json');
+    });
+
+    it('does NOT overwrite a caller-supplied x-correlation-id (lowercase)', () => {
+      const explicitId = 'caller-explicit-id';
+      const init = { headers: { 'x-correlation-id': explicitId } };
+
+      const result = _injectCorrelationHeaderIntoFetchInit(
+        'https://example.test/x',
+        init,
+        corrId,
+      ) as { headers: Record<string, string> };
+
+      expect(result.headers['x-correlation-id']).toBe(explicitId);
+    });
+
+    it('does NOT overwrite a caller-supplied x-correlation-id (TitleCase)', () => {
+      // Caller supplied the same logical header in mixed case. The
+      // detection MUST be case-insensitive — Node and undici accept
+      // either case on the wire.
+      const explicitId = 'caller-explicit-mixed-case';
+      const init = { headers: { 'X-Correlation-Id': explicitId } };
+
+      const result = _injectCorrelationHeaderIntoFetchInit(
+        'https://example.test/x',
+        init,
+        corrId,
+      ) as { headers: Record<string, string> };
+
+      // The original key is preserved (no duplicate added under
+      // lowercase) and its value is unchanged.
+      expect(result.headers['X-Correlation-Id']).toBe(explicitId);
+      // The wrapper MUST NOT add a second entry under a different case.
+      const occurrences = Object.keys(result.headers).filter(
+        (k) => k.toLowerCase() === 'x-correlation-id',
+      );
+      expect(occurrences.length).toBe(1);
+    });
+
+    it('does NOT overwrite a caller-supplied header in a Headers instance', () => {
+      const explicitId = 'headers-instance-explicit';
+      const headers = new Headers({ 'X-Correlation-Id': explicitId });
+      const init = { headers };
+
+      const result = _injectCorrelationHeaderIntoFetchInit(
+        'https://example.test/x',
+        init,
+        corrId,
+      ) as { headers: Headers };
+
+      // Headers' get() is case-insensitive per WHATWG fetch.
+      expect(result.headers.get('x-correlation-id')).toBe(explicitId);
+    });
+
+    it('does NOT overwrite a caller-supplied header in an array-of-tuples', () => {
+      const explicitId = 'array-explicit';
+      const init = {
+        headers: [['x-correlation-id', explicitId]] as [string, string][],
+      };
+
+      const result = _injectCorrelationHeaderIntoFetchInit(
+        'https://example.test/x',
+        init,
+        corrId,
+      ) as { headers: [string, string][] };
+
+      const corrEntries = result.headers.filter((e) => e[0].toLowerCase() === 'x-correlation-id');
+      expect(corrEntries.length).toBe(1);
+      expect(corrEntries[0]?.[1]).toBe(explicitId);
+    });
+
+    it('does NOT overwrite a caller-supplied header on a Request input', () => {
+      // When the input is already a Request with x-correlation-id set,
+      // the wrapper MUST NOT add an override that the underlying fetch
+      // would merge over the Request's own headers.
+      const explicitId = 'request-input-explicit';
+      const request = new Request('https://example.test/x', {
+        headers: { 'X-Correlation-Id': explicitId },
+      });
+
+      const result = _injectCorrelationHeaderIntoFetchInit(request, undefined, corrId);
+
+      // The wrapper passes through init unchanged when the Request
+      // already carries the header.
+      expect(result).toBeUndefined();
+    });
+
+    it('attaches the correlation header when a Request input has no x-correlation-id', () => {
+      const request = new Request('https://example.test/x', {
+        headers: { 'content-type': 'application/json' },
+      });
+
+      const result = _injectCorrelationHeaderIntoFetchInit(request, undefined, corrId) as {
+        headers: Record<string, string>;
+      };
+
+      expect(result).toBeDefined();
+      expect(result.headers['x-correlation-id']).toBe(corrId);
+    });
+
+    it('passes through unchanged when init is a non-object value', () => {
+      // Defensive — the fetch standard would reject a string init with
+      // TypeError. Our wrapper must NOT throw.
+      const result = _injectCorrelationHeaderIntoFetchInit(
+        'https://example.test/x',
+        'not-an-object',
+        corrId,
+      );
+      expect(result).toBe('not-an-object');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // End-to-end wrapper tests on globalThis.fetch — using a real local
+  // HTTP server as the destination so the wrapper's full call chain
+  // (including its closure-captured `originalFetch` delegate) is
+  // exercised on every assertion.
+  // -------------------------------------------------------------------------
+  //
+  // Why a real local HTTP server (not a spy on globalThis.fetch):
+  //   The wrapper's code captures a reference to the underlying fetch
+  //   implementation at module load time and delegates to that captured
+  //   reference. Spying on `globalThis.fetch` AFTER the wrapper was
+  //   installed REPLACES the wrapper itself — the wrapper's injection
+  //   logic is bypassed, defeating the test's purpose.
+  //
+  //   A local HTTP server bound to 127.0.0.1 on an ephemeral port
+  //   (loopback-only, port 0 lets the kernel pick a free port) keeps
+  //   the test deterministic and fully local (ST-043-AC4: "no network
+  //   access beyond the standard local toolchain"), while still
+  //   exercising the FULL fetch wrapper → undici → loopback TCP →
+  //   server path. The server's request handler reads the inbound
+  //   `x-correlation-id` header, allowing direct assertions on what
+  //   the wrapper actually injected.
+
+  describe('wrapped globalThis.fetch — end-to-end injection through a local server', () => {
+    let server: http.Server;
+    let serverUrl: string;
+    let lastReceivedHeaders: http.IncomingHttpHeaders = {};
+
+    beforeAll((done) => {
+      server = http.createServer((req, res) => {
+        // Capture the inbound headers for the assertion AND respond
+        // immediately with 204 so the fetch resolves cleanly.
+        lastReceivedHeaders = req.headers;
+        res.statusCode = 204;
+        res.end();
+      });
+      // `0` lets the kernel assign an ephemeral free port, eliminating
+      // any chance of port-conflict flakiness across parallel test runs.
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        if (typeof addr === 'object' && addr !== null) {
+          serverUrl = `http://127.0.0.1:${addr.port}`;
+        }
+        done();
+      });
+    });
+
+    afterAll((done) => {
+      server.close(() => done());
+    });
+
+    beforeEach(() => {
+      lastReceivedHeaders = {};
+    });
+
+    it('injects x-correlation-id on outbound fetch when called inside an ALS frame', async () => {
+      const inboundId = 'fetch-e2e-test-id';
+      const req = buildReq({ 'x-correlation-id': inboundId });
+      const res = buildRes();
+
+      await new Promise<void>((resolve, reject) => {
+        const next = jest.fn(() => {
+          // Inside the ALS frame established by correlationMiddleware:
+          // call the global fetch. The wrapper installed at module load
+          // is what handles this call — it reads the ALS context, mutates
+          // init.headers, and forwards to undici.
+          fetch(`${serverUrl}/test`, { method: 'GET' })
+            .then(async (r) => {
+              // Drain the body so the connection isn't held open.
+              await r.arrayBuffer();
+              expect(lastReceivedHeaders['x-correlation-id']).toBe(inboundId);
+              resolve();
+            })
+            .catch(reject);
+        });
+
+        correlationMiddleware(req, res, next);
+      });
+    });
+
+    it('attaches a generated UUID v4 to outbound fetch when no inbound header was supplied', async () => {
+      // Same flow as the http tests: the middleware generates a UUID
+      // when no inbound header is present; that UUID must propagate to
+      // outbound fetch calls just like an explicit inbound ID.
+      const req = buildReq({});
+      const res = buildRes();
+
+      let observedId: string | undefined;
+
+      await new Promise<void>((resolve, reject) => {
+        const next = jest.fn(() => {
+          observedId = getCorrelationId();
+          fetch(`${serverUrl}/test2`, { method: 'GET' })
+            .then(async (r) => {
+              await r.arrayBuffer();
+              expect(lastReceivedHeaders['x-correlation-id']).toBe(observedId);
+              expect(observedId).toMatch(UUID_V4_REGEX);
+              resolve();
+            })
+            .catch(reject);
+        });
+
+        correlationMiddleware(req, res, next);
+      });
+    });
+
+    it('does NOT overwrite an explicit caller-supplied x-correlation-id (caller intent wins)', async () => {
+      // The wrapper's contract mirrors the http patch: when the caller
+      // supplies an explicit x-correlation-id, the ambient ALS value
+      // does NOT override it. This is the equivalent of the http test
+      // 'does NOT overwrite an explicit outbound x-correlation-id'.
+      const ambientId = 'fetch-ambient-id';
+      const explicitId = 'fetch-explicit-caller-id';
+      const req = buildReq({ 'x-correlation-id': ambientId });
+      const res = buildRes();
+
+      await new Promise<void>((resolve, reject) => {
+        const next = jest.fn(() => {
+          fetch(`${serverUrl}/test3`, {
+            method: 'GET',
+            headers: { 'x-correlation-id': explicitId },
+          })
+            .then(async (r) => {
+              await r.arrayBuffer();
+              // Explicit caller wins.
+              expect(lastReceivedHeaders['x-correlation-id']).toBe(explicitId);
+              // Ambient ALS unaffected.
+              expect(getCorrelationId()).toBe(ambientId);
+              resolve();
+            })
+            .catch(reject);
+        });
+
+        correlationMiddleware(req, res, next);
+      });
+    });
+
+    it('does NOT overwrite an explicit caller-supplied header even with mixed-case key', async () => {
+      // Detection of an explicit header is case-insensitive — undici
+      // and the WHATWG Headers class normalise to lowercase, but the
+      // wrapper must check before normalisation occurs.
+      const ambientId = 'fetch-ambient-mixed';
+      const explicitId = 'fetch-explicit-mixed';
+      const req = buildReq({ 'x-correlation-id': ambientId });
+      const res = buildRes();
+
+      await new Promise<void>((resolve, reject) => {
+        const next = jest.fn(() => {
+          fetch(`${serverUrl}/test4`, {
+            method: 'GET',
+            headers: { 'X-Correlation-Id': explicitId },
+          })
+            .then(async (r) => {
+              await r.arrayBuffer();
+              // Inbound headers on the server are normalised to lowercase
+              // by Node's http parser — but the value is preserved.
+              expect(lastReceivedHeaders['x-correlation-id']).toBe(explicitId);
+              resolve();
+            })
+            .catch(reject);
+        });
+
+        correlationMiddleware(req, res, next);
+      });
+    });
+
+    it('does NOT attach a correlation header when fetch is called outside any ALS frame', async () => {
+      // No active ALS frame ⇒ store.getStore() returns undefined ⇒ the
+      // injection branch is skipped. Outbound fetches in a non-context
+      // (e.g., a startup script, a background timer) therefore carry
+      // no correlation header — same behaviour as the http test
+      // 'does NOT attach a correlation header when http.request is
+      // called outside any ALS frame'.
+      const r = await fetch(`${serverUrl}/test5`, { method: 'GET' });
+      await r.arrayBuffer();
+      expect(lastReceivedHeaders['x-correlation-id']).toBeUndefined();
+    });
+
+    it('attaches the correlation header through async continuations inside next()', async () => {
+      // Most realistic scenario: a route handler does some async work
+      // (e.g., await pgClient.query()), then makes an outbound fetch
+      // call. ALS must persist across the async boundary so the fetch
+      // carries the correct correlation ID. This is the analogue of
+      // the http test 'attaches the correlation header through async
+      // continuations inside next()'.
+      const inboundId = 'fetch-async-continuation';
+      const req = buildReq({ 'x-correlation-id': inboundId });
+      const res = buildRes();
+
+      await new Promise<void>((resolve, reject) => {
+        const next = jest.fn(() => {
+          // Defer the outbound fetch to a setTimeoutPromise to simulate
+          // an awaited operation completing before the API call.
+          setTimeoutPromise(5)
+            .then(() => fetch(`${serverUrl}/test6`, { method: 'GET' }))
+            .then(async (r) => {
+              await r.arrayBuffer();
+              expect(lastReceivedHeaders['x-correlation-id']).toBe(inboundId);
+              resolve();
+            })
+            .catch(reject);
+        });
+
+        correlationMiddleware(req, res, next);
+      });
+    });
+
+    it('preserves the sentinel symbol so the fetch patch is idempotent across module reloads', () => {
+      // The fetch sentinel is `Symbol.for('__blitzy_correlation_fetch_patched__')`,
+      // anchored on the http core module (same anchor as
+      // CORRELATION_STORE_SENTINEL — see correlation.ts module
+      // documentation for the per-Jest-VM-context vs process-singleton
+      // discussion). Verifying the sentinel exists confirms the
+      // installation block ran exactly once.
+      const FETCH_PATCHED_SENTINEL = Symbol.for('__blitzy_correlation_fetch_patched__');
+      const httpAsRecord = http as unknown as Record<symbol, unknown>;
+
+      expect(httpAsRecord[FETCH_PATCHED_SENTINEL]).toBe(true);
+    });
+
+    it('preserves function metadata: globalThis.fetch.name === "fetch" after wrapping', () => {
+      // The wrapper uses Object.defineProperty(wrappedFetch, 'name',
+      // { value: 'fetch' }) so debugger / profiler tooling still shows
+      // the public function name `fetch` rather than the inner wrapper
+      // name. This is the analogue of the http patch's similar
+      // metadata preservation for `request` and `get`.
+      const wrappedName = (globalThis.fetch as unknown as { name: string }).name;
+      expect(wrappedName).toBe('fetch');
+    });
   });
 });
 

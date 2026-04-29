@@ -184,7 +184,7 @@ import { trace } from '@opentelemetry/api';
 
 import { correlationStore } from '../middleware/correlation';
 
-import { allowListHeaders, pinoOptions } from './pino';
+import { allowListHeaders, errSerializer, pinoOptions } from './pino';
 
 // ---------------------------------------------------------------------------
 // Typed handles to the mock functions
@@ -883,15 +883,23 @@ describe('backend/src/logging/pino.ts', () => {
   });
 
   // -----------------------------------------------------------------------
-  //  Error serializer — pino.stdSerializers.err
+  //  Error serializer — custom scalar-only allow-list (Issue #2 fix)
   // -----------------------------------------------------------------------
   //
-  // The `err` serializer in pino.ts is `pino.stdSerializers.err`, the
-  // canonical pino error serializer that produces a structured object with
-  // `type`, `message`, and `stack`. This shape matches downstream tooling
-  // (Cloud Logging, Sentry-compatible parsers, etc.).
+  // The `err` serializer in pino.ts is the custom `errSerializer` exported
+  // from that module. It produces a structured object with the canonical
+  // pino fields (`type`, `message`, `stack`) plus any scalar (string,
+  // number, boolean) own properties of the error — and DROPS any object,
+  // array, or function values that would otherwise flood the log record
+  // (notably `pg.DatabaseError.client`, the entire pg.Client instance
+  // that the QA Final F Issue #2 finding documented as ~4KB of internal
+  // database topology + the pg-protocol cancel `secretKey`).
 
-  describe('err serializer (pino.stdSerializers.err)', () => {
+  describe('err serializer (custom scalar-only)', () => {
+    // ---------------------------------------------------------------------
+    // Canonical Error-shape coverage (mirrors the previous standard tests)
+    // ---------------------------------------------------------------------
+
     it('serializes Error objects with type, message, and stack', () => {
       const { logger, records } = makeCapturingLogger();
       const err = new Error('test error');
@@ -919,6 +927,286 @@ describe('backend/src/logging/pino.ts', () => {
       const serialized = records[0]?.err as LogRecord | undefined;
       expect(serialized?.type).toBe('ValidationError');
       expect(serialized?.message).toBe('field missing');
+    });
+
+    // ---------------------------------------------------------------------
+    // Scalar-only allow-list (Issue #2)
+    // ---------------------------------------------------------------------
+
+    it('preserves scalar own properties (string, number, boolean)', () => {
+      // Mimics pg.DatabaseError's scalar metadata fields — the
+      // operationally useful diagnostic information that MUST be
+      // preserved.
+      class PgErrorLike extends Error {
+        public override readonly name = 'error'; // pg sets lowercase
+        public readonly code = '57P01';
+        public readonly severity = 'FATAL';
+        public readonly file = 'postgres.c';
+        public readonly line = 3211;
+        public readonly routine = 'ProcessInterrupts';
+        public readonly length = 256;
+        public readonly hasContext = true;
+        constructor(message: string) {
+          super(message);
+        }
+      }
+      const { logger, records } = makeCapturingLogger();
+      const err = new PgErrorLike('terminating connection due to administrator command');
+
+      logger.error({ event: 'db.pool.error', err }, 'pool error');
+
+      const serialized = records[0]?.err as LogRecord | undefined;
+      expect(serialized).toBeDefined();
+      expect(serialized?.type).toBe('PgErrorLike');
+      expect(serialized?.message).toBe('terminating connection due to administrator command');
+      expect(serialized?.name).toBe('error');
+      expect(serialized?.code).toBe('57P01');
+      expect(serialized?.severity).toBe('FATAL');
+      expect(serialized?.file).toBe('postgres.c');
+      expect(serialized?.line).toBe(3211);
+      expect(serialized?.routine).toBe('ProcessInterrupts');
+      expect(serialized?.length).toBe(256);
+      expect(serialized?.hasContext).toBe(true);
+    });
+
+    it('DROPS object-valued own properties (the pg.Client object leak)', () => {
+      // The exact failure mode documented in QA Final F Issue #2:
+      // `pg.DatabaseError.client` references the entire `pg.Client`
+      // instance, including connectionParameters (host, port,
+      // database, user), the pg-protocol cancel `secretKey`, internal
+      // socket state, and the type registry. The serializer MUST
+      // drop this entire object.
+      //
+      // Sentinel substrings used in this test are intentionally chosen
+      // NOT to collide with any literal in the pino base fields
+      // (`service: strikeforge-backend`), the redact paths array, or
+      // any other string emitted by pino itself — so a `not.toContain`
+      // assertion gives a clean signal.
+      class PgErrorLike extends Error {
+        public readonly client: Record<string, unknown>;
+        public readonly connection: Record<string, unknown>;
+        public readonly _events: Record<string, unknown>;
+        public readonly _types: Record<string, unknown>;
+        public readonly code = '57P01';
+
+        constructor(message: string) {
+          super(message);
+          this.client = {
+            connectionParameters: {
+              host: 'POOL_HOST_SENTINEL',
+              port: 65432,
+              database: 'POOL_DB_SENTINEL',
+              user: 'POOL_USER_SENTINEL',
+            },
+            secretKey: -802385431,
+            _peername: {
+              address: '198.51.100.42',
+              family: 'IPv4',
+              port: 65432,
+            },
+          };
+          this.connection = { stream: 'POOL_STREAM_SENTINEL' };
+          this._events = { error: 'handler' };
+          this._types = { BOOL: 16, BYTEA: 17, CHAR: 18, INT8: 20 };
+        }
+      }
+      const { logger, records, rawOutput } = makeCapturingLogger();
+      const err = new PgErrorLike('connection terminated');
+
+      logger.error({ event: 'db.pool.error', err }, 'pool error');
+
+      const serialized = records[0]?.err as LogRecord | undefined;
+
+      // Scalar fields preserved
+      expect(serialized?.code).toBe('57P01');
+      expect(serialized?.message).toBe('connection terminated');
+      expect(serialized?.type).toBe('PgErrorLike');
+
+      // Object fields explicitly dropped
+      expect(serialized?.client).toBeUndefined();
+      expect(serialized?.connection).toBeUndefined();
+      expect(serialized?._events).toBeUndefined();
+      expect(serialized?._types).toBeUndefined();
+
+      // Defense in depth: NONE of the inner secrets/details should
+      // appear anywhere in the raw output, even via accidental
+      // serialization of nested objects. The unique sentinel
+      // substrings make this assertion robust to changes in pino's
+      // base fields or surrounding test scaffolding.
+      const raw = rawOutput();
+      expect(raw).not.toContain('connectionParameters');
+      expect(raw).not.toContain('secretKey');
+      expect(raw).not.toContain('-802385431');
+      expect(raw).not.toContain('198.51.100.42');
+      expect(raw).not.toContain('POOL_HOST_SENTINEL');
+      expect(raw).not.toContain('POOL_DB_SENTINEL');
+      expect(raw).not.toContain('POOL_USER_SENTINEL');
+      expect(raw).not.toContain('POOL_STREAM_SENTINEL');
+      expect(raw).not.toContain('BYTEA');
+    });
+
+    it('DROPS array-valued own properties', () => {
+      // Arrays are objects per JavaScript semantics. The scalar-only
+      // allow-list rejects them.
+      class ArrayBearingError extends Error {
+        public readonly retryAttempts = ['attempt1', 'attempt2', 'attempt3'];
+        public readonly count = 3;
+      }
+      const { logger, records } = makeCapturingLogger();
+      const err = new ArrayBearingError('retried 3 times');
+
+      logger.error({ event: 'retry.exhausted', err }, 'failed');
+
+      const serialized = records[0]?.err as LogRecord | undefined;
+      expect(serialized?.count).toBe(3); // scalar preserved
+      expect(serialized?.retryAttempts).toBeUndefined(); // array dropped
+    });
+
+    it('DROPS function-valued own properties', () => {
+      // Functions are pathological values to log (would serialize as
+      // null or empty object); the scalar-only filter drops them.
+      class FunctionBearingError extends Error {
+        public readonly retry = (): void => undefined;
+        public readonly attempts = 5;
+      }
+      const { logger, records } = makeCapturingLogger();
+      const err = new FunctionBearingError('failed');
+
+      logger.error({ event: 'fn.bearing', err }, 'failed');
+
+      const serialized = records[0]?.err as LogRecord | undefined;
+      expect(serialized?.attempts).toBe(5);
+      expect(serialized?.retry).toBeUndefined();
+    });
+
+    // ---------------------------------------------------------------------
+    // error.cause chain (Node 16.9+) with depth bound
+    // ---------------------------------------------------------------------
+
+    it('recurses into err.cause chain preserving scalars at each level', () => {
+      // Node 16.9+ introduced `new Error(message, { cause: prevErr })`
+      // for chained errors. The serializer MUST recurse into `cause`
+      // so the inner error's metadata reaches the log record.
+      const inner = new Error('underlying database failure');
+      (inner as Error & { code?: string }).code = '57P01';
+      const middle = new Error('repository call failed', { cause: inner });
+      (middle as Error & { layer?: string }).layer = 'repository';
+      const outer = new Error('service request failed', { cause: middle });
+
+      const { logger, records } = makeCapturingLogger();
+
+      logger.error({ event: 'svc.fail', err: outer }, 'failed');
+
+      const serialized = records[0]?.err as LogRecord | undefined;
+      expect(serialized?.message).toBe('service request failed');
+
+      const cause1 = serialized?.cause as LogRecord | undefined;
+      expect(cause1?.message).toBe('repository call failed');
+      expect(cause1?.layer).toBe('repository');
+
+      const cause2 = cause1?.cause as LogRecord | undefined;
+      expect(cause2?.message).toBe('underlying database failure');
+      expect(cause2?.code).toBe('57P01');
+    });
+
+    it('bounds err.cause recursion to defend against pathological self-reference', () => {
+      // A malicious or buggy library could create an error whose cause
+      // chain is self-referencing. The serializer's depth bound stops
+      // the recursion before stack overflow. Verifying the behaviour
+      // requires constructing the cycle directly via property
+      // assignment — the Error constructor would not produce one
+      // organically.
+      const err = new Error('cyclic') as Error & { cause?: unknown };
+      err.cause = err; // self-reference
+
+      const { logger, records } = makeCapturingLogger();
+
+      // The MUST NOT throw expectation is the primary guarantee — any
+      // unbounded recursion would crash with RangeError before the
+      // assertion fires.
+      expect(() => {
+        logger.error({ event: 'cyclic.err', err }, 'failed');
+      }).not.toThrow();
+
+      // The serializer should have produced a record without
+      // overflowing. The exact depth at which recursion stops is
+      // implementation-defined but the record MUST exist.
+      expect(records.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('passes non-Error values through unchanged (preserves pino default)', () => {
+      // If a caller supplies a non-Error at the `err` slot (e.g., a
+      // string or a plain object), the serializer should pass it
+      // through unchanged so pino's normal logging behaviour applies.
+      const { logger, records } = makeCapturingLogger();
+
+      logger.error({ event: 'odd', err: 'not an error' }, 'msg');
+
+      const serialized = records[0]?.err;
+      expect(serialized).toBe('not an error');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  //  errSerializer pure-function tests
+  // -----------------------------------------------------------------------
+  //
+  // The function is exported for unit-test introspection. These tests
+  // exercise it directly without going through pino, providing a faster
+  // and more focused assertion surface than the integration-style tests
+  // above.
+
+  describe('errSerializer (pure function)', () => {
+    it('returns the input unchanged for non-Error values', () => {
+      expect(errSerializer('a string')).toBe('a string');
+      expect(errSerializer(42)).toBe(42);
+      expect(errSerializer(null)).toBe(null);
+      expect(errSerializer(undefined)).toBe(undefined);
+      const obj = { foo: 'bar' };
+      expect(errSerializer(obj)).toBe(obj);
+    });
+
+    it('emits {type, message, stack} for a vanilla Error', () => {
+      const e = new Error('hello');
+      const out = errSerializer(e) as Record<string, unknown>;
+      expect(out['type']).toBe('Error');
+      expect(out['message']).toBe('hello');
+      expect(typeof out['stack']).toBe('string');
+    });
+
+    it('drops object-valued own properties to defend against pg.Client leak', () => {
+      class Pgish extends Error {
+        public readonly client = { secretKey: 12345 };
+        public readonly code = 'XYZ';
+      }
+      const e = new Pgish('boom');
+      const out = errSerializer(e) as Record<string, unknown>;
+      expect(out['code']).toBe('XYZ');
+      expect(out['client']).toBeUndefined();
+    });
+
+    it('preserves only scalar primitives among non-canonical own properties', () => {
+      class WithMix extends Error {
+        public readonly s = 'str';
+        public readonly n = 7;
+        public readonly b = false;
+        public readonly o = { nested: true };
+        public readonly a = [1, 2, 3];
+        // bigint is a primitive but JSON-uncoercible; pino's writer
+        // would throw if we passed one through. The scalar-only filter
+        // intentionally accepts only the JSON-safe scalars (string,
+        // number, boolean) — verifying bigint is dropped guards
+        // against the regression where a serializer accepts it.
+        public readonly big = BigInt(12);
+      }
+      const e = new WithMix('m');
+      const out = errSerializer(e) as Record<string, unknown>;
+      expect(out['s']).toBe('str');
+      expect(out['n']).toBe(7);
+      expect(out['b']).toBe(false);
+      expect(out['o']).toBeUndefined();
+      expect(out['a']).toBeUndefined();
+      expect(out['big']).toBeUndefined();
     });
   });
 });
