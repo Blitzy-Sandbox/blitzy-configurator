@@ -1377,7 +1377,7 @@ describe('POST /api/auth/logout (integration)', () => {
   // ─────────────────────────────────────────────────────────────────────
   describe('Idempotency (ST-025-AC3)', () => {
     it(
-      'is idempotent: a second logout with the same token does NOT return a 5xx error',
+      'is idempotent: a second logout with the same token returns 204 No Content (documented non-error)',
       async () => {
         // Arrange — register, login.
         const email = uniqueEmail();
@@ -1403,22 +1403,86 @@ describe('POST /api/auth/logout (integration)', () => {
           .post('/api/auth/logout')
           .set('Authorization', `Bearer ${session.idToken}`);
 
-        // Assert — first call succeeds (204). Second call: the
-        // session middleware (which sits BEFORE the logout handler
-        // on the authenticated router) detects the revocation and
-        // emits 401 INVALID_SESSION. The system-level idempotency
-        // contract (ST-025-AC3) is satisfied: the second call does
-        // NOT throw, does NOT return 5xx, and does NOT mutate state.
+        // Assert — both calls return 204 No Content. ST-025-AC3
+        // mandates that "submitting the same revoked token again
+        // returns a documented non-error response and does not alter
+        // state". The implementation satisfies this by mounting
+        // POST /logout on the PUBLIC auth router (so the session
+        // middleware's revocation check does NOT block the second
+        // call), verifying the Firebase-signed idToken inline via
+        // `sessionService.verifyToken`, and relying on the
+        // repository's `COALESCE(revoked_at, now())` SQL to keep the
+        // second `markRevoked` a true no-op (the original revocation
+        // timestamp is preserved).
         expect(first.status).toBe(204);
-        expect([204, 401]).toContain(second.status);
-        expect(second.status).toBeLessThan(500); // no 5xx — Rule R8.
+        expect(second.status).toBe(204);
+      },
+    );
 
-        // If the second call returned 401, it MUST be the
-        // INVALID_SESSION code (NOT UNAUTHENTICATED — the bearer is
-        // present, just revoked).
-        if (second.status === 401) {
-          expect(second.body.error.code).toBe('INVALID_SESSION');
-        }
+    it(
+      'rejects logout without a Bearer header with 401 UNAUTHENTICATED (preserves AC4)',
+      async () => {
+        // Arrange — no bearer.
+        const res = await request(app).post('/api/auth/logout');
+
+        // Assert — public mount must NOT accept anonymous logout.
+        // The handler enforces AC4 by extracting the bearer first
+        // and rejecting absence with 401 UNAUTHENTICATED.
+        expect(res.status).toBe(401);
+        expect(res.body.error.code).toBe('UNAUTHENTICATED');
+      },
+    );
+
+    it(
+      'rejects logout with a non-Bearer scheme with 401 MALFORMED_AUTHORIZATION',
+      async () => {
+        // Arrange — Authorization header present but uses a scheme
+        // other than `Bearer`. Per the public auth contract documented
+        // on `runLogout` (and mirrored in the session-middleware
+        // contract on protected routes), this MUST surface
+        // `MALFORMED_AUTHORIZATION` — distinct from absence of the
+        // header (UNAUTHENTICATED) and distinct from a Bearer-shaped
+        // header that fails verification (INVALID_SESSION).
+        const res = await request(app)
+          .post('/api/auth/logout')
+          .set('Authorization', 'Basic dXNlcjpwYXNz');
+
+        // Assert — handler classifies scheme failure precisely.
+        // Preserving the three-way distinction prevents SDK
+        // implementers from collapsing "your scheme is wrong" with
+        // "your token is no good" — both are 401 but they require
+        // different remediation paths in the client.
+        expect(res.status).toBe(401);
+        expect(res.body.error.code).toBe('MALFORMED_AUTHORIZATION');
+      },
+    );
+
+    it(
+      'rejects logout with an unverifiable Bearer with 401 INVALID_SESSION',
+      async () => {
+        // Arrange — Bearer-shaped token whose body is not a valid
+        // Firebase-signed idToken. `verifyIdToken` rejects it during
+        // signature/payload verification.
+        const res = await request(app)
+          .post('/api/auth/logout')
+          .set('Authorization', 'Bearer not-a-valid-firebase-token');
+
+        // Assert — handler maps the verifyToken throw to 401
+        // INVALID_SESSION. Per the three-way contract documented on
+        // `runLogout` (line 832 of `src/routes/auth.ts`) and
+        // mirrored on the session middleware (used by GET /api/cart
+        // earlier in this suite), a syntactically valid Bearer header
+        // whose token cannot be verified MUST surface INVALID_SESSION
+        // and never collapse to UNAUTHENTICATED. The earlier
+        // collapse was identified by QA Final E and corrected so SDK
+        // implementers can distinguish "you forgot to authenticate"
+        // (UNAUTHENTICATED), "your scheme is wrong"
+        // (MALFORMED_AUTHORIZATION), and "your token is no good"
+        // (INVALID_SESSION). Per Rule R2, we MUST NOT echo the
+        // offending token in the response body — only the canonical
+        // code/message envelope is returned.
+        expect(res.status).toBe(401);
+        expect(res.body.error.code).toBe('INVALID_SESSION');
       },
     );
   });

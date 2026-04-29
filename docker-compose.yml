@@ -132,6 +132,24 @@ services:
       PORT: '3000'
       SERVICE_NAME: strikeforge-backend
       SERVICE_VERSION: 0.1.0
+      # ── LocalGCP service-account credentials ────────────────────────
+      # QA Final E Issue #4 fix — LocalGCP Verification Rule (AAP §0.8.2).
+      # The @google-cloud/storage v7 SDK requires an RSA private key to
+      # produce v4 signed URLs (Rule R5 / C1). When unset, the SDK falls
+      # through to Application Default Credentials (Gaia metadata
+      # service), which does not exist inside the Docker network and
+      # surfaces as "Invalid form of account ID ...svc.id.goog".
+      #
+      # `backend/local-dev-sa.json` is a synthetic service-account JSON
+      # generated specifically for the LocalGCP environment. The
+      # bundled RSA key is used ONLY to compute the signed-URL payload
+      # — fake-gcs-server (running as the `gcs-emulator` service) does
+      # not validate the signature, so the URL is accepted on read /
+      # write. The credential carries no privileges against any real
+      # GCP project. Production environments inject Application
+      # Default Credentials automatically via Cloud Run service
+      # accounts; this file is NEVER deployed.
+      GOOGLE_APPLICATION_CREDENTIALS: /app/local-dev-sa.json
       # CORS configuration — QA Issue #10 fix. Comma-separated list of
       # origins permitted to issue cross-origin requests against the
       # backend. The Vite dev server runs on port 5173 by default. In

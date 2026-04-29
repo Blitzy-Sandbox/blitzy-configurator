@@ -618,9 +618,13 @@ function mapOrderItemRow(row: OrderItemRow): OrderItem {
  *     passes the mapped items.
  *   - {@link OrderRepository.createOrderFromCart} builds the items
  *     array from the bulk-INSERT result.
- *   - {@link OrderRepository.updateOrderState} passes `[]` because
- *     the UPDATE only touches `orders` and the caller does not need
- *     items echoed back.
+ *   - {@link OrderRepository.updateOrderState} runs a second query
+ *     against `order_items` (post QA Final E Issue #3 fix) so the
+ *     finalize response carries the same canonical shape as
+ *     `findOrderById` and `createOrderFromCart` (ST-032-AC2 contract
+ *     parity). Pre-fix this method passed `[]` here, which produced
+ *     an `items: []` response despite the underlying DB rows being
+ *     present — the fix re-reads them.
  */
 function mapOrderRow(row: OrderRow, items: OrderItem[] = []): Order {
   return {
@@ -1035,8 +1039,29 @@ export function createOrderRepository(pool: Pool): OrderRepository {
     /**
      * Conditional state transition; idempotent under the
      * `state = expectedState` predicate (ST-034-AC3). Returns the
-     * updated order row with `items: []` — this method does NOT
-     * re-fetch line items, by design.
+     * updated order row WITH its persisted line items, mirroring
+     * the canonical `Order` shape produced by `findOrderById`.
+     *
+     * Why include line items in the response?
+     *
+     * ST-032-AC2 mandates that the canonical persisted order
+     * response includes "the line items, a calculated subtotal, and
+     * a created timestamp". `finalizeOrder` (ST-034) returns the
+     * same `Order` type, so the response shape MUST be consistent
+     * across both flows — a route consumer should be able to render
+     * the order receipt directly off the finalize response without
+     * issuing a follow-up `GET /api/orders/:id` round-trip.
+     *
+     * Two-query pattern (mirrors `findOrderById`):
+     *   - Query 1: conditional UPDATE returning the order row.
+     *   - Query 2: SELECT the persisted `order_items` rows for that
+     *              order id, mapped via `mapOrderItemRow`.
+     *
+     * The cost is one extra query per state-change call. Because
+     * state transitions are bounded by the order's lifecycle
+     * (created → finalized), this is a one-time cost per order and
+     * is dominated by the original UPDATE. The contract benefit
+     * (ST-032-AC2 parity) outweighs the marginal latency.
      */
     async updateOrderState(params: UpdateOrderStateParams): Promise<Order | null> {
       const result = await pool.query<OrderRow>({
@@ -1056,14 +1081,18 @@ export function createOrderRepository(pool: Pool): OrderRepository {
         return null;
       }
 
-      // We pass `[]` for items because:
-      //   - The UPDATE only touched `orders`; we have no item rows
-      //     to map.
-      //   - Adding a follow-up SELECT for items would double the
-      //     wire cost of finalize for callers who don't need the
-      //     items echoed back. Callers who DO need them should
-      //     follow finalize with a `findOrderById` call.
-      return mapOrderRow(row, []);
+      // Re-fetch the line items so the response shape matches the
+      // canonical `Order` returned by `findOrderById` and `createOrder`
+      // (ST-032-AC2). We use `row.id` (rather than `params.orderId`)
+      // because the database row is the source of truth — even though
+      // by construction the two values are equal at this point.
+      const itemsResult = await pool.query<OrderItemRow>({
+        text: FIND_ORDER_ITEMS_BY_ORDER_SQL,
+        values: [row.id],
+      });
+      const items = itemsResult.rows.map(mapOrderItemRow);
+
+      return mapOrderRow(row, items);
     },
 
     /**

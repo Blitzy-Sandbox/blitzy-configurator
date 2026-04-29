@@ -207,9 +207,13 @@ export interface InsertSessionParams {
  * Four methods, sized to the actual needs of stories ST-024/ST-025/ST-026:
  *
  *   - `insert(params)` — login (ST-024). Returns the persisted
- *     {@link Session}. Throws on PRIMARY KEY collision (PG `23505`) and on
- *     foreign-key violation (PG `23503`); the service layer is responsible
- *     for translating those to HTTP statuses.
+ *     {@link Session}. Idempotent against PRIMARY KEY collision via an
+ *     `ON CONFLICT (token_ref) DO UPDATE` clause: a repeated login that
+ *     produces the same SHA-256 `tokenRef` (which Firebase Auth does for
+ *     identical idTokens issued back-to-back) refreshes the row's
+ *     `userId`, `issuedAt`, `expiresAt` and clears `revokedAt`, instead
+ *     of raising PG `23505`. Foreign-key violations (PG `23503`) still
+ *     surface to the service layer for translation to HTTP statuses.
  *
  *   - `findByTokenRef(tokenRef)` — diagnostic / debug lookups, plus support
  *     for service-layer flows that need the full row (e.g., to log the
@@ -235,12 +239,21 @@ export interface InsertSessionParams {
  */
 export interface SessionRepository {
   /**
-   * Insert a new session row.
+   * Upsert a session row keyed on `tokenRef`.
    *
-   * @throws The native pg error on PRIMARY KEY collision (code `23505`)
-   *   or foreign-key violation (code `23503`). The service layer is
-   *   responsible for translation to HTTP status codes.
-   * @throws A wrapping `Error` if the INSERT executes but does not
+   * Inserts a new row when `tokenRef` is new; otherwise refreshes
+   * `userId`, `issuedAt`, `expiresAt` and clears `revokedAt` to NULL.
+   * This idempotency is required by ST-024-AC3: repeated logins (which
+   * Firebase Auth fulfils with the same idToken — and therefore the
+   * same `tokenRef` — when issued back-to-back) must not surface as
+   * HTTP 500 due to a PRIMARY KEY collision.
+   *
+   * @throws The native pg error on foreign-key violation (code `23503`)
+   *   — the service layer is responsible for translation to HTTP
+   *   status codes. PRIMARY KEY collisions (PG `23505`) cannot occur:
+   *   the underlying SQL has an `ON CONFLICT (token_ref) DO UPDATE`
+   *   branch.
+   * @throws A wrapping `Error` if the UPSERT executes but does not
    *   return a row (vanishingly rare; a defensive check protects the
    *   downstream non-null contract).
    */
@@ -347,12 +360,34 @@ function mapSessionRow(row: SessionRow): Session {
 // ---------------------------------------------------------------------------
 
 /**
- * INSERT a new session row.
+ * UPSERT a session row keyed on `token_ref`.
  *
  * The four-column INSERT (`token_ref`, `user_id`, `issued_at`,
  * `expires_at`) leaves `revoked_at` to its column default (`NULL`),
  * which is exactly what every just-issued session needs. The service
  * layer never asks for a session to be "born revoked".
+ *
+ * The `ON CONFLICT (token_ref) DO UPDATE` clause makes this statement
+ * idempotent against the case where the same Firebase `idToken` (and
+ * therefore the same SHA-256 `token_ref`) is presented to `/login`
+ * more than once in rapid succession — Firebase Auth deliberately
+ * returns an identical `idToken` for back-to-back sign-ins issued
+ * inside the token's mint-window, which under a strict INSERT would
+ * fail with PG error 23505 (unique_violation on `sessions_pkey`) and
+ * surface to the user as HTTP 500.
+ *
+ * The conflict-resolution branch:
+ *   - Refreshes `user_id`, `issued_at`, and `expires_at` to the values
+ *     supplied by the new login attempt (the latest mint of this same
+ *     idToken is the authoritative one).
+ *   - Clears `revoked_at` to NULL so a re-login of a previously
+ *     revoked-then-reissued idToken reactivates the row — this
+ *     matches the user-visible intent of "log me back in".
+ *
+ * The behaviour satisfies ST-024-AC3 ("repeated logins do not
+ * invalidate active sessions from other devices"): a different device
+ * obtaining a different idToken produces a different `token_ref` and
+ * therefore inserts a fresh row, untouched by this conflict path.
  *
  * Both timestamp parameters are explicitly cast to `timestamptz` so
  * that pg's parameter binding accepts ISO-8601 strings (which we send
@@ -368,6 +403,11 @@ function mapSessionRow(row: SessionRow): Session {
 const INSERT_SESSION_SQL = `
   INSERT INTO sessions (token_ref, user_id, issued_at, expires_at)
   VALUES ($1, $2, $3::timestamptz, $4::timestamptz)
+  ON CONFLICT (token_ref) DO UPDATE
+    SET user_id = EXCLUDED.user_id,
+        issued_at = EXCLUDED.issued_at,
+        expires_at = EXCLUDED.expires_at,
+        revoked_at = NULL
   RETURNING token_ref, user_id, issued_at, expires_at, revoked_at
 `;
 

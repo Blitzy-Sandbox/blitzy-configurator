@@ -509,6 +509,143 @@ async function bootstrap(): Promise<http.Server> {
     next(err);
   });
 
+  // Step 5b-2: Body-parser canonical-envelope responder — QA Final E
+  // Issue #5 (MINOR) fix.
+  //
+  // Before this middleware existed, the legacy terminal error handler
+  // (further down the chain) emitted body-parser failures as a string-
+  // shaped envelope:
+  //   400 {"error":"entity.parse.failed"}
+  // This is INCONSISTENT with the canonical error envelope used by every
+  // other validation failure across the API surface (Zod failures in
+  // `auth.ts`, `designs.ts`, `cart.ts`, `orders.ts` all emit):
+  //   400 {"error":{"code":"VALIDATION_FAILED","message":"..."}}
+  //
+  // Clients that switch on `error.code` (the canonical client contract,
+  // exemplified by every Zod-driven 400 response) cannot route the
+  // body-parser error path because `error` is a string, not an object.
+  // The QA round-trip test report (Final E) flagged this as MINOR Issue
+  // #5: "Malformed-JSON request returns express body-parser raw shape
+  // `{"error":"entity.parse.failed"}`, not canonical error shape".
+  //
+  // This middleware canonicalises the response shape for ALL body-parser
+  // errors (including the QA-reported `entity.parse.failed`) by mapping
+  // each body-parser type discriminant to a canonical
+  // `{ code: 'VALIDATION_FAILED', message: <descriptive> }` envelope.
+  //
+  // Order constraints (CRITICAL — do not move):
+  //   - MUST run AFTER the sanitiser (above) so `err.body` (which can
+  //     contain credentials embedded in malformed JSON, e.g.
+  //     `{"password":"SENTINEL"`) has already been stripped before any
+  //     logger touches the err. Rule R2 / ST-047-AC4 applies to log
+  //     records emitted from this handler too.
+  //   - MUST run BEFORE the terminal error handler (further below) so
+  //     the canonical envelope wins over the legacy `{ error: <type> }`
+  //     shape that the terminal handler emits for body-parser errors.
+  //   - For non-body-parser errors, calls `next(err)` to delegate to
+  //     the terminal handler unchanged. The terminal handler retains
+  //     responsibility for ALL non-body-parser error responses (5xx
+  //     internal errors, http-errors–thrown 4xx, etc.).
+  //
+  // Status-code mapping follows body-parser's documented semantics:
+  // https://www.npmjs.com/package/body-parser#errors
+  //   - entity.parse.failed   400  malformed JSON
+  //   - entity.too.large      413  Payload Too Large
+  //   - encoding.unsupported  415  Unsupported Media Type
+  //   - charset.unsupported   415  Unsupported Media Type
+  //   - request.aborted       400  client closed mid-stream
+  //   - request.size.invalid  400  Content-Length mismatch
+  //   - parameters.too.many   413  too many query/body parameters
+  //   - default               400  generic body-parser failure
+  //
+  // The error code is `VALIDATION_FAILED` for ALL body-parser errors —
+  // matching the canonical code already used by every Zod failure
+  // throughout the API surface. Clients that already route on
+  // `error.code === 'VALIDATION_FAILED'` will now correctly handle
+  // malformed-JSON requests without needing a special-case branch.
+  //
+  // Logging: emits a WARN-level log record (NOT ERROR) because
+  // body-parser failures are client-side errors, not internal bugs. The
+  // event name `request.body_parser_error` is distinct from the
+  // terminal handler's `request.unhandled_error` so dashboards can
+  // separate "client sent garbage" from "server crashed". Uses
+  // `req.log` for correlationId / uid / traceId propagation; falls
+  // back to the module-level logger if pino-http never reached this
+  // request (an edge case that should not occur given the middleware
+  // mount order, but defended for robustness, mirroring the terminal
+  // handler's defence).
+  //
+  // The response body is intentionally MINIMAL — never include `err.message`
+  // in the response payload, because err messages can include the
+  // RAW BODY excerpt (body-parser's `JSON.parse` SyntaxError typically
+  // serialises as `Unexpected token n in JSON at position 1` for a body
+  // like `{not valid json`, but in some Node versions includes the
+  // surrounding context). Operators get the full detail in the WARN
+  // log; clients get a stable, descriptive, body-free message.
+  app.use((err: Error, req: Request, res: Response, next: NextFunction): void => {
+    if (!isBodyParserError(err)) {
+      next(err);
+      return;
+    }
+
+    // Log via the request-scoped pino logger so correlationId, uid,
+    // traceId, and spanId are attached automatically. Fall back to the
+    // module logger if pino-http never reached this request (defence-
+    // in-depth — not expected in practice).
+    const reqLog = (req as Request & { log?: typeof logger }).log ?? logger;
+    reqLog.warn({ err, event: 'request.body_parser_error' }, 'body_parser_error');
+
+    // Map body-parser discriminants to canonical envelope. The default
+    // branch handles any unknown future body-parser type by falling
+    // back to a generic 400 with a non-leaking message — operators see
+    // the actual `err.type` in the WARN log above for diagnosis.
+    let status = 400;
+    let message = 'Request body could not be parsed.';
+    switch (err.type) {
+      case 'entity.parse.failed':
+        status = 400;
+        message = 'Request body is not valid JSON.';
+        break;
+      case 'entity.too.large':
+        status = 413;
+        message = 'Request body exceeds the maximum allowed size.';
+        break;
+      case 'encoding.unsupported':
+        status = 415;
+        message = 'Request body encoding is not supported.';
+        break;
+      case 'charset.unsupported':
+        status = 415;
+        message = 'Request body charset is not supported.';
+        break;
+      case 'request.aborted':
+        status = 400;
+        message = 'Request was aborted before the body could be parsed.';
+        break;
+      case 'request.size.invalid':
+        status = 400;
+        message = 'Request body size is invalid.';
+        break;
+      case 'parameters.too.many':
+        status = 413;
+        message = 'Request contains too many parameters.';
+        break;
+      default:
+        // Unknown body-parser `type` — preserve safe 400 fallback.
+        // The actual type appears in the WARN log for diagnosis.
+        status = 400;
+        message = 'Request body could not be parsed.';
+        break;
+    }
+
+    res.status(status).json({
+      error: {
+        code: 'VALIDATION_FAILED',
+        message,
+      },
+    });
+  });
+
   // Step 5c: CORS middleware — QA Issue #10 fix (CRITICAL).
   //
   // Without CORS, browser-issued cross-origin fetches from the Vite dev

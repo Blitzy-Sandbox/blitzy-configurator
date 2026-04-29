@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "strikeforge-local",
+  "private_key_id": "fake-key-id-for-localgcp-only",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC5knK22YFVQvZi\nXsUzt8bFS8jFG+9Jt3nWbHGgyklgKRmfWpve7HKIrZDE75ww0vRF+5vyNhu6p6WI\nqJBwCuMK9/H/aQc48ALSF9rvG+h/3WcHo0stfVARrzqKdTEEueGhh3rXmv7Sjflr\n2eVY8/9YOzO4ajeaFnfgiIom64wUSv6pHmr17SO1Fpu0SC4mQlyTqRevYMp1um/E\nKUB9UUM2zrqJmlkgSExyHuhCe6gxnqwZD3QszjiHooqIafpuknNh70XxEFQ195yY\nh6iE0zxCx0k0q4S6e+6/csE6jZd+jnLwY55SqIyfPtodq2fm1jinMSFLmMoP85au\nUoBh+DYzAgMBAAECggEAHiYoZAOnawpDjEzYXiQr847x8fAtar0X2tnohhaHYEud\nIZIvg8LHguQsAorpRddoH1yXA/19eNBW6QJ14PYr1/LbisLuDPaVhrugcruGhQub\n+xYxFxVmZlEhQjBzA9ENUth3gULpxpyRWs/eXprZr+SCbSI4oVyoIj8cruES85LJ\n9t+SCoYWZljl0a+OukjwFVzKzUjaIeLFf026QKHOX0OiL5RFo5d82DEIvcwZnVce\nEFxX0nD7ag+adv+2ZOUHR2lZEtuMarvp1gbF4zV8pgYV1myMSnGGQKIy5ZfEfush\nSYFxBJOv1vhlnNhzkREXaI+QQNr0zsy5MmhzdcCn5QKBgQD9bYKxOx4Yt8tKPPOV\npo4/S20K8qeC7sdZn2HudslaOddicF6e88lsPLyj5UD0wMme99KVCDBl0e4sYFcJ\nzN+628AbcKAcCY0fRRveOI0AbvuzvldrMFAXoE7DzbHLgnoqnHPSav6rQaimXYoJ\njSep5JrpM4YJlSwru84DhvM9BwKBgQC7dKA8VIOMkmQXO0LwI93YMuYzFZJa/xVv\nXb5Z18oc63Zs+ZftfDtaHYMKH6Jp1XvH+2uI/UlZy6TASVJL332zjHTbCLNE8hdb\nxmexY75YTmXfVbFPYnr5S5Xq/TXDrFxoPfGWT+wJhqWWemQ5COq9BxAAncW/5Xth\nl2PmfAWedQKBgCCy6JIFlrSJwmkpxCQjAWeZS9CFzqdON9qQfgpOuVwy6l+BMDRC\nMFMO4ygihGcQGPOx9jHUhKoelCSVqaVSEewCPp9LwNzdPqAyQo5Bra/IoiFnBdCG\nw07JGGCbQb2IcErfNPKJa6KdLi2JFC53UA7TuEkupLTH0pMyADrkRq4xAoGBAIVZ\noMdqI66zUQqJuMOV8DHle4bpmJStE3WGzWuiK4BJLJS3NZHWp24iwl5IRMRe/tAz\nlbr829pKGOhFAItC8Gvyxgou9UBdq6o4yPkTCIxPMP8gOaNMXkjLsVlaSY3qJk5t\nilewgSwBofgbFwLPyhUwWfzmP4+UUyIIjSOgJGslAoGATraCTb88aqyh/UqlOeSZ\nQfWqrXOjl56mrYAAbEoxx5FS0DkVY3SclMCMK+y3zOOejDCHJcVP1pOWo8NOm9yg\nnt9w4jAoaxORPOkVo68OdTSp6P0O5NUY6Kp5DAsTwZFyMhm1VGecmMEchL+8Uvo2\na/4Gk0EsXzFtDFvBato1AYk=\n-----END PRIVATE KEY-----\n",
+  "client_email": "strikeforge-local-dev@strikeforge-local.iam.gserviceaccount.com",
+  "client_id": "100000000000000000001",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/strikeforge-local-dev%40strikeforge-local.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

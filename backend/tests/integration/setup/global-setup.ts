@@ -182,6 +182,63 @@ const POSTGRES_CONNECT_RETRY_DELAY_MS = 1000;
  */
 const DEFAULT_FIREBASE_EMULATOR_HOST = 'localhost:9099';
 
+/**
+ * Default path of the synthetic LocalGCP service-account JSON used by
+ * `@google-cloud/storage` v4 signing when `GOOGLE_APPLICATION_CREDENTIALS`
+ * is unset.
+ *
+ * Why this default is necessary (LocalGCP Verification Rule, AAP §0.8.2):
+ *   The v4 signed-URL contract (Rule R5 / C1) requires `getSignedUrl` to
+ *   receive `version: 'v4'`. The v7 `@google-cloud/storage` SDK delegates
+ *   v4 signing to `google-auth-library`, which performs RSA-SHA256 signing
+ *   in-process using a private key obtained from Application Default
+ *   Credentials. Without `GOOGLE_APPLICATION_CREDENTIALS`, the auth library
+ *   falls through to the GCE / GKE metadata service, which is unreachable
+ *   from a host workstation or a Cloud Build step container — surfacing as
+ *   an `Invalid form of account ID ... .svc.id.goog` runtime error rather
+ *   than the actionable signed URL the test expects (the failure mode QA
+ *   reproduced in Final-E Issue #4).
+ *
+ *   `backend/local-dev-sa.json` carries a synthetic 2048-bit RSA private
+ *   key. fake-gcs-server does NOT validate the signature on v4 URLs in
+ *   emulator mode, so the synthetic key is sufficient to satisfy the
+ *   client-side cryptographic plumbing without any real GCP credential.
+ *   The file is committed to source (with an explicit negation in
+ *   `.gitignore`) precisely so that LocalGCP integration test runs are
+ *   credential-free per the Rule.
+ *
+ * Why the default is computed inline rather than required:
+ *   Production deployments (Cloud Run with workload identity, or any
+ *   environment that injects ADC via the metadata service) MUST NOT have
+ *   `GOOGLE_APPLICATION_CREDENTIALS` overridden by integration test
+ *   defaults. Adding GOOGLE_APPLICATION_CREDENTIALS to {@link REQUIRED_ENV_VARS}
+ *   would force production environments to set it explicitly even though
+ *   workload identity is the canonical pattern there. Inline defaulting in
+ *   the test harness — applied ONLY when the var is unset — is the
+ *   conservative pattern; it mirrors how {@link DEFAULT_FIREBASE_EMULATOR_HOST}
+ *   is handled.
+ *
+ * Path resolution:
+ *   `path.resolve(__dirname, '../../../local-dev-sa.json')` walks
+ *   `backend/tests/integration/setup/` ➜
+ *   `backend/tests/integration/`         ➜
+ *   `backend/tests/`                     ➜
+ *   `backend/`                           +
+ *   `local-dev-sa.json`                  ➜
+ *   `backend/local-dev-sa.json`.
+ *   The absolute resolution makes the default usable from both:
+ *     - host workstations running `npm run test:integration` from
+ *       `backend/`, and
+ *     - the Cloud Build `test:integration` step which runs from
+ *       `/workspace/backend`.
+ *
+ * This constant is referenced by {@link defaultGoogleApplicationCredentials}.
+ */
+const DEFAULT_GOOGLE_APPLICATION_CREDENTIALS_PATH = path.resolve(
+  __dirname,
+  '../../../local-dev-sa.json',
+);
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -197,6 +254,91 @@ function sleep(ms: number): Promise<void> {
   return new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Step 0 — Default GOOGLE_APPLICATION_CREDENTIALS (LocalGCP Verification Rule)
+// ---------------------------------------------------------------------------
+
+/**
+ * Defaults `GOOGLE_APPLICATION_CREDENTIALS` to the synthetic LocalGCP JSON
+ * file at {@link DEFAULT_GOOGLE_APPLICATION_CREDENTIALS_PATH} when the env
+ * var is unset or empty.
+ *
+ * Story coverage:
+ *   - LocalGCP Verification Rule (AAP §0.8.2): Every GCP service interaction
+ *     MUST be verifiable against LocalGCP with zero live GCP dependencies.
+ *     This step is the bridge between that rule and the v4-signed URL
+ *     contract, which requires a real RSA private key for in-process
+ *     RSA-SHA256 signing inside `google-auth-library`.
+ *   - Story ST-014 (logo upload UI) and the integration tests at
+ *     `backend/tests/integration/gcs/signed-url.integration.test.ts`
+ *     exercise this code path and fail without a usable service-account
+ *     JSON.
+ *
+ * Behaviour:
+ *   - If `GOOGLE_APPLICATION_CREDENTIALS` is already set (and non-empty),
+ *     the function does NOTHING. This preserves any explicit operator
+ *     override (e.g. a CI step setting a different keyfile path) and
+ *     ensures we never silently mask a misconfiguration.
+ *   - If unset / empty, the function:
+ *       1. Verifies the synthetic JSON file exists at the canonical
+ *          default path (the file is committed to the repository).
+ *       2. Sets `process.env.GOOGLE_APPLICATION_CREDENTIALS` to that
+ *          absolute path. Jest 27+ propagates `process.env` mutations
+ *          made in `globalSetup` to test workers, so the assignment is
+ *          visible to every Storage client constructed in test code.
+ *
+ * Why this lives BEFORE {@link validateRequiredEnvVars}:
+ *   `GOOGLE_APPLICATION_CREDENTIALS` is intentionally NOT in
+ *   {@link REQUIRED_ENV_VARS} — it is OPTIONAL in production (workload
+ *   identity satisfies ADC without it). Defaulting it inline at the test
+ *   harness boundary keeps the production fail-closed semantics intact
+ *   while ensuring local/CI integration tests have a usable credential.
+ *
+ * Failure mode:
+ *   Throws a descriptive error if the synthetic JSON is missing — that
+ *   would indicate an incomplete repository checkout (the file is checked
+ *   in to source). The error names the expected path so operators can
+ *   restore the file from `git`. Per Rule R8 the failure surfaces as a
+ *   JUnit `<error>` (environment failure) and blocks the run.
+ */
+async function defaultGoogleApplicationCredentials(): Promise<void> {
+  const existing = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (existing !== undefined && existing !== '') {
+    // Operator-supplied override — leave it intact.
+    return;
+  }
+
+  // Verify the synthetic JSON exists at the canonical default path. The
+  // file is committed to the repository (`backend/local-dev-sa.json`)
+  // with a `!` negation in `.gitignore` so a fresh clone has it
+  // immediately. Missing here means an incomplete checkout — surface a
+  // clear, actionable error rather than letting `@google-cloud/storage`
+  // fail later with the opaque "Invalid form of account ID" message.
+  try {
+    await fs.access(DEFAULT_GOOGLE_APPLICATION_CREDENTIALS_PATH);
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      '[global-setup] Synthetic LocalGCP service-account JSON not found at ' +
+        `${DEFAULT_GOOGLE_APPLICATION_CREDENTIALS_PATH}: ${cause}. ` +
+        'This file is committed to the repository (see `.gitignore` ' +
+        'negation `!backend/local-dev-sa.json`). Restore it via ' +
+        '`git checkout -- backend/local-dev-sa.json` or set ' +
+        'GOOGLE_APPLICATION_CREDENTIALS to a real service-account JSON.',
+    );
+  }
+
+  // Mutate process.env so that:
+  //   - The Jest worker `process.env` snapshot taken after globalSetup
+  //     completes carries the resolved path.
+  //   - Any Storage client constructed downstream (in test workers, in
+  //     this setup process for the bucket-creation step, or in the
+  //     integration test under test) reads the credential without any
+  //     additional plumbing.
+  process.env.GOOGLE_APPLICATION_CREDENTIALS =
+    DEFAULT_GOOGLE_APPLICATION_CREDENTIALS_PATH;
 }
 
 // ---------------------------------------------------------------------------
@@ -566,6 +708,15 @@ async function initializeTestUserTrackingFile(): Promise<void> {
  * Steps run sequentially because each later step depends on the previous
  * step's success:
  *
+ *   0. defaultGoogleApplicationCredentials
+ *                                   — must precede createTestGcsBucket and
+ *                                     any worker-side Storage client. Sets
+ *                                     `process.env.GOOGLE_APPLICATION_CREDENTIALS`
+ *                                     to the committed synthetic LocalGCP
+ *                                     keyfile when unset, so v4 signing in
+ *                                     `@google-cloud/storage` works against
+ *                                     fake-gcs-server (LocalGCP Verification
+ *                                     Rule).
  *   1. validateRequiredEnvVars      — produces actionable errors before any
  *                                     downstream step would fail mysteriously.
  *   2. waitForPostgres              — must precede applyMigrations.
@@ -582,6 +733,7 @@ async function initializeTestUserTrackingFile(): Promise<void> {
  * a JUnit `<error>` element (ST-044-AC3 environment failure).
  */
 export default async function globalSetup(): Promise<void> {
+  await defaultGoogleApplicationCredentials();
   validateRequiredEnvVars();
   await waitForPostgres();
   await applyMigrations();

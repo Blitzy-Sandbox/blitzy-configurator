@@ -110,11 +110,11 @@
  *       translator emits ONLY `event`, `errorName`, `errorCode`, and
  *       a 200-character-truncated `errorMessage`; it NEVER emits the
  *       request body, the `Authorization` header value, or any
- *       credential variable. Helper {@link extractRawBearer} returns
- *       the raw token to the route handler, which forwards it to
- *       `sessionService.logout` and then drops the reference; the
- *       value is NEVER logged or stashed in any field that could be
- *       serialized later.
+ *       credential variable. The inline bearer extraction in
+ *       {@link runLogout} (Step 1) reads the raw token, forwards it
+ *       to `sessionService.verifyToken` and `sessionService.logout`,
+ *       and then drops the reference; the value is NEVER logged or
+ *       stashed in any field that could be serialized later.
  *
  *   - Rule R3 (Firebase Admin SDK only):
  *       This file imports NO JWT libraries: no `jsonwebtoken`, no
@@ -269,26 +269,47 @@ const loginBodySchema = z
 /**
  * The closed union of error codes this file emits.
  *
- *   - `VALIDATION_FAILED`     — request body failed Zod schema validation
- *                               (400). Used for missing/malformed fields.
- *   - `INVALID_CREDENTIALS`   — login credential rejection (401). Generic
- *                               by design (enumeration defense).
- *   - `UNAUTHENTICATED`       — defensive 401 when `req.uid` is missing
- *                               at the logout endpoint despite the
- *                               session middleware.
- *   - `DUPLICATE_EMAIL`       — register rejected because the email is
- *                               already in use (409). Surfaced from
- *                               Firebase's `auth/email-already-exists`
- *                               or the service-layer `ValidationError`
- *                               with the same code.
- *   - `INTERNAL_ERROR`        — unrecognised error class (500). Body is
- *                               non-leaking; specifics live in server
- *                               logs only.
+ *   - `VALIDATION_FAILED`         — request body failed Zod schema validation
+ *                                   (400). Used for missing/malformed fields.
+ *   - `INVALID_CREDENTIALS`       — login credential rejection (401). Generic
+ *                                   by design (enumeration defense).
+ *   - `UNAUTHENTICATED`           — 401 returned when no Authorization header
+ *                                   was provided (or it was empty/whitespace).
+ *                                   Mirrors the session-middleware contract
+ *                                   for ST-025-AC4 / ST-026-AC1 so the public
+ *                                   logout endpoint and authenticated
+ *                                   endpoints expose the SAME error-code
+ *                                   surface to SDK consumers.
+ *   - `MALFORMED_AUTHORIZATION`   — 401 returned when an Authorization header
+ *                                   IS present but does not use the Bearer
+ *                                   scheme. Mirrors the session-middleware
+ *                                   contract (lines 404-410 of session.ts)
+ *                                   so the public logout endpoint preserves
+ *                                   the same three-way error-code
+ *                                   distinction that gated endpoints expose.
+ *   - `INVALID_SESSION`           — 401 returned when a syntactically valid
+ *                                   Bearer-shape token fails Firebase Admin
+ *                                   `verifyIdToken`. Mirrors the
+ *                                   session-middleware contract
+ *                                   (lines 686-695 of session.ts) so a
+ *                                   public-route consumer learns "your token
+ *                                   couldn't be verified" rather than the
+ *                                   conflated UNAUTHENTICATED.
+ *   - `DUPLICATE_EMAIL`           — register rejected because the email is
+ *                                   already in use (409). Surfaced from
+ *                                   Firebase's `auth/email-already-exists`
+ *                                   or the service-layer `ValidationError`
+ *                                   with the same code.
+ *   - `INTERNAL_ERROR`            — unrecognised error class (500). Body is
+ *                                   non-leaking; specifics live in server
+ *                                   logs only.
  */
 type ErrorCode =
   | 'VALIDATION_FAILED'
   | 'INVALID_CREDENTIALS'
   | 'UNAUTHENTICATED'
+  | 'MALFORMED_AUTHORIZATION'
+  | 'INVALID_SESSION'
   | 'DUPLICATE_EMAIL'
   | 'INTERNAL_ERROR';
 
@@ -461,10 +482,11 @@ export function createAuthRoutes(deps: CreateAuthRoutesDeps): AuthRouters {
   if (
     typeof deps.sessionService.register !== 'function' ||
     typeof deps.sessionService.login !== 'function' ||
-    typeof deps.sessionService.logout !== 'function'
+    typeof deps.sessionService.logout !== 'function' ||
+    typeof deps.sessionService.verifyToken !== 'function'
   ) {
     throw new Error(
-      'createAuthRoutes: sessionService must implement register/login/logout',
+      'createAuthRoutes: sessionService must implement register/login/logout/verifyToken',
     );
   }
 
@@ -522,12 +544,49 @@ export function createAuthRoutes(deps: CreateAuthRoutesDeps): AuthRouters {
   // -------------------------------------------------------------------
   // POST /logout — ST-025
   //
-  // Mounted on the authenticatedAuthRouter — runs AFTER session
-  // middleware has populated `req.uid`. The route handler still
-  // performs a defensive secondary check that `req.uid` is set, in case
-  // the middleware was misconfigured (Rule R8 fail-closed).
+  // Mounted on the PUBLIC auth router — runs BEFORE the session
+  // middleware (which is mounted globally on `/api/*` in
+  // `backend/src/index.ts`). The handler performs its own
+  // Firebase-Admin-SDK-only token verification via
+  // `sessionService.verifyToken` (Rule R3) and derives the `uid`
+  // directly from the decoded token, rather than relying on
+  // middleware-populated `req.uid`.
+  //
+  // Why bypass the session middleware?
+  //
+  // ST-025-AC3 requires that "submitting the same revoked token again
+  // returns a documented non-error response and does not alter state".
+  // The session middleware (correctly) rejects revoked tokens with 401
+  // INVALID_SESSION. If logout were mounted behind that middleware, a
+  // second logout with the same — now-revoked — bearer would be
+  // rejected by the middleware before this handler ever fires,
+  // surfacing as 401 (an error response) and violating AC3.
+  //
+  // Mounting logout publicly keeps the AC3 contract while preserving
+  // every other security guarantee:
+  //
+  //   - AC4 ("Logout rejected when called without a valid session"):
+  //     The handler still requires a syntactically valid Bearer
+  //     header AND a Firebase-signed idToken — `verifyToken` rejects
+  //     malformed, expired, or signature-invalid tokens, which the
+  //     handler translates to 401 UNAUTHENTICATED. Anonymous
+  //     attackers cannot trigger arbitrary revocations.
+  //
+  //   - AC1 ("Logout marks session revoked"): The repository's
+  //     `markRevoked` SQL uses `COALESCE(revoked_at, now())`, so a
+  //     repeat call against an already-revoked row preserves the
+  //     ORIGINAL revocation timestamp — "does not alter state" per
+  //     AC3 — while a first call sets it. Both branches return 204.
+  //
+  //   - Rule R3 (Firebase Admin SDK only): `sessionService.verifyToken`
+  //     delegates directly to `admin.auth().verifyIdToken`. No custom
+  //     JWT parsing is introduced.
+  //
+  //   - Rule R2 (no credential leakage): the raw bearer is passed
+  //     directly into the service, never logged or copied onto
+  //     long-lived request fields.
   // -------------------------------------------------------------------
-  authenticatedAuthRouter.post(
+  publicAuthRouter.post(
     '/logout',
     (req: Request, res: Response, next: NextFunction): void => {
       void runLogout(sessionService, req, res, next).catch((err: unknown) => {
@@ -701,25 +760,57 @@ async function runLogin(
 /**
  * Async worker for POST /logout — ST-025.
  *
+ * Mounted on the PUBLIC auth router (see `createAuthRoutes`), this
+ * handler runs BEFORE the session middleware that gates the rest of
+ * `/api/*`. That placement is required for ST-025-AC3 idempotency:
+ * the session middleware (correctly) rejects revoked tokens with 401
+ * INVALID_SESSION, and a second logout with the same now-revoked
+ * bearer would therefore never reach this handler if it were mounted
+ * behind the middleware. By bypassing the gate the handler can return
+ * the documented 204 No Content for both the first and the second
+ * (and Nth) logout call against the same token.
+ *
  * Implementation flow:
- *   1. Read `req.uid` (populated by the session middleware on the
- *      authenticated router). If absent — defensive only; the
- *      middleware should have already rejected — respond 401
- *      `UNAUTHENTICATED`.
- *   2. Extract the raw bearer token from the `Authorization` header
- *      via {@link extractRawBearer}. The session middleware does NOT
- *      stash the raw token on the request object (a Rule R2 defensive
- *      choice — credential material does not propagate further than
- *      necessary), so the route re-reads it. If absent or malformed,
- *      respond 401 `UNAUTHENTICATED`.
+ *   1. Classify the `Authorization` header DIRECTLY (inline, NOT via
+ *      a shared helper). The previous implementation delegated to a
+ *      `extractRawBearer` helper that collapsed two distinct failure
+ *      shapes (missing header vs. wrong scheme) to a single `null`
+ *      return, defeating the three-way contract below. Inlining the
+ *      parse keeps the header-classification semantics local to this
+ *      function and makes the contract literal and auditable. The
+ *      classification preserves the canonical three-way error
+ *      contract that authenticated endpoints expose via the session
+ *      middleware:
+ *        - missing / empty / whitespace-only header  -> 401 `UNAUTHENTICATED`
+ *        - present but non-Bearer scheme             -> 401 `MALFORMED_AUTHORIZATION`
+ *        - Bearer-shaped token captured              -> proceed to step 2
+ *      This satisfies AC4 ("Logout rejected when called without a
+ *      valid session") for anonymous and malformed-header callers.
+ *   2. Call `sessionService.verifyToken(rawBearer)` to validate the
+ *      Firebase-signed idToken (Rule R3 / C2 — Firebase Admin SDK
+ *      `verifyIdToken` only). On any failure (expired, signature
+ *      invalid, malformed payload, revoked at the Firebase tier),
+ *      the call throws and we respond 401 `INVALID_SESSION` — the
+ *      same code the session middleware emits for the same class of
+ *      failure on gated endpoints. The uid is read from the decoded
+ *      token, NOT from `req.uid` (which is not populated on the
+ *      public router).
  *   3. Call `sessionService.logout({ uid, rawBearerToken })`. The
  *      service hashes the token via SHA-256 to derive the `tokenRef`
  *      and calls `sessionRepository.markRevoked(tokenRef)`. The
  *      repository's `COALESCE(revoked_at, now())` SQL makes a second
  *      revocation a no-op — satisfying ST-025-AC3 idempotency at the
- *      database tier.
+ *      database tier — while a first call sets the revocation
+ *      timestamp atomically.
  *   4. On success, respond 204 No Content. Per REST conventions, a
  *      successful side-effect-only DELETE-style action returns no body.
+ *
+ * Note that the local `sessions` table is treated as a revocation
+ * list; a row not present in the table represents an "untracked but
+ * Firebase-valid" idToken. `markRevoked` returns `null` in that case
+ * and the service still resolves successfully, so the handler still
+ * returns 204 — correctly modelling the "logout against an unknown
+ * token" branch as a no-op rather than an error.
  *
  * @param sessionService Injected service.
  * @param req Express request.
@@ -732,29 +823,117 @@ async function runLogout(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  // Step 1: defensive secondary check on req.uid. The session
-  // middleware should have already rejected the request if `req.uid`
-  // is absent (it returns 401 from `runSessionValidation`), but if
-  // the composition root mounts this handler without the middleware
-  // (a developer error), the check below ensures we still fail closed.
+  // Step 1: classify the Authorization header to preserve the
+  // canonical three-way error contract that authenticated endpoints
+  // expose via the session middleware. SDK consumers of the public
+  // logout endpoint MUST see the same {UNAUTHENTICATED |
+  // MALFORMED_AUTHORIZATION | INVALID_SESSION} distinctions as gated
+  // endpoints — anything else creates a confusing UX where retrying
+  // the wrong request shape produces unrelated error codes.
   //
-  // We use a narrow inline cast `(req as Request & { uid?: string })`
-  // rather than relying on the global `Express.Request` augmentation
-  // declared in `middleware/correlation.ts` and `middleware/session.ts`.
-  // Re-declaring the augmentation here would produce a TypeScript
-  // duplicate-merge error; trusting the global augmentation is correct
-  // but couples this file to that declaration's existence. The narrow
-  // cast is portable and explicit about the field's optionality.
-  const uid: string | undefined = (req as Request & { uid?: string }).uid;
-  if (typeof uid !== 'string' || uid.length === 0) {
-    res.status(401).json(buildError('UNAUTHENTICATED', 'Session required'));
+  // Authorization header classification:
+  //   - undefined / null / empty / whitespace-only         -> UNAUTHENTICATED
+  //   - present, but no `Bearer ` prefix                   -> MALFORMED_AUTHORIZATION
+  //   - present, Bearer-shaped, but verifyIdToken fails    -> INVALID_SESSION
+  //   - present, Bearer-shaped, verifyIdToken returns uid  -> proceed to logout
+  //
+  // We deliberately read the header inline (rather than delegating
+  // to a shared helper) so we can distinguish the missing-header
+  // case from the malformed-scheme case. The previous shared helper
+  // collapsed both to `null`, which made the three-way error
+  // contract above unreachable from this handler. The inline shape
+  // below mirrors the regex used by the session middleware so the
+  // public logout route and protected routes accept the same set of
+  // header shapes.
+  const rawHeader: unknown = req.headers['authorization'];
+  const headerValue: string | undefined = Array.isArray(rawHeader)
+    ? rawHeader[0]
+    : (rawHeader as string | undefined);
+
+  const trimmed: string =
+    typeof headerValue === 'string' ? headerValue.trim() : '';
+
+  if (trimmed.length === 0) {
+    // No Authorization header at all (or empty/whitespace-only).
+    res
+      .status(401)
+      .json(buildError('UNAUTHENTICATED', 'Authentication required.'));
     return;
   }
 
-  // Step 2: extract the raw bearer token.
-  const rawBearer: string | null = extractRawBearer(req);
-  if (rawBearer === null) {
-    res.status(401).json(buildError('UNAUTHENTICATED', 'Session required'));
+  // Match `Bearer <token>` case-insensitively. The captured group is
+  // the token portion. If the regex misses, the header IS present but
+  // does not use the Bearer scheme — surface MALFORMED_AUTHORIZATION
+  // matching the session-middleware contract.
+  const bearerMatch: RegExpExecArray | null = /^bearer\s+(\S+)$/i.exec(trimmed);
+  if (bearerMatch === null) {
+    res
+      .status(401)
+      .json(
+        buildError(
+          'MALFORMED_AUTHORIZATION',
+          'Authorization header must use the Bearer scheme.',
+        ),
+      );
+    return;
+  }
+
+  const rawBearer: string | undefined = bearerMatch[1];
+  if (rawBearer === undefined || rawBearer.length === 0) {
+    // Defensive — the regex's `(\S+)` cannot produce empty under our
+    // current pattern, but we treat any non-string capture as a
+    // malformed header rather than risk a crash.
+    res
+      .status(401)
+      .json(
+        buildError(
+          'MALFORMED_AUTHORIZATION',
+          'Authorization header must use the Bearer scheme.',
+        ),
+      );
+    return;
+  }
+
+  // Step 2: verify the token via Firebase Admin SDK to obtain the uid.
+  // We do NOT use `req.uid` because this handler is mounted on the
+  // PUBLIC router, before the session middleware that populates that
+  // field. `verifyToken` performs Firebase-Admin-SDK-only validation
+  // (Rule R3 / C2) — no custom JWT parsing.
+  let uid: string;
+  try {
+    const decoded = await sessionService.verifyToken(rawBearer);
+    uid = decoded.uid;
+    if (typeof uid !== 'string' || uid.length === 0) {
+      // Defensive — Firebase Admin SDK populates `uid` on every
+      // successful decode, but the strict contract here protects
+      // against an unexpected SDK version that returns a non-string.
+      res
+        .status(401)
+        .json(
+          buildError(
+            'INVALID_SESSION',
+            'Session is invalid, expired, or revoked.',
+          ),
+        );
+      return;
+    }
+  } catch {
+    // verifyIdToken throws on expired/malformed/invalid-signature
+    // tokens. Surface the canonical INVALID_SESSION code so SDK
+    // consumers can distinguish "your bearer was rejected by the
+    // identity provider" from "you didn't provide a bearer at all"
+    // (UNAUTHENTICATED) and "your scheme is wrong"
+    // (MALFORMED_AUTHORIZATION). Per Rule R2 we never echo the
+    // underlying Firebase error class or message — those can hint at
+    // internal validation steps and credential verification details.
+    res
+      .status(401)
+      .json(
+        buildError(
+          'INVALID_SESSION',
+          'Session is invalid, expired, or revoked.',
+        ),
+      );
     return;
   }
 
@@ -766,7 +945,8 @@ async function runLogout(
     await sessionService.logout({ uid, rawBearerToken: rawBearer });
 
     // Step 4: 204 No Content. Per REST and per ST-025-AC3 ("documented
-    // non-error response"), the body is empty.
+    // non-error response"), the body is empty. Returned identically
+    // for the first and Nth call against the same token.
     res.status(204).send();
   } catch (err) {
     handleAuthError(err, req, res, next);
@@ -938,63 +1118,18 @@ function handleAuthError(
   res.status(500).json(buildError('INTERNAL_ERROR', 'Internal server error'));
 }
 
-/**
- * Extract the raw bearer token from the `Authorization` header.
- *
- * Returns the token string (with the "Bearer " prefix stripped and
- * surrounding whitespace trimmed) on success, or `null` on any failure
- * mode. The contract follows RFC 6750 §2.1 with one documented
- * permissive deviation:
- *
- *   - The "Bearer " prefix is treated case-insensitively. RFC 6750
- *     specifies case-sensitive "Bearer", but in practice many clients
- *     emit lowercase ("bearer ..."), and rejecting them produces a
- *     poor developer experience. The case-insensitive parse is
- *     consistent with `extractBearerToken` in
- *     `backend/src/middleware/session.ts` — both files use the same
- *     regex shape so the route never sees a token format the
- *     middleware accepted (or vice versa).
- *
- * Edge cases (each maps to `null`):
- *   - Missing or empty Authorization header.
- *   - Non-string header value (defensive — Express may rarely deliver
- *     `string[]` for repeated headers).
- *   - Header present but no "Bearer " prefix (e.g. "Basic ...").
- *   - "Bearer " present but token is empty after stripping.
- *
- * Per Rule R2: the returned token value is the raw credential. Callers
- * MUST forward it directly to the service and then drop the reference
- * — NEVER log it, store it in a request field that could be serialized
- * later, or include it in any string concatenation.
- *
- * @param req Express request (the function reads `req.headers.authorization`).
- * @returns The raw bearer token string, or `null` on any failure.
- */
-function extractRawBearer(req: Request): string | null {
-  const header = req.headers['authorization'];
-
-  // Express may present a header as `string | string[] | undefined`.
-  // Take the first element of an array, matching Express's own
-  // `req.header()` behaviour.
-  const value: string | undefined = Array.isArray(header) ? header[0] : header;
-  if (typeof value !== 'string' || value.length === 0) {
-    return null;
-  }
-
-  // Match `Bearer <token>` with at least one whitespace, case-insensitive.
-  // The regex below intentionally rejects "Bearer<no-space>token" and
-  // any other scheme, returning null for the route to treat as missing.
-  const match: RegExpExecArray | null = /^bearer\s+(\S+)$/i.exec(value.trim());
-  if (match === null) {
-    return null;
-  }
-
-  // `match[1]` is the captured token group. The regex (\S+) excludes
-  // whitespace so the token cannot itself contain spaces — Firebase
-  // idTokens are JWT base64-url strings which match this constraint.
-  const token: string | undefined = match[1];
-  if (token === undefined || token.length === 0) {
-    return null;
-  }
-  return token;
-}
+// NOTE — Bearer-token extraction was previously isolated in a helper
+// function `extractRawBearer(req)`. After QA Final E Issue #2 (the
+// public-mounted /logout three-way error contract correction), that
+// helper became dead code: the only caller, `runLogout`, must inline
+// header parsing so it can distinguish "no header"
+// (`UNAUTHENTICATED`) from "non-Bearer scheme"
+// (`MALFORMED_AUTHORIZATION`) — a distinction the helper deliberately
+// collapsed by returning `null` for both cases. Keeping a stale
+// helper around invites accidental re-use that would silently
+// regress the three-way contract documented on `runLogout` and on
+// `backend/src/middleware/session.ts`. The header parsing now lives
+// inline in `runLogout` (see Step 1 of that function) and uses the
+// same RFC-6750 §2.1 regex (`/^bearer\s+(\S+)$/i`) that the session
+// middleware applies on protected routes, so request shape acceptance
+// remains identical between the two code paths.

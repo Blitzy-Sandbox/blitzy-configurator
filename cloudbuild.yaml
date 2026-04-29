@@ -196,6 +196,17 @@ steps:
       - 'NODE_ENV=test'
       - 'SERVICE_NAME=strikeforge-backend'
       - 'SERVICE_VERSION=ci-${COMMIT_SHA}'
+      # LocalGCP Verification Rule (AAP §0.8.2): the v4 signed-URL
+      # contract delegates RSA-SHA256 signing to `google-auth-library`,
+      # which requires a service-account JSON. The committed synthetic
+      # keyfile at `backend/local-dev-sa.json` satisfies the signing
+      # plumbing without any real GCP credential — fake-gcs-server does
+      # not validate the signature in emulator mode. The integration
+      # suite's `globalSetup` defaults this env var when unset, but
+      # declaring it explicitly here documents the contract for CI
+      # reviewers and gives an explicit override path for any future
+      # operator who needs to point at a different keyfile.
+      - 'GOOGLE_APPLICATION_CREDENTIALS=/workspace/backend/local-dev-sa.json'
     args:
       - '-c'
       - |

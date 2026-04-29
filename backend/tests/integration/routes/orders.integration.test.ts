@@ -1584,31 +1584,29 @@ describe('POST /api/orders/:id/finalize (integration)', () => {
       expect(TERMINAL_PAYMENT_STATES).not.toContain(res.body.state);
     });
 
-    it('returns empty items array per the documented performance contract', async () => {
-      // Production contract — verified in src/services/order.service.ts
-      //   lines 795-800: "The returned object's `items` array is
-      //   empty because the repository's `updateOrderState` returns
-      //   the bare order row without re-fetching items (an explicit
-      //   performance contract). Consumers who need the items should
-      //   call OrderService.getById after finalize."
+    it('returns the persisted line items on the finalize response (ST-032-AC2 parity)', async () => {
+      // Canonical Order contract — ST-032-AC2 requires that "the
+      //   canonical persisted order [...] include[s] a server-assigned
+      //   order identifier, the line items, a calculated subtotal,
+      //   and a created timestamp". `finalizeOrder` returns the same
+      //   `Order` type, so the finalize response MUST mirror the
+      //   create response: same shape, same fields, same items.
       //
-      // The route forwards the service return verbatim — see
-      //   src/routes/orders.ts (the finalize handler does
-      //   `res.status(200).json(finalized)` directly). It does NOT
-      //   call getById to enrich the response.
+      // The repository's `updateOrderState` issues a follow-up
+      //   `SELECT order_id, design_id, quantity, metadata FROM
+      //   order_items WHERE order_id = $1` after the conditional
+      //   UPDATE and maps the rows via `mapOrderItemRow`, so the
+      //   returned `Order.items` array reflects the persisted state
+      //   atomically.
       //
       // This test is a contract-regression guard:
-      //   - If a future refactor changes the route to enrich items
-      //     by calling `getById` after finalize, this assertion will
-      //     flip to non-empty and signal the contract change — at
-      //     which point the assertion should be updated to reflect
-      //     the new contract.
       //   - If a future refactor accidentally drops the line items
-      //     from the database tier, this assertion alone will not
-      //     catch that. Persistence is the responsibility of the
-      //     order-service unit tests and the create-order
-      //     integration tests above (which assert items are echoed
-      //     in the 201 create response).
+      //     from the finalize response, this assertion will fail
+      //     and signal the regression.
+      //   - The DB-side persistence guarantee is also covered by
+      //     the create-order integration tests (which assert items
+      //     are echoed in the 201 create response) and by the
+      //     order-service unit tests.
       const { idToken } = await setupAuthenticatedUser(app, createdUids);
       const designIdA = await createDesignViaProduction(app, idToken, 'Finalize Test A');
       const designIdB = await createDesignViaProduction(app, idToken, 'Finalize Test B');
@@ -1633,14 +1631,23 @@ describe('POST /api/orders/:id/finalize (integration)', () => {
       expect(finalizeRes.status).toBe(200);
       expect(finalizeRes.body.id).toBe(orderId);
       expect(finalizeRes.body.state).toBe('finalized');
-      // The documented contract: items array is empty on finalize
-      //   response — NOT a sign that items were lost from the
-      //   database.
+      // The canonical contract: items array is populated on the
+      //   finalize response with the persisted line items. ST-032-AC2
+      //   parity — finalize MUST return the same shape as create.
       expect(Array.isArray(finalizeRes.body.items)).toBe(true);
-      expect(finalizeRes.body.items.length).toBe(0);
+      expect(finalizeRes.body.items.length).toBe(2);
+
+      const itemA = (finalizeRes.body.items as Array<{ designId: string; quantity: number }>)
+        .find((item) => item.designId === designIdA);
+      const itemB = (finalizeRes.body.items as Array<{ designId: string; quantity: number }>)
+        .find((item) => item.designId === designIdB);
+      expect(itemA).toBeDefined();
+      expect(itemA?.quantity).toBe(2);
+      expect(itemB).toBeDefined();
+      expect(itemB?.quantity).toBe(1);
+
       // Subtotal IS preserved on the finalize response — this is the
-      //   monetary signal consumers need without paying the cost of
-      //   a second roundtrip to fetch items. Per QA Final D Issue
+      //   monetary signal consumers need. Per QA Final D Issue
       //   #9 the wire format coerces NUMERIC strings to JS numbers.
       expect(finalizeRes.body).toHaveProperty('subtotal');
       expect(typeof finalizeRes.body.subtotal).toBe('number');

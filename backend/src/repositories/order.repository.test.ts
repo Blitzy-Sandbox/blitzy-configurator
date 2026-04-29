@@ -1623,24 +1623,41 @@ describe('createOrderRepository', () => {
   // =========================================================================
 
   describe('updateOrderState', () => {
-    it('emits a single UPDATE statement bound to (userId, orderId, newState, expectedState)', async () => {
+    it('emits a conditional UPDATE bound to (userId, orderId, newState, expectedState) and a follow-up SELECT for line items', async () => {
       // ST-034 — finalization runs as a CONDITIONAL UPDATE so a
       // duplicate `/finalize` call against an already-finalized
       // order produces a deterministic, repeatable response. The
       // condition lives in the WHERE clause as `state = $4`.
+      //
+      // QA Final E Issue #3 (MINOR) fix: after the UPDATE returns a
+      // row, the repository re-reads `order_items` so the response
+      // shape matches the canonical `Order` returned by `findOrderById`
+      // and `createOrder` (ST-032-AC2). When the UPDATE matches a
+      // row, this produces TWO sequential pool.query calls:
+      //   1. UPDATE orders ... RETURNING ...
+      //   2. SELECT ... FROM order_items WHERE order_id = $1
+      // When the UPDATE matches zero rows, the repository short-
+      // circuits and returns null — only one pool.query call.
       const pool = createMockPool();
-      pool.query.mockResolvedValueOnce(
-        mockQueryResult<OrderRow>([
-          {
-            id: SAMPLE_ORDER_ID,
-            user_id: SAMPLE_USER_ID,
-            state: 'finalized',
-            subtotal: '25.00',
-            created_at: FIXED_DATE,
-            last_modified_at: FIXED_DATE,
-          },
-        ]),
-      );
+      pool.query
+        .mockResolvedValueOnce(
+          mockQueryResult<OrderRow>([
+            {
+              id: SAMPLE_ORDER_ID,
+              user_id: SAMPLE_USER_ID,
+              state: 'finalized',
+              subtotal: '25.00',
+              created_at: FIXED_DATE,
+              last_modified_at: FIXED_DATE,
+            },
+          ]),
+        )
+        .mockResolvedValueOnce(
+          // Line items SELECT — empty array is fine for this assertion
+          // since we are validating the UPDATE statement shape, not
+          // the items hydration logic (covered by the next test).
+          mockQueryResult<OrderItemRow>([]),
+        );
 
       const repo = createOrderRepository(asPool(pool));
       await repo.updateOrderState({
@@ -1650,9 +1667,11 @@ describe('createOrderRepository', () => {
         expectedState: 'created',
       });
 
-      // Single pool.query call — UPDATE is one statement; the
-      // RETURNING clause hands back the row in the same round-trip.
-      expect(pool.query).toHaveBeenCalledTimes(1);
+      // Two pool.query calls — UPDATE first, then SELECT order_items.
+      // The two statements run sequentially so OTel auto-instrumentation
+      // produces a deterministic span order; pg connection pooling
+      // amortises the connection cost across both.
+      expect(pool.query).toHaveBeenCalledTimes(2);
       expect(pool.connect).not.toHaveBeenCalled();
 
       const config = getQueryConfig(pool.query, 0);
@@ -1679,27 +1698,56 @@ describe('createOrderRepository', () => {
         'finalized',
         'created',
       ]);
+
+      // Second statement: SELECT line items by order_id (the row's
+      // server-canonical UUID).
+      const itemsConfig = getQueryConfig(pool.query, 1);
+      expect(itemsConfig.text).toMatch(/SELECT[\s\S]*FROM\s+order_items/i);
+      expect(itemsConfig.text).toMatch(/WHERE[\s\S]*order_id\s*=\s*\$1/i);
+      expect(itemsConfig.values).toEqual([SAMPLE_ORDER_ID]);
     });
 
-    it('returns the canonical Order with items=[] when the UPDATE matches a row', async () => {
-      // ST-034: the finalize response contains the canonical order
-      // with the new state echoed back. The repository deliberately
-      // does NOT re-fetch line items in this path; it returns
-      // `items: []` and trusts the caller to follow up with
-      // `findOrderById` if items are needed.
+    it('returns the canonical Order with populated line items when the UPDATE matches a row', async () => {
+      // ST-034 + QA Final E Issue #3 (MINOR) fix: the finalize response
+      // contains the canonical order with the new state echoed back AND
+      // the persisted line items rehydrated. Pre-fix, the repository
+      // returned `items: []` here, which broke contract parity with
+      // `createOrder` (ST-032-AC2 — "the canonical persisted order,
+      // including a server-assigned order identifier, the line items,
+      // a calculated subtotal, and a created timestamp"). Post-fix,
+      // the repository follows the UPDATE with a SELECT against
+      // order_items so the same shape used by `findOrderById` is
+      // returned to the service layer.
       const pool = createMockPool();
-      pool.query.mockResolvedValueOnce(
-        mockQueryResult<OrderRow>([
-          {
-            id: SAMPLE_ORDER_ID,
-            user_id: SAMPLE_USER_ID,
-            state: 'finalized',
-            subtotal: '15.50',
-            created_at: FIXED_DATE,
-            last_modified_at: FIXED_DATE,
-          },
-        ]),
-      );
+      pool.query
+        .mockResolvedValueOnce(
+          mockQueryResult<OrderRow>([
+            {
+              id: SAMPLE_ORDER_ID,
+              user_id: SAMPLE_USER_ID,
+              state: 'finalized',
+              subtotal: '15.50',
+              created_at: FIXED_DATE,
+              last_modified_at: FIXED_DATE,
+            },
+          ]),
+        )
+        .mockResolvedValueOnce(
+          mockQueryResult<OrderItemRow>([
+            {
+              order_id: SAMPLE_ORDER_ID,
+              design_id: SAMPLE_DESIGN_ID_1,
+              quantity: 2,
+              metadata: { color: 'navy' },
+            },
+            {
+              order_id: SAMPLE_ORDER_ID,
+              design_id: SAMPLE_DESIGN_ID_2,
+              quantity: 5,
+              metadata: { gift: true },
+            },
+          ]),
+        );
 
       const repo = createOrderRepository(asPool(pool));
       const result = await repo.updateOrderState({
@@ -1716,7 +1764,20 @@ describe('createOrderRepository', () => {
         subtotal: '15.50',
         createdAt: FIXED_DATE,
         lastModifiedAt: FIXED_DATE,
-        items: [],
+        items: [
+          {
+            orderId: SAMPLE_ORDER_ID,
+            designId: SAMPLE_DESIGN_ID_1,
+            quantity: 2,
+            metadata: { color: 'navy' },
+          },
+          {
+            orderId: SAMPLE_ORDER_ID,
+            designId: SAMPLE_DESIGN_ID_2,
+            quantity: 5,
+            metadata: { gift: true },
+          },
+        ],
       };
       expect(result).toEqual(expected);
     });
@@ -1754,19 +1815,28 @@ describe('createOrderRepository', () => {
       // instances) — verify by asserting that no Date instance
       // appears in the UPDATE values, and that the SQL contains
       // `now()` literally.
+      //
+      // Two pool.query mocks per the post-Fix #3 flow: the UPDATE
+      // first (whose values we audit), then the SELECT against
+      // `order_items` (whose values are just the orderId — never
+      // a Date). The audit only inspects the UPDATE config (index 0)
+      // because the SELECT statement is documented to use `now()`-
+      // free SQL (it is a pure read).
       const pool = createMockPool();
-      pool.query.mockResolvedValueOnce(
-        mockQueryResult<OrderRow>([
-          {
-            id: SAMPLE_ORDER_ID,
-            user_id: SAMPLE_USER_ID,
-            state: 'cancelled',
-            subtotal: '5.00',
-            created_at: FIXED_DATE,
-            last_modified_at: FIXED_DATE,
-          },
-        ]),
-      );
+      pool.query
+        .mockResolvedValueOnce(
+          mockQueryResult<OrderRow>([
+            {
+              id: SAMPLE_ORDER_ID,
+              user_id: SAMPLE_USER_ID,
+              state: 'cancelled',
+              subtotal: '5.00',
+              created_at: FIXED_DATE,
+              last_modified_at: FIXED_DATE,
+            },
+          ]),
+        )
+        .mockResolvedValueOnce(mockQueryResult<OrderItemRow>([]));
 
       const repo = createOrderRepository(asPool(pool));
       await repo.updateOrderState({
@@ -1816,20 +1886,35 @@ describe('createOrderRepository', () => {
       }
     });
 
-    it('uses pool.query (no transaction needed for a single UPDATE)', async () => {
+    it('uses pool.query for the UPDATE and follow-up SELECT (no explicit transaction needed)', async () => {
+      // Both statements run via pool.query rather than an explicit
+      // BEGIN/COMMIT block. Rationale:
+      //   - The UPDATE is a single atomic statement; no second-write
+      //     in the same transaction is needed.
+      //   - The follow-up SELECT against order_items is a pure read
+      //     used to populate the response shape. Because nothing
+      //     between the UPDATE commit and the SELECT mutates rows
+      //     for this order under READ COMMITTED isolation, the row
+      //     set we read is consistent with the row we just updated.
+      //   - Avoiding `pool.connect()` keeps connection-pool churn
+      //     low and means OTel auto-instrumentation produces two
+      //     simple `pg.query` spans rather than a wrapped transaction
+      //     span.
       const pool = createMockPool();
-      pool.query.mockResolvedValueOnce(
-        mockQueryResult<OrderRow>([
-          {
-            id: SAMPLE_ORDER_ID,
-            user_id: SAMPLE_USER_ID,
-            state: 'finalized',
-            subtotal: '10.00',
-            created_at: FIXED_DATE,
-            last_modified_at: FIXED_DATE,
-          },
-        ]),
-      );
+      pool.query
+        .mockResolvedValueOnce(
+          mockQueryResult<OrderRow>([
+            {
+              id: SAMPLE_ORDER_ID,
+              user_id: SAMPLE_USER_ID,
+              state: 'finalized',
+              subtotal: '10.00',
+              created_at: FIXED_DATE,
+              last_modified_at: FIXED_DATE,
+            },
+          ]),
+        )
+        .mockResolvedValueOnce(mockQueryResult<OrderItemRow>([]));
 
       const repo = createOrderRepository(asPool(pool));
       await repo.updateOrderState({

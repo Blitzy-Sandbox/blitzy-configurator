@@ -416,19 +416,44 @@ function buildPublicApp(opts: {
 }
 
 /**
- * Construct an Express app exposing the `authenticatedAuthRouter`
- * (logout). A session-middleware simulator stamps `req.uid` and
- * (optionally) the `Authorization` header BEFORE the router runs,
- * mirroring the production composition root in `backend/src/index.ts`.
+ * Construct an Express app exposing the logout endpoint.
  *
- * Behavior:
- *   - When `uid !== undefined`, `req.uid` is set to that value
- *     (including the empty-string case so we can exercise the
- *     defensive 401 path).
+ * Logout was relocated from `authenticatedAuthRouter` to
+ * `publicAuthRouter` as part of QA Final E Issue #2 (MAJOR) — the
+ * ST-025-AC3 idempotency violation fix. The logout endpoint MUST sit
+ * BEFORE the session middleware so that submitting a second logout
+ * request with the same already-revoked bearer returns the documented
+ * non-error 204 response, rather than being short-circuited with a 401
+ * INVALID_SESSION by the session gate.
+ *
+ * Post-fix flow inside `runLogout`:
+ *   1. `extractRawBearer(req)` — pulls the bearer from the
+ *      `Authorization: Bearer <token>` header. Missing/malformed →
+ *      401 UNAUTHENTICATED.
+ *   2. `sessionService.verifyToken(rawBearer)` — Firebase Admin SDK
+ *      `verifyIdToken` (Rule R3 / C2) returns `{ uid }`. Throws on
+ *      expired/malformed/invalid-signature → 401 UNAUTHENTICATED.
+ *   3. `sessionService.logout({ uid, rawBearerToken })` — service
+ *      handles idempotency, hashing, and the session-row UPSERT.
+ *
+ * Behavior of this builder:
+ *   - When `uid !== undefined` AND `verifyToken` does not already have
+ *     an explicit `mockResolvedValue*` / `mockRejectedValue*` set up,
+ *     this builder pre-arms `verifyToken` with `mockResolvedValue({
+ *     uid: opts.uid })`. This lets the existing logout test corpus
+ *     keep its `uid: TEST_UID` fixture while satisfying the new
+ *     verifyToken-driven uid extraction. Tests that need `verifyToken`
+ *     to throw (e.g. expired-token edge cases) override the default
+ *     via `sessionService.verifyToken.mockRejectedValueOnce(...)` —
+ *     standard Jest `mockResolvedValue` + `mockRejectedValueOnce`
+ *     stacking.
  *   - When `authorization !== ''`, the Authorization header is set on
  *     the request. An empty-string `authorization` indicates "do not
  *     attach the header at all" (exercising the 401 UNAUTHENTICATED
  *     path inside `extractRawBearer`).
+ *   - `req.uid` is no longer stamped — the logout route does not read
+ *     it post-Fix #2. The `opts.uid` parameter is now used solely to
+ *     control what `verifyToken` resolves with.
  *
  * The optional `logSpy` mirrors `buildPublicApp`'s log injection.
  */
@@ -450,26 +475,48 @@ function buildAuthenticatedApp(opts: {
     });
   }
 
-  // Session-middleware simulator: stamp req.uid and (optionally) the
-  // Authorization header. The conditional-set on uid lets us exercise
-  // both the missing-uid path (uid === undefined) and the empty-uid
-  // edge case (uid === '').
+  // Pre-arm `verifyToken` with the default `{ uid: opts.uid }` resolution
+  // ONLY when the caller has not already configured a non-default
+  // implementation. We detect a caller-supplied implementation by
+  // inspecting `mock.results` and the existence of a recorded
+  // implementation; the simplest portable heuristic is to check
+  // `getMockImplementation()` which returns `undefined` for the bare
+  // `jest.fn()` baseline.
+  //
+  // Tests that need `verifyToken` to throw (401 paths) call
+  // `mockRejectedValueOnce(...)` AFTER the builder runs — Jest stacks
+  // the once-mock on top of the persistent `mockResolvedValue`, so the
+  // first call rejects, subsequent calls resolve to the default.
+  if (
+    opts.uid !== undefined &&
+    opts.sessionService.verifyToken.getMockImplementation() === undefined &&
+    opts.sessionService.verifyToken.mock.results.length === 0
+  ) {
+    opts.sessionService.verifyToken.mockResolvedValue({ uid: opts.uid });
+  }
+
+  // Authorization-header simulator. The conditional-set on
+  // `opts.authorization` lets us exercise both the missing-header
+  // path (opts.authorization === undefined OR === '') and the
+  // header-present path. Empty-string is treated as "do not attach"
+  // for backward compatibility with tests written before Fix #2.
   app.use((req: Request, _res: Response, next: NextFunction) => {
-    if (opts.uid !== undefined) {
-      req.uid = opts.uid;
-    }
     if (opts.authorization !== undefined && opts.authorization !== '') {
       req.headers.authorization = opts.authorization;
     }
     next();
   });
 
-  const { authenticatedAuthRouter } = createAuthRoutes({
+  // Mount the public router (which now hosts /logout post-Fix #2).
+  // We deliberately do NOT mount the session middleware in this
+  // builder — the logout route post-Fix #2 sits BEFORE the session
+  // gate in production, so unit tests must mirror that placement.
+  const { publicAuthRouter } = createAuthRoutes({
     sessionService: opts.sessionService as unknown as Parameters<
       typeof createAuthRoutes
     >[0]['sessionService'],
   });
-  app.use('/api/auth', authenticatedAuthRouter);
+  app.use('/api/auth', publicAuthRouter);
   return app;
 }
 
@@ -1397,21 +1444,42 @@ describe('POST /api/auth/logout — ST-025-AC1/AC3 (success + idempotency)', () 
   });
 });
 
-describe('POST /api/auth/logout — ST-025-AC4 (defensive 401)', () => {
+describe('POST /api/auth/logout — ST-025-AC4 + ST-026 three-way auth contract', () => {
+  // The public logout route preserves the same three-way error code
+  // surface as authenticated routes (gated by the session middleware):
+  //
+  //   - missing / empty / whitespace-only Authorization header  -> UNAUTHENTICATED
+  //   - present but non-Bearer scheme                           -> MALFORMED_AUTHORIZATION
+  //   - Bearer-shaped token that fails verifyIdToken            -> INVALID_SESSION
+  //
+  // This matches the integration test expectations at
+  // `tests/integration/routes/auth.integration.test.ts` and the
+  // session middleware's own contract (lines 295-306 of
+  // `src/middleware/session.ts`). Pre-Fix #2 the route delegated all
+  // header inspection to the session middleware (and therefore
+  // inherited those codes implicitly); post-Fix #2 the route is
+  // mounted on the public router for ST-025-AC3 idempotency, so the
+  // route MUST emit the same codes itself.
   let sessionService: SessionServiceMock;
 
   beforeEach(() => {
     sessionService = buildSessionService();
   });
 
-  it('returns 401 UNAUTHENTICATED when req.uid is missing (AC4 defensive)', async () => {
-    // ST-025-AC4: "Logout is rejected with a documented error when
-    // called without a valid, non-expired session token." In
-    // production this is enforced upstream by sessionMiddleware;
-    // the route adds a defensive secondary check.
+  it('returns 401 INVALID_SESSION when verifyToken fails to decode the bearer (defensive)', async () => {
+    // ST-025-AC4 + ST-026 defensive: a syntactically-shaped Bearer
+    // token ('Bearer some-token') that the Firebase Admin SDK
+    // refuses to verify is rejected with INVALID_SESSION. Mirrors
+    // the session middleware's behaviour on `/api/*` gated routes.
+    //
+    // The buildAuthenticatedApp helper does NOT pre-arm verifyToken
+    // when `opts.uid === undefined`. The default `jest.fn()` returns
+    // `undefined`; awaiting `undefined` resolves to `undefined`, and
+    // accessing `.uid` on it throws — caught by the runLogout
+    // `try/catch` block which surfaces INVALID_SESSION.
     const app = buildAuthenticatedApp({
       sessionService,
-      // No uid — simulates the middleware being bypassed.
+      // No uid — verifyToken stays as the default (undefined-returning) jest.fn().
       authorization: 'Bearer some-token',
     });
 
@@ -1419,14 +1487,21 @@ describe('POST /api/auth/logout — ST-025-AC4 (defensive 401)', () => {
 
     expect(res.status).toBe(401);
     expect(res.body).toEqual({
-      error: { code: 'UNAUTHENTICATED', message: 'Session required' },
+      error: {
+        code: 'INVALID_SESSION',
+        message: 'Session is invalid, expired, or revoked.',
+      },
     });
     expect(sessionService.logout).not.toHaveBeenCalled();
   });
 
-  it('returns 401 UNAUTHENTICATED when req.uid is empty string', async () => {
-    // Empty-string uid is treated as "missing" — the route's check
-    // is `typeof uid !== 'string' || uid.length === 0`.
+  it('returns 401 INVALID_SESSION when verifyToken returns an empty-string uid', async () => {
+    // Defensive — Firebase Admin SDK populates `uid` on every
+    // successful decode, but the strict contract guards against an
+    // unexpected SDK return shape. An empty-string uid is treated
+    // as "verification failed" and surfaces as INVALID_SESSION
+    // (NOT UNAUTHENTICATED), matching the canonical contract for
+    // "your bearer was rejected by the identity provider".
     const app = buildAuthenticatedApp({
       sessionService,
       uid: '',
@@ -1436,14 +1511,16 @@ describe('POST /api/auth/logout — ST-025-AC4 (defensive 401)', () => {
     const res = await request(app).post('/api/auth/logout').send();
 
     expect(res.status).toBe(401);
-    expect(res.body.error.code).toBe('UNAUTHENTICATED');
+    expect(res.body.error.code).toBe('INVALID_SESSION');
     expect(sessionService.logout).not.toHaveBeenCalled();
   });
 
   it('returns 401 UNAUTHENTICATED when Authorization header is missing (AC4)', async () => {
-    // Even with a valid uid, a missing Authorization header surfaces
-    // 401 UNAUTHENTICATED — the route requires the raw token to
-    // forward to the service for revocation lookup.
+    // ST-026-AC1: "Requests without a session token are rejected
+    // with a documented status." The public logout route mirrors the
+    // session middleware: NO Authorization header at all -> 401
+    // UNAUTHENTICATED. The pre-armed verifyToken mock is never
+    // called because the header check short-circuits.
     const app = buildAuthenticatedApp({
       sessionService,
       uid: TEST_UID,
@@ -1455,10 +1532,14 @@ describe('POST /api/auth/logout — ST-025-AC4 (defensive 401)', () => {
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe('UNAUTHENTICATED');
     expect(sessionService.logout).not.toHaveBeenCalled();
+    expect(sessionService.verifyToken).not.toHaveBeenCalled();
   });
 
-  it('returns 401 UNAUTHENTICATED when Authorization header has a non-Bearer scheme', async () => {
+  it('returns 401 MALFORMED_AUTHORIZATION when Authorization header has a non-Bearer scheme', async () => {
     // RFC 6750-compliant rejection: "Basic ..." MUST NOT be accepted.
+    // Post-Fix #2, the route preserves the canonical contract from
+    // the session middleware (lines 404-410 of session.ts):
+    // header present + scheme != Bearer -> MALFORMED_AUTHORIZATION.
     const app = buildAuthenticatedApp({
       sessionService,
       uid: TEST_UID,
@@ -1468,13 +1549,16 @@ describe('POST /api/auth/logout — ST-025-AC4 (defensive 401)', () => {
     const res = await request(app).post('/api/auth/logout').send();
 
     expect(res.status).toBe(401);
-    expect(res.body.error.code).toBe('UNAUTHENTICATED');
+    expect(res.body.error.code).toBe('MALFORMED_AUTHORIZATION');
     expect(sessionService.logout).not.toHaveBeenCalled();
+    expect(sessionService.verifyToken).not.toHaveBeenCalled();
   });
 
-  it('returns 401 UNAUTHENTICATED when Authorization is "Bearer" with no token', async () => {
-    // The regex requires `\s+(\S+)$` — empty token after the prefix
-    // is a non-match and produces 401.
+  it('returns 401 MALFORMED_AUTHORIZATION when Authorization is "Bearer" with no token', async () => {
+    // The regex requires `^bearer\s+(\S+)$` — empty token after the
+    // prefix is a non-match. Post-Fix #2, the route classifies this
+    // as MALFORMED_AUTHORIZATION (header IS present but the scheme
+    // shape is broken) rather than the conflated UNAUTHENTICATED.
     const app = buildAuthenticatedApp({
       sessionService,
       uid: TEST_UID,
@@ -1484,14 +1568,17 @@ describe('POST /api/auth/logout — ST-025-AC4 (defensive 401)', () => {
     const res = await request(app).post('/api/auth/logout').send();
 
     expect(res.status).toBe(401);
-    expect(res.body.error.code).toBe('UNAUTHENTICATED');
+    expect(res.body.error.code).toBe('MALFORMED_AUTHORIZATION');
     expect(sessionService.logout).not.toHaveBeenCalled();
+    expect(sessionService.verifyToken).not.toHaveBeenCalled();
   });
 
-  it('returns 401 UNAUTHENTICATED when the Bearer token is whitespace-only', async () => {
-    // Whitespace is stripped by the regex's `\S+` capture — a
-    // whitespace-only "token" matches `\S+` against zero chars and
-    // fails. This pins the regex's whitespace-rejection invariant.
+  it('returns 401 MALFORMED_AUTHORIZATION when the Bearer token is whitespace-only', async () => {
+    // Whitespace is stripped by .trim() before regex matching, then
+    // the regex's `\S+` capture rejects the empty remainder. This
+    // pins the whitespace-rejection invariant — and per the
+    // post-Fix #2 contract, classifies as MALFORMED_AUTHORIZATION
+    // (the header IS present; the token simply isn't there).
     const app = buildAuthenticatedApp({
       sessionService,
       uid: TEST_UID,
@@ -1501,8 +1588,9 @@ describe('POST /api/auth/logout — ST-025-AC4 (defensive 401)', () => {
     const res = await request(app).post('/api/auth/logout').send();
 
     expect(res.status).toBe(401);
-    expect(res.body.error.code).toBe('UNAUTHENTICATED');
+    expect(res.body.error.code).toBe('MALFORMED_AUTHORIZATION');
     expect(sessionService.logout).not.toHaveBeenCalled();
+    expect(sessionService.verifyToken).not.toHaveBeenCalled();
   });
 });
 

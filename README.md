@@ -155,7 +155,12 @@ indicated.
   ```bash
   cd backend && npx jest --config jest.config.unit.ts --coverage
   ```
-- **Backend integration tests** — runs against the docker-compose stack:
+- **Backend integration tests** — runs against the docker-compose stack.
+  The integration harness's `globalSetup` automatically defaults
+  `GOOGLE_APPLICATION_CREDENTIALS` to the committed synthetic LocalGCP
+  keyfile at `backend/local-dev-sa.json` so v4 signed-URL signing works
+  against fake-gcs-server with zero live GCP credentials (LocalGCP
+  Verification Rule):
   ```bash
   cd backend && npx jest --config jest.config.integration.ts --forceExit
   ```

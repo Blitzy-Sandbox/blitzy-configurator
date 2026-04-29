@@ -792,11 +792,13 @@ export interface OrderService {
    *   concurrent state change (`code: 'ORDER_STATE_CONCURRENT_CHANGE'`).
    *
    * @returns The order in its new `'finalized'` state. The
-   *   returned object's `items` array is empty because the
-   *   repository's `updateOrderState` returns the bare order row
-   *   without re-fetching items (an explicit performance
-   *   contract). Consumers who need the items should call
-   *   {@link OrderService.getById} after finalize.
+   *   returned object's `items` array is populated with the
+   *   order's persisted line items, mirroring the canonical
+   *   `Order` response shape produced by {@link OrderService.create}
+   *   per ST-032-AC2. The repository's `updateOrderState` performs
+   *   a follow-up `SELECT` against `order_items` after the UPDATE
+   *   so consumers can render the order receipt directly off the
+   *   finalize response without an extra `getById` round-trip.
    */
   finalizeOrder(params: FinalizeOrderParams): Promise<Order>;
 
