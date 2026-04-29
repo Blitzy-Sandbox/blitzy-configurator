@@ -107,13 +107,31 @@
 // External imports — Node stdlib + the same packages used by the production
 // backend. Intentionally NO imports from `backend/src/**` (see header).
 // ---------------------------------------------------------------------------
+//
+// NOTE on `@google-cloud/storage` removal (QA Final-K Issue #1 fix):
+//   The previous revision of this file imported `Storage` from
+//   `@google-cloud/storage` solely to call `storage.createBucket(name)` at
+//   step 4. The v7 SDK's `createBucket` issues `POST /b?project=...`
+//   (un-prefixed) regardless of how `apiEndpoint` is configured, but the
+//   fake-gcs-server LocalGCP emulator only serves the prefixed JSON API
+//   path `POST /storage/v1/b?project=...`. The SDK quirk caused a
+//   deterministic 404 at globalSetup, blocking the entire integration
+//   test gate. The empirically-verified fix is to issue the bucket-
+//   creation request directly via Node's native `fetch()` against the
+//   prefixed path. This bypasses the bucket-creation quirk for the
+//   single line of test infrastructure that suffers from it, while
+//   leaving every PRODUCTION code path (`bucket.file().save()`,
+//   `bucket.file().getSignedUrl()`, `bucket.file().download()`) fully
+//   exercised by the SDK as before — those paths use the prefixed
+//   `/upload/storage/v1/...` and `/storage/v1/...` URLs which fake-gcs-
+//   server serves correctly. Rationale recorded in
+//   `docs/decisions/README.md`.
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import migrate from 'node-pg-migrate';
-import { Storage } from '@google-cloud/storage';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -569,6 +587,43 @@ async function applyMigrations(): Promise<void> {
  *   in fake-gcs-server are limited to 63 chars total — `strikeforge-logos-test-`
  *   (23 chars) + UUID (36 chars) = 59 chars, comfortably under the limit.
  *
+ * Why a direct `fetch` call instead of `storage.createBucket()` (QA Final-K Issue #1 fix):
+ *   The `@google-cloud/storage` v7 SDK's `Storage.createBucket()` issues
+ *   `POST /b?project=<PROJECT_ID>` (un-prefixed) regardless of how
+ *   `apiEndpoint` is configured — even setting `apiEndpoint` to
+ *   `http://gcs-emulator:4443/storage/v1` causes the SDK to strip the
+ *   path component and hit the un-prefixed root. The fake-gcs-server
+ *   LocalGCP emulator only serves the prefixed JSON API path
+ *   `POST /storage/v1/b?project=<PROJECT_ID>` for bucket creation. This
+ *   asymmetry between the SDK's bucket-creation path and fake-gcs-server's
+ *   route table caused a deterministic 404 here, blocking the entire
+ *   integration test gate.
+ *
+ *   The SDK's per-OBJECT operations (the production code paths) are
+ *   UNAFFECTED by this quirk — `bucket.file().save()` hits
+ *   `/upload/storage/v1/b/<bucket>/o?...`, `bucket.file().getSignedUrl()`
+ *   signs locally with no SDK HTTP call, and `bucket.file().download()`
+ *   hits `/storage/v1/b/<bucket>/o/<key>?...`. All three are served
+ *   correctly by fake-gcs-server. The asymmetry exists ONLY for the
+ *   bucket-level CRUD endpoints (`createBucket`, `deleteBucket`).
+ *
+ *   The minimal-impact fix: issue the bucket-creation request directly
+ *   via Node 20's native `fetch()` against the prefixed path. This:
+ *     - Bypasses the SDK quirk for the single line of test infrastructure
+ *       that suffers from it, restoring the LocalGCP test gate to
+ *       working order at runtime per the LocalGCP Verification Rule.
+ *     - Leaves every PRODUCTION code path fully exercised by the SDK as
+ *       before — those paths use prefixed URLs which fake-gcs-server
+ *       serves correctly. Test coverage of the production code paths is
+ *       therefore unchanged.
+ *     - Is verified empirically: `curl -X POST
+ *       "http://localhost:4443/storage/v1/b?project=strikeforge-local"
+ *       -d '{"name":"<name>"}'` returns HTTP 200 against the same
+ *       fake-gcs-server image used by `docker-compose.yml` (fsouza/
+ *       fake-gcs-server:latest).
+ *
+ *   Recorded in `docs/decisions/README.md` per the Explainability Rule.
+ *
  * Note on `process.env.GCS_BUCKET_NAME`:
  *   We override the env var here for local convenience, but `globalSetup`
  *   runs in a SEPARATE Node process from the test workers and this mutation
@@ -593,17 +648,71 @@ async function createTestGcsBucket(): Promise<void> {
 
   const testBucketName = `strikeforge-logos-test-${randomUUID()}`;
 
-  const storage = new Storage({ apiEndpoint, projectId });
+  // Strip any trailing slash from `apiEndpoint` so the joined URL never
+  // contains a double slash — fake-gcs-server's router treats `//storage`
+  // and `/storage` as different paths and would 404 on the former.
+  const baseUrl = apiEndpoint.endsWith('/')
+    ? apiEndpoint.slice(0, -1)
+    : apiEndpoint;
+  const createBucketUrl = `${baseUrl}/storage/v1/b?project=${encodeURIComponent(projectId)}`;
+
+  // Issue the bucket-creation request via the native Node 20 fetch
+  // implementation (undici). This is auto-instrumented by
+  // `@opentelemetry/instrumentation-undici` (registered for the test
+  // workers via `register-tracing.ts`); however, globalSetup runs in a
+  // SEPARATE Node process, so this specific HTTP call is NOT traced.
+  // That is acceptable: trace coverage is for production-equivalent code
+  // paths, not for test fixture provisioning.
+  let response: Response;
   try {
-    await storage.createBucket(testBucketName);
+    response = await fetch(createBucketUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: testBucketName }),
+    });
   } catch (err) {
+    // Network-level failure (DNS, ECONNREFUSED, timeout). The fake-gcs-
+    // server container may not be running, or the docker network may
+    // be misconfigured.
     const cause = err instanceof Error ? err.message : String(err);
     throw new Error(
-      `[global-setup] Failed to create test GCS bucket "${testBucketName}" ` +
-        `at ${apiEndpoint}: ${cause}. ` +
+      `[global-setup] Failed to reach fake-gcs-server at ${createBucketUrl} ` +
+        `while creating test bucket "${testBucketName}": ${cause}. ` +
         'Verify the gcs-emulator (fake-gcs-server) service is running ' +
         '(see `docker compose ps`).',
     );
+  }
+
+  if (!response.ok) {
+    // Read the error body so the failure message is actionable. Wrap in
+    // try/catch because the body may not be valid text (e.g., a stream
+    // already consumed or non-textual encoding).
+    let body = '';
+    try {
+      body = await response.text();
+    } catch {
+      // Best-effort body extraction; ignore and fall through to the
+      // status-code-only message.
+    }
+    throw new Error(
+      `[global-setup] Failed to create test GCS bucket "${testBucketName}" ` +
+        `at ${createBucketUrl}: HTTP ${response.status} ${response.statusText}` +
+        (body ? ` — ${body.slice(0, 500)}` : '') +
+        '. Verify the gcs-emulator (fake-gcs-server) service is running ' +
+        '(see `docker compose ps`).',
+    );
+  }
+
+  // Drain the response body even on success to free the underlying
+  // socket — undici's connection pool requires the body to be consumed
+  // before the connection can be reused. We don't actually need the
+  // payload contents (a JSON Bucket resource representation): a
+  // successful 200 OK is sufficient to confirm bucket creation, and the
+  // bucket name is the value WE supplied, not one the server invented.
+  try {
+    await response.text();
+  } catch {
+    // Body already consumed or stream closed — harmless here.
   }
 
   // Persist for fixtures + teardown to discover. The JSON envelope leaves

@@ -33,10 +33,13 @@
  *      getUploadUrl — assert v4-specific X-Goog-* query parameters are
  *      present and the X-Goog-Expires=900 (15 minutes) query parameter
  *      is exactly that integer.
- *   2. Static: grep over backend/src/**\/*.ts (excluding *.test.ts) to
- *      assert `version: 'v4'` appears within 11 lines of every
- *      getSignedUrl occurrence — catches the one failure mode Rule R5
- *      is designed to prevent.
+ *   2. Static: a portable grep-equivalent walk over backend/src/**\/*.ts
+ *      (excluding *.test.ts) — implemented in pure Node 20 stdlib so
+ *      the test runs identically on Alpine BusyBox and GNU userland —
+ *      asserts that `version: 'v4'` appears within 11 lines of every
+ *      getSignedUrl occurrence, catching the one failure mode Rule R5
+ *      is designed to prevent. See `collectGetSignedUrlMatches` for
+ *      the BusyBox-portability rationale.
  *   3. Expiration math: returned `expiresAt` is approximately
  *      READ_URL_TTL_MS / UPLOAD_URL_TTL_MS in the future (within the
  *      configured TIMING_SLACK_MS tolerance).
@@ -51,6 +54,7 @@
 
 import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -59,6 +63,123 @@ import {
   UPLOAD_URL_TTL_MS,
 } from '../../../src/services/gcs.service';
 import { createTestObject, deleteTestObject } from '../fixtures/gcs-bucket';
+
+// ---------------------------------------------------------------------------
+// Module-Level Helpers (Static-Analysis Surface)
+// ---------------------------------------------------------------------------
+
+/**
+ * Recursively walks the given root directory and returns grep-style output
+ * (one line per match) of every line in any `.ts` file (excluding
+ * `.test.ts`) that contains the literal substring `getSignedUrl`.
+ *
+ * Output shape — exactly matches GNU `grep -n` so the existing parser in
+ * the static-analysis test (which splits on the first two colons) works
+ * unchanged:
+ *
+ *   `<absolutePath>:<lineNumber>:<lineContent>\n`
+ *
+ * Why a pure-Node.js implementation instead of `execSync('grep ...')`:
+ *
+ * The backend test container is built on `node:20-alpine` (per
+ * `backend/Dockerfile`), which ships BusyBox `grep`. BusyBox `grep` is
+ * an explicit, documented subset of GNU `grep` and **does not support**
+ * the `--include` / `--exclude` long options that the previous
+ * implementation relied on. Invoking `grep -rn --include="*.ts"
+ * --exclude="*.test.ts" "getSignedUrl" ${srcDir}` inside the container
+ * therefore exits with `grep: unrecognized option: include=*.ts` and
+ * BusyBox prints a usage banner — failing this static-analysis test
+ * even when `gcs.service.ts` is fully Rule-R5-compliant. Rule R8
+ * (gates fail closed) means that BusyBox-induced tooling failure
+ * cannot be tolerated as a silent pass; the only correct fix is to
+ * remove the dependency on a non-portable shell flag.
+ *
+ * This helper performs the same filtering deterministically using only
+ * Node 20 stdlib primitives (`readdirSync`, `readFileSync`), making the
+ * test portable across Alpine BusyBox, Debian/Ubuntu GNU userland, and
+ * macOS (BSD) grep — all of which differ in their `--include` / `-n`
+ * flag semantics. The walk uses `withFileTypes: true` so directory
+ * entries are classified by their `dirent.isDirectory()` /
+ * `dirent.isFile()` predicate without an extra `stat()` call (which
+ * would also dereference symlinks — undesirable inside a CI sandbox).
+ *
+ * Filtering rules — kept identical to the previous shell-out so the
+ * downstream test logic and assertions remain unchanged:
+ *   - INCLUDE: any regular file whose name ends in `.ts`.
+ *   - EXCLUDE: any file whose name ends in `.test.ts` (these are
+ *     co-located unit tests under `backend/src/**` whose mock setups
+ *     can legitimately mention `getSignedUrl` without invoking it; per
+ *     Rule R5 / C1 the verification surface is production code only).
+ *   - SYMLINKS: not followed (`isDirectory()` / `isFile()` do not
+ *     traverse symbolic links, matching `grep -r` default behavior).
+ *
+ * @param rootDir Absolute path to the directory under which TypeScript
+ *                source files are scanned (typically `backend/src`).
+ * @returns A newline-terminated string in `grep -n` format. The empty
+ *          string is returned when no matches exist; the caller MUST
+ *          fail the test in that case (Rule R8 fail-closed: a missing
+ *          call site means `gcs.service.ts` lost its v4 surface, which
+ *          is itself a regression).
+ */
+function collectGetSignedUrlMatches(rootDir: string): string {
+  const matches: string[] = [];
+
+  /**
+   * Inner recursive walker. Implemented as a const-arrow rather than a
+   * function declaration so that the TypeScript compiler treats the
+   * `matches` capture as a closed-over binding (no `this` rebinding
+   * surprises) and the closure remains a single contiguous unit for
+   * the v8 inliner.
+   */
+  const walk = (dir: string): void => {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+
+      if (entry.isDirectory()) {
+        walk(entryPath);
+        continue;
+      }
+
+      // Defensive guard against device files, FIFOs, sockets, and
+      // unresolved symlinks. Only regular files participate in the
+      // grep surface — matches the GNU `grep -r` default of skipping
+      // non-regular files.
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      // Filter: include `*.ts`, exclude `*.test.ts`. Order matters —
+      // `.test.ts` is a strict suffix of `.ts`, so we check the
+      // exclusion second to short-circuit only files that pass the
+      // inclusion gate.
+      if (!entry.name.endsWith('.ts') || entry.name.endsWith('.test.ts')) {
+        continue;
+      }
+
+      const content = readFileSync(entryPath, 'utf-8');
+      // Splitting on `\n` yields one entry per line including the
+      // trailing empty string after a final newline. We do NOT strip
+      // that trailing entry here; the downstream `lines.length > 0`
+      // filter in the test handles empty lines explicitly. Line
+      // numbers are 1-indexed to match grep's `-n` convention.
+      const fileLines = content.split('\n');
+      for (let idx = 0; idx < fileLines.length; idx += 1) {
+        if (fileLines[idx].includes('getSignedUrl')) {
+          matches.push(`${entryPath}:${idx + 1}:${fileLines[idx]}`);
+        }
+      }
+    }
+  };
+
+  walk(rootDir);
+
+  // GNU `grep -n` always terminates each match line with `\n`; preserve
+  // that contract by appending `\n` after the join when there is at
+  // least one match. The empty-output case returns an empty string,
+  // which the caller treats as "no matches" (Rule R8 fail-closed).
+  return matches.length > 0 ? `${matches.join('\n')}\n` : '';
+}
 
 // ---------------------------------------------------------------------------
 // Module-Level Constants
@@ -344,37 +465,47 @@ describe('GCS v4 signed URL contract (Rule R5 / C1)', () => {
       // `__dirname` is fixed at the file's compile location.
       const srcDir = path.resolve(__dirname, '../../../src');
 
-      let output = '';
-      try {
-        // `--include="*.ts"` restricts to TypeScript source files.
-        // `--exclude="*.test.ts"` skips co-located unit-test files
-        // under backend/src/services/*.test.ts where mock setups
-        // legitimately mention `getSignedUrl` without a real call site.
-        output = execSync(
-          `grep -rn --include="*.ts" --exclude="*.test.ts" "getSignedUrl" ${srcDir}`,
-          { encoding: 'utf-8', maxBuffer: 1024 * 1024 },
+      // Collect grep-style match output via the pure-Node.js helper
+      // `collectGetSignedUrlMatches` (defined at module scope above).
+      // The helper restricts the scan to `*.ts` files and excludes
+      // `*.test.ts` co-located unit-test files under
+      // `backend/src/services/*.test.ts` (whose mock setups can
+      // legitimately mention `getSignedUrl` without invoking it).
+      //
+      // We deliberately do NOT shell out to `grep` here. The backend
+      // test container runs Alpine `node:20-alpine` (see
+      // `backend/Dockerfile`), which ships BusyBox `grep` — a
+      // documented strict subset of GNU `grep` that does NOT support
+      // the `--include` / `--exclude` long options. A previous
+      // implementation invoked
+      // `grep -rn --include="*.ts" --exclude="*.test.ts" "getSignedUrl"`
+      // and failed at runtime with
+      // `grep: unrecognized option: include=*.ts` (BusyBox usage
+      // banner). Per Rule R8 (fail-closed) such tooling failures
+      // cannot be tolerated, so the static-analysis surface is now
+      // implemented in portable Node 20 stdlib primitives. See the
+      // header docstring on `collectGetSignedUrlMatches` for the full
+      // rationale.
+      const output = collectGetSignedUrlMatches(srcDir);
+
+      // The helper returns the empty string when there are zero
+      // matches in `backend/src`. Rule R8 (fail-closed): a "no
+      // matches" verdict is itself a failure because gcs.service.ts
+      // MUST contain at least one v4 call site (this is its sole
+      // architectural responsibility per AAP §0.6.4).
+      if (output === '') {
+        throw new Error(
+          'No getSignedUrl call sites found in backend/src — gcs.service.ts ' +
+            'must contain at least one v4 call site. The Rule R5 / C1 ' +
+            'verification surface depends on the production code ' +
+            'invoking bucket.file(name).getSignedUrl({ version: "v4", ... }).',
         );
-      } catch (err) {
-        // grep exits with status 1 when there are no matches — distinct
-        // from a real error (status 2) like an inaccessible file. We
-        // distinguish here per Rule R8 (fail-closed): a "no matches"
-        // verdict is itself a failure because gcs.service.ts MUST
-        // contain at least one v4 call site (this is its sole
-        // architectural responsibility).
-        const status = (err as NodeJS.ErrnoException & { status?: number }).status;
-        if (status === 1) {
-          throw new Error(
-            'No getSignedUrl call sites found in backend/src — gcs.service.ts ' +
-              'must contain at least one v4 call site. The Rule R5 / C1 ' +
-              'verification surface depends on the production code ' +
-              'invoking bucket.file(name).getSignedUrl({ version: "v4", ... }).',
-          );
-        }
-        throw err;
       }
 
-      // grep emits one line per match. Empty trailing lines are
-      // discarded so the loop iterates over real matches only.
+      // The helper emits one line per match (matching GNU `grep -n`
+      // behavior), terminated by `\n`. Empty trailing lines after
+      // splitting are discarded so the loop iterates over real
+      // matches only.
       const lines = output.split('\n').filter((line) => line.length > 0);
       expect(lines.length).toBeGreaterThan(0);
 
