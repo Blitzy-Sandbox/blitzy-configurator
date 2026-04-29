@@ -23,7 +23,12 @@ not be substituted.
 - **`gcloud` CLI** (latest stable) — optional for local-only development;
   required for Cloud Build, Cloud Deploy, and Cloud Run interactions.
 - **`jq`** — required by several verification gate commands (e.g.,
-  `docker compose ps --format json | jq -r '.[].State' | sort | uniq`).
+  `docker compose ps --format json | jq -r '.State' | sort | uniq`).
+  Note: Docker Compose v2.x+ emits NDJSON (one JSON object per line,
+  not a JSON array), so jq filters operate per-line via `.State`. An
+  array-iteration filter (`.[].State`) raises a "Cannot index string
+  with string" error against NDJSON input and is therefore incorrect
+  for any current Compose release.
 
 ## Repository Layout
 
@@ -110,10 +115,17 @@ This brings up four services: `backend`, `postgres` (15-alpine),
 ### 5. Verify all services reached running state (Gate A)
 
 ```bash
-docker compose ps --format json | jq -r '.[].State' | sort | uniq
+docker compose ps --format json | jq -r '.State' | sort | uniq
 ```
 
 Expected output: `running`. This is **Phase A Gate A** per AAP §0.6.2.
+
+Note: Docker Compose v2.x+ emits NDJSON — one JSON object per line,
+not a JSON array — so the jq filter `.State` extracts the state field
+from each line independently. An array-iteration filter (`.[].State`)
+will fail with `Cannot index string with string "State"` against
+NDJSON input and may exit 0 anyway because `sort | uniq` succeed on
+empty input, masking the failure.
 
 ### 6. Apply database migrations
 
@@ -249,6 +261,16 @@ must read these before opening a pull request.
 - **Rule R6** — `backend/src/tracing.ts` MUST be the first import in
   `backend/src/index.ts` so that OpenTelemetry auto-instrumentation registers
   before any `pg`, `http`, or `express` module is loaded.
+- **Rule R7** — `fabricCanvas.renderAll()` MUST resolve before
+  `threeTexture.needsUpdate = true` is set in
+  `frontend/src/configurator/texture/`. Reversing this order produces a
+  one-frame stale texture visible as flicker in visual-regression
+  baselines.
+- **Rule R8** — CI gates (lint, type-check, unit, integration, build,
+  deploy) fail closed. Any infrastructure or tooling error MUST produce a
+  failed verdict — never a silent pass. Enforced in
+  [`cloudbuild.yaml`](cloudbuild.yaml) via explicit `waitFor` chains and
+  non-zero exit propagation.
 - **Rule R9** — Payment processing is explicitly excluded; no payment
   processor integration, charge authorization, tokenization, or refund logic
   may appear in `backend/src`.
