@@ -230,21 +230,33 @@ function formatFinish(finish: MaterialFinish): string {
  *     This exact text matches the test contract
  *     (`summary-sidebar.spec.ts` test 4: `toHaveText('None')`).
  *
- *   - When a logo is placed, returns a placement summary including the scale
- *     as a percentage and the position to two decimals — satisfies AC1's
- *     "human-readable form" requirement so users see exactly where the logo
- *     sits without opening the editor.
+ *   - When a logo is placed, returns the single word "Uploaded". This is the
+ *     canonical contract documented in `logo-upload.spec.ts` lines 45/59/105/616
+ *     ("Logo value reads 'None' / 'Uploaded' (no scale percentage)") and is
+ *     asserted via `expect.poll().toBe('Uploaded')` after a successful
+ *     upload (ST-014-AC4 surface text).
  *
- * Note on field names: the configurator store's `LogoPosition` interface
- * declares `x` and `y` fields (see `../../state/configuratorStore.ts` line ~63),
- * so this helper reads `position.x` / `position.y` accordingly.
+ *   - The fine-grained placement details (scale percentage, x/y coordinates)
+ *     remain visible in the LogoPositioner controls themselves; the summary
+ *     row stays terse so the row can fit on a 320 px viewport without text
+ *     wrapping. This satisfies ST-022-AC1 ("human-readable form") and
+ *     ST-022-AC4 (legible at the documented minimum viewport width).
+ *
+ * The `_scale` and `_position` parameters are retained (with leading-
+ * underscore names per the local ESLint convention for intentionally
+ * unused arguments) so that the call site in the component body need not
+ * change shape — this keeps the React render path stable across this
+ * formatting policy adjustment.
  */
-function formatLogoState(logoFile: unknown, scale: number, position: { x: number; y: number }): string {
+function formatLogoState(
+  logoFile: unknown,
+  _scale: number,
+  _position: { x: number; y: number },
+): string {
   if (logoFile === null) {
     return 'None';
   }
-  const scalePercent = Math.round(scale * 100);
-  return `Logo placed (${scalePercent}% scale, x=${position.x.toFixed(2)}, y=${position.y.toFixed(2)})`;
+  return 'Uploaded';
 }
 
 // ============================================================================
@@ -625,10 +637,7 @@ export function DesignSummarySidebar(): JSX.Element {
               gap: '0.5rem',
             }}
           >
-            <span
-              aria-hidden="true"
-              style={{ ...swatchBaseStyle, backgroundColor: accentColor }}
-            />
+            <span aria-hidden="true" style={{ ...swatchBaseStyle, backgroundColor: accentColor }} />
             <span
               data-testid="summary-value-accent"
               style={{
@@ -877,7 +886,6 @@ export function DesignSummarySidebar(): JSX.Element {
             </button>
           </div>
         )}
-
       </div>
     </section>
   );

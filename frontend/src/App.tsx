@@ -403,15 +403,41 @@ function ControlSidebar(): JSX.Element {
  *
  * The wrapping `<aside>` declares `class="app-shell-summary"` so it
  * lands in the CSS-Grid `summary` area defined by `global.css`.
- * `aria-label="Design summary and primary actions"` makes the entire
- * region (summary + CTA) discoverable as a single landmark for
- * assistive technology.
+ *
+ * Rationale (Rule R1 / ST-022-AC1 + WAI-ARIA best practices):
+ *   - The INNER `<DesignSummarySidebar>` already exposes a single
+ *     `<section aria-label="Design summary">` landmark that assistive
+ *     technology uses to locate the summary panel. The OUTER `<aside>`
+ *     is intentionally LEFT UNNAMED (no `aria-label`, no
+ *     `aria-labelledby`) — an aside without an accessible name has the
+ *     implicit `complementary` role but is NOT exposed as a named
+ *     landmark by `getByRole('complementary', { name: /.../ })`
+ *     locators. This eliminates the strict-mode locator collision that
+ *     occurred when the outer aside carried `aria-label="Design summary
+ *     and primary actions"` and the inner section carried
+ *     `aria-label="Design summary"`: both names matched the
+ *     `/design summary|current design summary/i` regex used by tests
+ *     such as `summary-sidebar.spec.ts`, causing
+ *     `.or().or()`-chained locators to resolve to two elements and
+ *     trip Playwright's strict-mode assertion.
+ *   - Keeping the wrapper as `<aside>` (rather than switching to
+ *     `<div>`) preserves the visual rendering and pixel-level
+ *     baselines under `frontend/visual-baselines/` per ST-046-AC4 —
+ *     `aside` and `div` both default to `display: block`, but the tag
+ *     name itself participates in CSS specificity and user-agent
+ *     stylesheet resolution in subtle ways that perturbed snapshot
+ *     hashes. The `<aside>` choice is consistent with the surrounding
+ *     `<section role="complementary">`-style pattern used elsewhere
+ *     in the configurator UI.
+ *
+ * The `data-testid="summary-sidebar"` is preserved so existing
+ * Playwright specs that locate the wrapper directly (rather than the
+ * inner panel) keep working.
  */
 function SummarySidebar(): JSX.Element {
   return (
     <aside
       className="app-shell-summary"
-      aria-label="Design summary and primary actions"
       data-testid="summary-sidebar"
       style={{
         display: 'flex',
