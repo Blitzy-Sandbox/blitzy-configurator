@@ -193,12 +193,15 @@ import { randomUUID } from 'node:crypto';
 //
 // FIREBASE_API_KEY is the literal token the emulator accepts as a
 // query parameter. The emulator does NOT validate API keys against
-// any allowlist — the value is opaque. We use `'fake-api-key'` to
-// match the placeholder used in the SPA's bootstrap config so the
-// localStorage persistence key (which embeds the apiKey) lines up
-// with whatever the SPA's own SDK initialization writes.
+// any allowlist — the value is opaque. CRITICAL: this MUST match
+// the SPA's own apiKey (`VITE_FIREBASE_API_KEY`, currently
+// `'local-emulator-key'` per `frontend/.env`) so the localStorage
+// persistence key the test writes
+// (`firebase:authUser:${apiKey}:[DEFAULT]`) lines up with the key
+// the SPA's Firebase JS SDK reads on page boot. See QA Final D
+// Issue #10.
 const FIREBASE_AUTH_EMULATOR_HOST = 'http://localhost:9099';
-const FIREBASE_API_KEY = 'fake-api-key';
+const FIREBASE_API_KEY = 'local-emulator-key';
 const BACKEND_BASE_URL = 'http://localhost:3000';
 
 // ---------------------------------------------------------------------------
@@ -281,120 +284,85 @@ async function registerEmulatorUser(request: APIRequestContext): Promise<Emulato
 }
 
 // ---------------------------------------------------------------------------
-// Helper — injectAuthState(page, user)
+// Helper — signInViaTestHook(page, user)
 // ---------------------------------------------------------------------------
 //
-// Seeds the Firebase JS SDK's persisted localStorage key BEFORE any
-// page script runs, so the SPA's `onAuthStateChanged()` observer
-// resolves to the seeded user immediately at boot. This avoids
-// hitting any real or emulated Firebase Auth REST endpoint via the
-// SPA's own sign-in flow.
+// Performs a real Firebase sign-in inside the running SPA via the
+// test-only `window.__strikeforge_test_auth__` hook installed by
+// `frontend/src/auth/firebase-client.ts`. The hook is gated by
+// `import.meta.env.DEV` so it is tree-shaken from production
+// builds.
 //
-// The shape written to localStorage matches the v10 Firebase JS SDK's
-// authUser persistence schema — every required field is present so
-// that Firebase's persistence-rehydrate path accepts the entry.
+// Why this approach rather than seeding localStorage:
 //
-// `addInitScript` ensures the localStorage write happens before any
-// SPA script — the Firebase JS SDK reads persistence synchronously
-// during initialization, so the seed must be present at module
-// evaluation time.
+//   - Firebase v10's default browser persistence is
+//     `indexedDBLocalPersistence`. A localStorage-seeded synthetic
+//     persistedUser record can be ignored by the SDK on rehydrate
+//     unless every internal validity check passes (apiKey match,
+//     stsTokenManager.expirationTime in the future, schema parity
+//     with the SDK's internal type). In practice, those checks
+//     diverge across SDK minor versions and the seed silently
+//     fails — the SPA boots anonymously.
+//   - The test hook calls the SAME `signInWithEmailAndPassword`
+//     code path the production sign-in UI uses. The SDK fires
+//     `onAuthStateChanged` listeners synchronously, React re-
+//     renders with `isAuthenticated = true`, and persistence is
+//     written by the SDK itself (no schema-mismatch risk).
 //
-// Per Rule R3, this function does NOT import `firebase-admin`, does
-// NOT mint a real JWT, and does NOT verify any token. It writes a
-// synthetic persistence record only.
-async function injectAuthState(page: Page, user: EmulatorUser): Promise<void> {
-  await page.addInitScript(
-    (args: {
-      uid: string;
-      email: string;
-      idToken: string;
-      refreshToken: string;
-      apiKey: string;
-    }) => {
-      // The persistence key format is documented in firebase-js-sdk
-      // source as `firebase:authUser:${apiKey}:${appName}`. The SPA
-      // uses the default app name `[DEFAULT]`. The apiKey embedded in
-      // the key is the SDK's *runtime* apiKey at initialization time
-      // — if the SPA's runtime apiKey diverges from the one we wrote
-      // here, the SDK simply ignores our seeded entry and proceeds
-      // anonymously. Because we register and use the user via the
-      // emulator's REST surface (which does not validate apiKeys),
-      // the test still functions — but the SPA's auth-driven UI
-      // states (e.g., "Save Design" enabled when authenticated) may
-      // not flip to authenticated. This is mitigated by ALSO using
-      // the idToken directly in API requests via the `request`
-      // fixture for any contract that the UI does not cover.
-      const persistKey = `firebase:authUser:${args.apiKey}:[DEFAULT]`;
-      const now = Date.now();
-      const persistedUser = {
-        uid: args.uid,
-        email: args.email,
-        emailVerified: false,
-        isAnonymous: false,
-        providerData: [
-          {
-            providerId: 'password',
-            uid: args.email,
-            displayName: null,
-            email: args.email,
-            phoneNumber: null,
-            photoURL: null,
-          },
-        ],
-        stsTokenManager: {
-          refreshToken: args.refreshToken,
-          accessToken: args.idToken,
-          // Tokens issued by the emulator are nominally valid for
-          // ~1 hour. We mirror that lifetime here so the SDK does
-          // not immediately attempt a refresh on first read.
-          expirationTime: now + 60 * 60 * 1000,
-        },
-        createdAt: String(now),
-        lastLoginAt: String(now),
-        apiKey: args.apiKey,
-        appName: '[DEFAULT]',
-      };
-      window.localStorage.setItem(persistKey, JSON.stringify(persistedUser));
-    },
-    {
-      uid: user.uid,
-      email: user.email,
-      idToken: user.idToken,
-      refreshToken: user.refreshToken,
-      apiKey: FIREBASE_API_KEY,
-    },
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Helper — waitForConfiguratorReady(page)
-// ---------------------------------------------------------------------------
+// Per Rule R3, this helper does NOT import `firebase-admin`, does
+// NOT mint or decode JWTs, and does NOT call `verifyIdToken()`. It
+// invokes only the public Firebase JS SDK surface via the hook.
+// Per Rule R2, this helper does NOT log credentials.
 //
-// Drives the SPA from initial navigation to the "configurator
-// interactive" state:
+// Sequence:
+//   1. Navigate to `/` so the Vite-served SPA initializes Firebase
+//      Auth and attaches the test hook.
+//   2. Wait for `networkidle` so the initial bundle has loaded.
+//   3. Wait until `window.__strikeforge_test_auth__` is defined
+//      (synchronous attachment after `initializeFirebaseClient()`
+//      returns).
+//   4. Call the hook's `signIn(email, password)` — this is a real
+//      Identity Toolkit `accounts:signInWithPassword` call against
+//      the Firebase Auth Emulator.
+//   5. Verify `getCurrentUser()` returns the signed-in user (uid
+//      match) — fail fast with a clear diagnostic if not.
+//   6. Wait for the configurator `<canvas>` to attach (15s timeout
+//      covers software-WebGL warmup on CI runners) and park the
+//      mouse so idle auto-rotation does not fire during tests.
 //
-//   1. Navigate to `/` (Vite serves the SPA at baseURL).
-//   2. Wait for `networkidle` so the initial bundle, the Firebase
-//      SDK's persistence rehydrate, and any startup `/api/*` prefetch
-//      have all settled.
-//   3. Wait for a `<canvas>` element to attach — this is the R3F
-//      `<Canvas>` mount signal. Until the canvas attaches, the
-//      configurator's controls sidebar may not be fully hydrated and
-//      subsequent interactions can race against React StrictMode's
-//      double-mount path.
-//   4. Park the mouse over the controls sidebar (x=50, y=300) so the
-//      idle auto-rotation timer in `useIdleAutoRotate.ts` does NOT
-//      fire during the test (it only triggers after the canvas has
-//      been mouse-still for the documented idle interval).
-//   5. Final `networkidle` to confirm any post-mount hydration work
-//      has resolved before the test starts interacting.
-//
-// 15-second timeout for the canvas-attach wait covers software-WebGL
-// warmup on CI runners (SwiftShader / llvmpipe), where R3F's initial
-// mount is approximately 5× slower than on real GPU hardware.
-async function waitForConfiguratorReady(page: Page): Promise<void> {
+// After this helper returns, the page is at `/`, the user is
+// signed in, the configurator is interactive, and subsequent
+// `page.reload()` calls preserve auth state via Firebase
+// persistence.
+async function signInViaTestHook(page: Page, user: EmulatorUser): Promise<void> {
   await page.goto('/');
   await page.waitForLoadState('networkidle');
+
+  await page.waitForFunction(() => typeof window.__strikeforge_test_auth__ !== 'undefined', {
+    timeout: 10_000,
+  });
+
+  await page.evaluate(
+    async (args: { email: string; password: string }) => {
+      await window.__strikeforge_test_auth__!.signIn(args.email, args.password);
+    },
+    { email: user.email, password: user.password },
+  );
+
+  await page.waitForLoadState('networkidle');
+
+  const signedInUid = await page.evaluate(() => {
+    const current = window.__strikeforge_test_auth__!.getCurrentUser();
+    return current === null ? null : current.uid;
+  });
+  if (signedInUid !== user.uid) {
+    throw new Error(
+      `signInViaTestHook: expected currentUser.uid=${user.uid} after signIn but observed ${String(
+        signedInUid,
+      )}`,
+    );
+  }
+
   await page.locator('canvas').first().waitFor({ state: 'attached', timeout: 15_000 });
   await page.mouse.move(50, 300);
   await page.waitForLoadState('networkidle');
@@ -411,7 +379,7 @@ async function waitForConfiguratorReady(page: Page): Promise<void> {
 // readability in test reports.
 
 test.describe('Critical path: full happy flow', () => {
-  test('register -> save -> share -> cart -> order -> finalize', async ({ page, request }) => {
+  test('ST-045-AC1: register -> save -> share -> cart -> order -> finalize', async ({ page, request }) => {
     // ===================================================================
     // Stage 1: REGISTER
     // -------------------------------------------------------------------
@@ -428,12 +396,8 @@ test.describe('Critical path: full happy flow', () => {
     });
     expect(user.idToken).toBeTruthy();
 
-    // Inject the persistence record BEFORE any page script runs so the
-    // SPA boots into the authenticated state.
-    await injectAuthState(page, user);
-
     // ===================================================================
-    // Stage 2: LOAD CONFIGURATOR
+    // Stage 2: LOAD CONFIGURATOR + SIGN IN
     // -------------------------------------------------------------------
     // Begin buffering console.error messages emitted by the SPA. The
     // final assertion verifies this buffer is empty — a regression in
@@ -443,6 +407,11 @@ test.describe('Critical path: full happy flow', () => {
     // `page.on('console', ...)` is the page event-listener API — it
     // is NOT a `console.log` call. The browser-side console.* output
     // is observed; nothing is emitted from the test file's own scope.
+    //
+    // The listener MUST be installed before `signInViaTestHook` —
+    // that helper performs the initial `page.goto('/')` and any
+    // console.error emitted during the SPA's initial mount must be
+    // captured.
     // ===================================================================
     const consoleErrors: string[] = [];
     page.on('console', (msg) => {
@@ -451,7 +420,15 @@ test.describe('Critical path: full happy flow', () => {
       }
     });
 
-    await waitForConfiguratorReady(page);
+    // Sign in via the test hook. This call:
+    //   - Navigates to `/` (Vite serves the SPA at baseURL).
+    //   - Calls the SPA's own `signInWithEmailAndPassword` via the
+    //     test hook, so React's `isAuthenticated` flips to true and
+    //     Firebase persistence is written by the SDK itself.
+    //   - Waits for the configurator canvas to attach (15s timeout
+    //     covers software-WebGL warmup on CI runners).
+    //   - Parks the mouse so idle auto-rotation does not fire.
+    await signInViaTestHook(page, user);
     test.info().annotations.push({
       type: 'stage-2',
       description: 'configurator canvas attached',
@@ -512,11 +489,24 @@ test.describe('Critical path: full happy flow', () => {
     // catches implementations that use a custom button shape without
     // a clean accessible name.
     // ===================================================================
-    const saveCta = page
-      .getByRole('button', { name: /^save( design)?$/i })
-      .or(page.getByTestId('save-design-cta'))
+    // The Save Design CTA in the sidebar uses a TWO-STEP flow per
+    // `frontend/src/features/design-management/SaveDesignCta.tsx`:
+    //   1. Click outer Save Design button (data-testid
+    //      `save-design-button`) — opens inline title form.
+    //   2. Click inner Save submit (data-testid
+    //      `save-design-submit`) — fires POST /api/designs.
+    const saveTrigger = page
+      .getByTestId('save-design-button')
+      .or(page.getByRole('button', { name: /^save design$/i }))
       .first();
-    await saveCta.waitFor({ state: 'visible', timeout: 10_000 });
+    await saveTrigger.waitFor({ state: 'visible', timeout: 10_000 });
+    await saveTrigger.click();
+
+    const saveSubmit = page
+      .getByTestId('save-design-submit')
+      .or(page.getByRole('button', { name: /^save$/i }))
+      .first();
+    await saveSubmit.waitFor({ state: 'visible', timeout: 10_000 });
 
     // We start `waitForResponse` BEFORE clicking — Playwright
     // requires the listener to be active when the response arrives,
@@ -527,7 +517,7 @@ test.describe('Critical path: full happy flow', () => {
       (response) => response.url().includes('/api/designs') && response.request().method() === 'POST',
       { timeout: 10_000 },
     );
-    await saveCta.click();
+    await saveSubmit.click();
     const saveResponse = await savePromise;
 
     // Two-step status assertion: first the lower bound (≥200), then

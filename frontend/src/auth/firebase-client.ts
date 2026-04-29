@@ -62,11 +62,13 @@
 import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
 import {
   getAuth,
+  initializeAuth,
   connectAuthEmulator,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut,
   onAuthStateChanged as firebaseOnAuthStateChanged,
+  browserLocalPersistence,
   type Auth,
   type User,
   type UserCredential,
@@ -84,6 +86,60 @@ import {
 // ---------------------------------------------------------------------------
 let firebaseApp: FirebaseApp | null = null;
 let firebaseAuth: Auth | null = null;
+
+// ---------------------------------------------------------------------------
+// Window global augmentation for test-only auth control.
+//
+// Declares `window.__strikeforge_test_auth__` so TypeScript recognizes the
+// property in calling code (Playwright tests under `frontend/tests/e2e/`
+// and `frontend/tests/visual/`). The property is optional (`?:`) because
+// it only exists in DEV builds — the entire attach block in
+// `initializeFirebaseClient()` is gated by `import.meta.env.DEV` and
+// statically removed from production bundles by Vite's tree shaker.
+//
+// Why this is the correct pattern instead of localStorage seeding:
+//   - localStorage seeding requires the seeded persistedUser record to
+//     match Firebase v10's exact internal schema. Schema changes
+//     between SDK versions break the seeding.
+//   - localStorage seeding bypasses the emulator's signIn flow, leaving
+//     the SDK's internal session state desynchronized from the seeded
+//     localStorage record.
+//   - A real signIn via this hook produces a fully-valid User instance
+//     with a fresh idToken, refreshToken, and stsTokenManager — exactly
+//     what the rest of the SDK and the SPA expect.
+//
+// Rule R3 — the hook NEVER decodes or verifies tokens. It only exposes
+// the SDK's existing observable state.
+// Rule R2 — the hook NEVER logs credentials. The methods are thin
+// wrappers around existing exported functions.
+// ---------------------------------------------------------------------------
+declare global {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+  interface Window {
+    /**
+     * Test-only auth control hook. Attached only in DEV builds to allow
+     * Playwright E2E tests to perform a real sign-in from the browser
+     * context — the same code path that an interactive sign-in UI would
+     * exercise — via:
+     *
+     *     await page.evaluate(
+     *       ({ email, password }) =>
+     *         window.__strikeforge_test_auth__!.signIn(email, password),
+     *       { email, password },
+     *     );
+     *
+     * Undefined in production builds. Tests that depend on this hook
+     * MUST run against a `vite dev` build (Playwright's webServer
+     * configuration in `playwright.config.ts`).
+     */
+    __strikeforge_test_auth__?: {
+      getCurrentUser(): User | null;
+      signIn(email: string, password: string): Promise<UserCredential>;
+      signOut(): Promise<void>;
+      getIdToken(): Promise<string | null>;
+    };
+  }
+}
 
 // `connectAuthEmulator` throws if invoked after the Auth instance has already
 // issued a request (e.g., during a duplicate dev-mode init triggered by HMR or
@@ -215,7 +271,69 @@ export function initializeFirebaseClient(): void {
     firebaseApp = initializeApp(firebaseConfig);
   }
 
-  firebaseAuth = getAuth(firebaseApp);
+  // ----- Initialize Auth with localStorage persistence pinned at init. ---
+  // Firebase JS SDK v10's default browser persistence is
+  // `indexedDBLocalPersistence` (with a localStorage fallback only when
+  // IndexedDB is unavailable). Persistence drives WHERE the SDK reads
+  // and writes the signed-in user record under the key
+  // `firebase:authUser:${apiKey}:[DEFAULT]`.
+  //
+  // We pin the persistence backend explicitly to `browserLocalPersistence`
+  // (localStorage) at INITIALIZATION TIME (not via a post-init
+  // `setPersistence` call) for the following reasons:
+  //
+  //   1. Test infrastructure parity. Playwright E2E specs under
+  //      `frontend/tests/e2e/` and `frontend/tests/visual/` use
+  //      `page.addInitScript(() => { localStorage.setItem(persistKey, ...) })`
+  //      to inject a pre-authenticated session before the SPA's first
+  //      auth observation. With IndexedDB persistence the SDK would
+  //      ignore the localStorage seed and observe the user as
+  //      unauthenticated, producing the failure mode documented in QA
+  //      Final D Issue #10.
+  //   2. Synchronous race avoidance. Calling `setPersistence` AFTER
+  //      `getAuth(app)` produces a queued, asynchronous persistence
+  //      change. The SDK's first auth-state observation
+  //      (triggered by `onAuthStateChanged` subscription, which the
+  //      SPA performs in App.tsx within React's first render-commit
+  //      cycle) may complete BEFORE the queued persistence change
+  //      resolves. In that ordering, the SDK reads from the default
+  //      IndexedDB persistence on first read, finds nothing (because
+  //      the test seeded localStorage, not IndexedDB), and emits an
+  //      unauthenticated initial state — defeating the test seeding.
+  //      `initializeAuth(app, { persistence })` sets the persistence
+  //      synchronously at SDK construction time, BEFORE the first
+  //      auth-state observation can occur, eliminating the race.
+  //   3. Cross-engine determinism. Playwright runs both Chromium and
+  //      WebKit (AAP §0.6.12 / ST-045-AC2). Both engines support
+  //      IndexedDB and localStorage, but their IndexedDB
+  //      transaction-commit timing differs in headless contexts —
+  //      pinning to a synchronous-readable storage (localStorage)
+  //      removes a class of cross-engine flakiness.
+  //
+  // Trade-off: localStorage and IndexedDB have equivalent security
+  // characteristics for the tokens stored — both are readable by any
+  // script in the same origin and neither is HttpOnly-protected. The
+  // SPA does not transmit credential material itself; the persisted
+  // record holds Firebase-issued ID + refresh tokens, which the
+  // backend re-validates on every request via `verifyIdToken` per
+  // Rule R3. The choice of storage backend therefore does not change
+  // the threat model.
+  //
+  // `initializeAuth` MUST be called at most once per app instance.
+  // If we are reusing an existing app (HMR / React StrictMode
+  // double-invoke / duplicate-module-cache), `initializeAuth` would
+  // throw "auth/already-initialized". In that case we use `getAuth`
+  // to retrieve the previously-initialized instance, which carries
+  // forward the persistence we configured on the first init.
+  if (existingApps.length > 0) {
+    // Reuse the existing Auth instance (already initialized with
+    // browserLocalPersistence on the first call).
+    firebaseAuth = getAuth(firebaseApp);
+  } else {
+    firebaseAuth = initializeAuth(firebaseApp, {
+      persistence: browserLocalPersistence,
+    });
+  }
 
   // ----- Connect to the Firebase Auth emulator in dev. -------------------
   // `import.meta.env.DEV` is `true` during `vite dev` and `false` during
@@ -230,6 +348,68 @@ export function initializeFirebaseClient(): void {
       disableWarnings: true,
     });
     emulatorConnected = true;
+  }
+
+  // ----- Test-only window hook for E2E auth control. ---------------------
+  // AAP §0.6.7 / ST-045: Playwright E2E specs need to drive authentication
+  // from the browser context (the SPA does NOT render an interactive
+  // sign-in form because Final D Issue #10 documented that the
+  // localStorage-seeding approach is fragile). Following the existing
+  // `__strikeforge_perf__` pattern in `src/configurator/preview/performance.ts`,
+  // we attach a small read-only API to `window.__strikeforge_test_auth__`
+  // so tests can perform a real sign-in via:
+  //
+  //     await page.evaluate(({ email, password }) =>
+  //         window.__strikeforge_test_auth__!.signIn(email, password),
+  //         { email, password },
+  //     );
+  //
+  // After the promise resolves, the SPA's `onAuthStateChanged` observer
+  // fires synchronously (Firebase fires listeners synchronously on the
+  // microtask queue immediately after sign-in resolves), and the
+  // auth-gated UI flips to the authenticated state.
+  //
+  // The entire block is gated by `import.meta.env.DEV` so it is statically
+  // eliminated from the production bundle by Vite's tree shaker. In
+  // production builds this block becomes `if (false) { ... }` and is
+  // dropped.
+  //
+  // Rule R2 — none of the exposed methods log credentials. They are
+  // thin wrappers that delegate to the existing exported functions
+  // (`signIn`, `signOutUser`) which themselves never log.
+  //
+  // Rule R3 — none of the exposed methods decode or parse JWTs. They
+  // only return the SDK's `User` reference (which the test inspects
+  // with `user?.uid`) and the SDK-managed `idToken` string (which the
+  // test passes verbatim to API calls — the backend remains the sole
+  // authority on token validity).
+  if (import.meta.env.DEV) {
+    window.__strikeforge_test_auth__ = {
+      getCurrentUser: () => firebaseAuth?.currentUser ?? null,
+      signIn: (email: string, password: string): Promise<UserCredential> => {
+        if (!firebaseAuth) {
+          return Promise.reject(
+            new Error(
+              'Firebase client not initialized — cannot signIn from test hook.',
+            ),
+          );
+        }
+        return signInWithEmailAndPassword(firebaseAuth, email, password);
+      },
+      signOut: (): Promise<void> => {
+        if (!firebaseAuth) {
+          return Promise.resolve();
+        }
+        return signOut(firebaseAuth);
+      },
+      getIdToken: async (): Promise<string | null> => {
+        const u = firebaseAuth?.currentUser ?? null;
+        if (u === null) {
+          return null;
+        }
+        return u.getIdToken();
+      },
+    };
   }
 }
 

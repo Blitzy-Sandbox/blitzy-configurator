@@ -1135,10 +1135,14 @@ describe('POST /api/orders (integration)', () => {
       // ── State is the production-verified non-terminal token.
       expect(res.body.state).toBe('created');
 
-      // ── Subtotal exists and is a NUMERIC string per the
-      //    Order interface contract.
-      expect(typeof res.body.subtotal).toBe('string');
-      expect(res.body.subtotal.length).toBeGreaterThan(0);
+      // ── Subtotal exists and is a JS number on the wire. The
+      //    repository preserves PostgreSQL NUMERIC(12,2) precision
+      //    by emitting the field as a string internally; the route
+      //    layer's serializeOrder helper coerces it to a number for
+      //    the wire format consumed by the frontend (per QA Final D
+      //    Issue #9 and `frontend/src/api/orders.ts`).
+      expect(typeof res.body.subtotal).toBe('number');
+      expect(Number.isFinite(res.body.subtotal)).toBe(true);
 
       // ── Timestamps — both present and well-formed ISO-8601.
       expect(typeof res.body.createdAt).toBe('string');
@@ -1636,9 +1640,10 @@ describe('POST /api/orders/:id/finalize (integration)', () => {
       expect(finalizeRes.body.items.length).toBe(0);
       // Subtotal IS preserved on the finalize response — this is the
       //   monetary signal consumers need without paying the cost of
-      //   a second roundtrip to fetch items.
+      //   a second roundtrip to fetch items. Per QA Final D Issue
+      //   #9 the wire format coerces NUMERIC strings to JS numbers.
       expect(finalizeRes.body).toHaveProperty('subtotal');
-      expect(typeof finalizeRes.body.subtotal).toBe('string');
+      expect(typeof finalizeRes.body.subtotal).toBe('number');
     });
 
     it('updates the lastModifiedAt timestamp on the finalize transition', async () => {

@@ -42,11 +42,13 @@
  * ===========================================================================
  *
  *   - Rule R2 (no credential material in logs): this file performs
- *     ZERO `console.*` calls; the constant `FAKE_ID_TOKEN` and the
- *     placeholder string `'fake-refresh-token-for-tests'` are static
- *     strings only and are never logged. The frontend ESLint config
- *     enforces `no-console: error` (allowing only `warn` and `error`),
- *     and the workspace lint gate runs with `--max-warnings 0`.
+ *     ZERO `console.*` calls. The Firebase Auth Emulator-issued
+ *     `idToken` and `refreshToken` are stored only on the
+ *     `EmulatorUser` object and used solely as opaque strings by the
+ *     SDK's signIn flow — they are never logged. The frontend ESLint
+ *     config enforces `no-console: error` (allowing only `warn` and
+ *     `error`), and the workspace lint gate runs with
+ *     `--max-warnings 0`.
  *   - Rule R3 (Firebase Admin SDK only on backend): this file does
  *     NOT import `firebase-admin`, never parses or verifies a JWT
  *     manually, and never invokes `verifyIdToken()`. It only seeds
@@ -126,7 +128,126 @@
  *   automatically — no per-project filename munging is required here.
  */
 
-import { test, expect, type Page, type Route, type Request } from '@playwright/test';
+import {
+  test,
+  expect,
+  type APIRequestContext,
+  type Page,
+  type Route,
+  type Request,
+} from '@playwright/test';
+import { randomUUID } from 'node:crypto';
+
+// ---------------------------------------------------------------------------
+// QA Final D — Visual auth bootstrap
+// ---------------------------------------------------------------------------
+//
+// Visual specs that exercise authenticated surfaces (cart, design list,
+// order confirmation) MUST authenticate the SPA before navigation so
+// the gated affordances (Cart trigger, Load Design List, etc.) become
+// enabled and the visual snapshot is meaningful.
+//
+// PRIOR APPROACH (broken): localStorage seeding. The spec wrote a
+// synthetic `firebase:authUser:${apiKey}:[DEFAULT]` localStorage record
+// before navigation, hoping Firebase v10's persistence rehydrate path
+// would adopt the seeded user. After the SPA was refactored to use
+// `initializeAuth({ persistence: browserLocalPersistence })`, the
+// rehydrate path validates the persisted record's full schema; any
+// subtle drift between the synthetic record and Firebase's internal
+// representation causes the SDK to silently boot anonymous, and the
+// gated UI affordances stay disabled.
+//
+// CURRENT APPROACH (working): use the same `signInViaTestHook` pattern
+// the production E2E suite uses. The test hook
+// (`window.__strikeforge_test_auth__`) is installed by
+// `frontend/src/auth/firebase-client.ts` in DEV builds only; it
+// exposes `signIn(email, password)` which calls the SAME
+// `signInWithEmailAndPassword` code path the production sign-in UI
+// would. Combined with a fresh emulator-registered user via the
+// Identity Toolkit REST API (`signUp` endpoint), this produces a real
+// authenticated SDK state — `onAuthStateChanged` fires with the
+// signed-in user, React re-renders with `isAuthenticated=true`, the
+// Cart and Load Design buttons become enabled, and the snapshot
+// captures the authenticated UI state.
+//
+// All `/api/**` calls remain mocked via `mockBackendApi(page, ...)` so
+// the rendered surface (cart contents, design list, order details) is
+// driven by the spec's fixtures rather than backend state — the
+// emulator is exercised ONLY for the sign-in handshake.
+//
+// Per Rule R3, this code does NOT import `firebase-admin`, never
+// parses or verifies a JWT, and never calls `verifyIdToken()`. The
+// emulator-issued `idToken` is forwarded opaquely.
+// Per Rule R2, this code never logs the password, idToken, or
+// refreshToken. The error path includes the structured Identity
+// Toolkit error envelope (e.g., `EMAIL_EXISTS`) which is never a
+// credential.
+
+const FIREBASE_AUTH_EMULATOR_HOST = 'http://localhost:9099';
+const FIREBASE_API_KEY = 'local-emulator-key';
+
+interface EmulatorUser {
+  uid: string;
+  email: string;
+  password: string;
+  idToken: string;
+  refreshToken: string;
+}
+
+async function registerEmulatorUser(request: APIRequestContext): Promise<EmulatorUser> {
+  const email = `visual-cart-${Date.now()}-${randomUUID()}@strikeforge.test`;
+  const password = 'Test-Password-1234';
+
+  const response = await request.post(
+    `${FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=${FIREBASE_API_KEY}`,
+    { data: { email, password, returnSecureToken: true } },
+  );
+
+  if (!response.ok()) {
+    throw new Error(
+      `Firebase Auth Emulator signUp failed with status ${response.status()}; body: ${await response.text()}`,
+    );
+  }
+
+  const body = (await response.json()) as {
+    localId: string;
+    idToken: string;
+    refreshToken: string;
+    email: string;
+  };
+
+  return {
+    uid: body.localId,
+    email: body.email,
+    password,
+    idToken: body.idToken,
+    refreshToken: body.refreshToken,
+  };
+}
+
+async function signInViaTestHook(page: Page, user: EmulatorUser): Promise<void> {
+  await page.waitForFunction(
+    () => typeof window.__strikeforge_test_auth__ !== 'undefined',
+    { timeout: 10_000 },
+  );
+
+  await page.evaluate(
+    async (args: { email: string; password: string }) => {
+      await window.__strikeforge_test_auth__!.signIn(args.email, args.password);
+    },
+    { email: user.email, password: user.password },
+  );
+
+  const signedInUid = await page.evaluate(() => {
+    const current = window.__strikeforge_test_auth__!.getCurrentUser();
+    return current === null ? null : current.uid;
+  });
+  if (signedInUid !== user.uid) {
+    throw new Error(
+      `signInViaTestHook: expected currentUser.uid=${user.uid} after signIn but observed ${String(signedInUid)}`,
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Type aliases
@@ -200,13 +321,11 @@ type DesignSummary = {
 // `npx playwright test tests/visual/cart.spec.ts --update-snapshots`
 // followed by a deliberate commit (per ST-046-AC4).
 
-/**
- * Placeholder ID-token string used to simulate an authenticated
- * session. This is NOT a real JWT — it is an opaque string that the
- * spec never logs. Per Rule R2, no `console.*` call ever references
- * this constant.
- */
-const FAKE_ID_TOKEN = 'fake-id-token-for-tests';
+// QA Final D — `FAKE_ID_TOKEN` constant removed. Auth is now driven
+// by a real Firebase Auth Emulator user via `registerEmulatorUser` +
+// `signInViaTestHook` (see "Visual auth bootstrap" section near the
+// top of the file). The SDK manages its own idToken / refreshToken
+// internally; the spec never references either directly.
 
 /**
  * Fixed ISO-8601 timestamp used for every `createdAt` and
@@ -219,82 +338,13 @@ const FAKE_ID_TOKEN = 'fake-id-token-for-tests';
 const FIXED_TIMESTAMP = '2024-06-15T12:00:00.000Z';
 
 // ---------------------------------------------------------------------------
-// Helper — setAuthenticatedState(page, options?)
+// Helper — (REMOVED) setAuthenticatedState(page, options?)
 // ---------------------------------------------------------------------------
 //
-// Seeds the Firebase JS SDK's persisted localStorage key BEFORE any
-// page script runs, so the SPA's onAuthStateChanged() observer
-// resolves to the seeded user immediately on boot — no network round
-// trip to identitytoolkit.googleapis.com, no signInWithEmailAndPassword
-// dialog, no flicker from anonymous → authenticated.
-//
-// The shape written to localStorage matches the v10 Firebase JS SDK's
-// authUser persistence schema — every required field is present so
-// that Firebase's persistence-rehydrate path accepts the entry. The
-// `apiKey` is `'fake-api-key'` here; if the real SPA constructs
-// firebase config from `import.meta.env.VITE_FIREBASE_API_KEY` and
-// that env var is absent at test time, the SDK falls back to its own
-// initialized apiKey value — but the persistence key uses whatever
-// apiKey the SDK was initialized with, NOT the one we wrote here.
-// Because we additionally mock all `identitytoolkit.googleapis.com/**`
-// and `securetoken.googleapis.com/**` calls with empty 200 fixtures,
-// any divergence between the seeded apiKey and the SDK's runtime
-// apiKey degrades gracefully — the SDK simply does not find a
-// persisted user and proceeds anonymously, but the cart fixture still
-// responds deterministically because the mock does not inspect the
-// bearer token.
-//
-// `addInitScript` ensures the localStorage write happens before any
-// SPA script — Firebase JS SDK reads persistence synchronously
-// during its initialization, so the seed must be present at module
-// evaluation time.
-//
-// Per Rule R3, this function does NOT import `firebase-admin`, does
-// NOT mint a real JWT, and does NOT verify any token. It writes a
-// synthetic persistence record only.
-async function setAuthenticatedState(
-  page: Page,
-  options: { uid?: string; email?: string; idToken?: string } = {},
-): Promise<void> {
-  const uid = options.uid ?? 'test-user-uid-cart';
-  const email = options.email ?? 'cart-test@example.test';
-  const idToken = options.idToken ?? FAKE_ID_TOKEN;
-
-  await page.addInitScript(
-    (args: { uid: string; email: string; idToken: string }) => {
-      const apiKey = 'fake-api-key';
-      const persistKey = `firebase:authUser:${apiKey}:[DEFAULT]`;
-      const now = Date.now();
-      const persistedUser = {
-        uid: args.uid,
-        email: args.email,
-        emailVerified: true,
-        isAnonymous: false,
-        providerData: [
-          {
-            providerId: 'password',
-            uid: args.email,
-            displayName: null,
-            email: args.email,
-            phoneNumber: null,
-            photoURL: null,
-          },
-        ],
-        stsTokenManager: {
-          refreshToken: 'fake-refresh-token-for-tests',
-          accessToken: args.idToken,
-          expirationTime: now + 60 * 60 * 1000,
-        },
-        createdAt: String(now),
-        lastLoginAt: String(now),
-        apiKey,
-        appName: '[DEFAULT]',
-      };
-      window.localStorage.setItem(persistKey, JSON.stringify(persistedUser));
-    },
-    { uid, email, idToken },
-  );
-}
+// QA Final D — the previous localStorage-seeding helper has been
+// removed. See the "Visual auth bootstrap" section above for the
+// replacement: `registerEmulatorUser(request)` +
+// `signInViaTestHook(page, user)`.
 
 // ---------------------------------------------------------------------------
 // Helper — mockBackendApi(page, options?)
@@ -336,27 +386,15 @@ async function mockBackendApi(
   options: { designs?: DesignSummary[]; cart?: CartPayload } = {},
 ): Promise<void> {
   // ---------------------------------------------------------------------
-  // Firebase Auth REST endpoints — block both Identity Toolkit and the
-  // Secure Token Service so any background SDK refresh attempt resolves
-  // synthetically rather than producing a real network failure. These
-  // domains do NOT overlap with `**/api/**`, so registration order is
-  // irrelevant for them.
+  // QA Final D — Firebase Auth REST endpoints are NOT mocked.
   // ---------------------------------------------------------------------
-  await page.route('**/identitytoolkit.googleapis.com/**', (route: Route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
-  );
-  await page.route('**/securetoken.googleapis.com/**', (route: Route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        id_token: FAKE_ID_TOKEN,
-        refresh_token: 'fake-refresh-token-for-tests',
-        expires_in: '3600',
-      }),
-    }),
-  );
-
+  //
+  // The new auth bootstrap (signInViaTestHook + registerEmulatorUser)
+  // talks to the live Firebase Auth Emulator at localhost:9099. We do
+  // NOT intercept identitytoolkit.googleapis.com / securetoken.
+  // googleapis.com — those calls go through to the emulator running in
+  // docker-compose. Mocking them would break the real sign-in flow.
+  //
   // ---------------------------------------------------------------------
   // Single dispatching handler for every `/api/**` request. Branches
   // are ordered most-specific first.
@@ -442,17 +480,19 @@ async function mockBackendApi(
 // file.
 
 test.describe('Cart visual regression', () => {
-  test('cart with items', async ({ page }) => {
+  test('ST-046-AC1: cart with items', async ({ page, request }) => {
     // -----------------------------------------------------------------
-    // 1) Seed authenticated session BEFORE navigation.
+    // 1) Register a real user via Firebase Auth Emulator, then sign in
+    //    via the test-only window hook so the SPA boots authenticated.
     // -----------------------------------------------------------------
     //
-    // `addInitScript` runs in every new document, so localStorage is
-    // populated before any SPA script reads `firebase.auth()`. ST-033
-    // requires the cart endpoint to be guarded by a valid session;
-    // without this seed the SPA would treat the user as anonymous
-    // and the cart panel might not render at all.
-    await setAuthenticatedState(page);
+    // QA Final D — Issue #4 (CART-VISUAL-AUTH): the cart trigger button
+    // is `[disabled]` when the SPA has no authenticated user, so the
+    // visual snapshot of the cart panel was previously unreachable.
+    // The new auth bootstrap (registerEmulatorUser + signInViaTestHook)
+    // produces a real authenticated SDK state, the cart trigger
+    // becomes enabled, and the snapshot can be captured.
+    const user = await registerEmulatorUser(request);
 
     // -----------------------------------------------------------------
     // 2) Build the deterministic fixtures.
@@ -521,18 +561,27 @@ test.describe('Cart visual regression', () => {
     await mockBackendApi(page, { designs, cart });
 
     // -----------------------------------------------------------------
-    // 4) Load the SPA and wait for the canvas to attach.
+    // 4) Load the SPA, sign in via test hook, wait for canvas attach.
     // -----------------------------------------------------------------
     //
     // We wait for `networkidle` so any first-load fetches (designs
     // list, cart, etc.) resolve through the mock before we start
-    // interacting. We then wait for the R3F canvas element to attach
-    // because its presence is the SPA-ready signal — every other
-    // surface (including the cart panel) mounts after the
-    // configurator shell.
+    // interacting. After the SPA boots, the test-only auth hook
+    // attaches itself to `window.__strikeforge_test_auth__`; we then
+    // call `signInViaTestHook` to produce an authenticated SDK state
+    // (which propagates to React via `onAuthStateChanged`). After
+    // sign-in, the gated affordances (cart trigger) become enabled
+    // and the visual snapshot is meaningful.
     await page.goto('/');
     await page.waitForLoadState('networkidle');
     await page.waitForSelector('canvas', { state: 'attached', timeout: 15_000 });
+
+    await signInViaTestHook(page, user);
+
+    // After sign-in, give the SPA a moment for React to re-render and
+    // for any post-auth fetches (which the mock will intercept) to
+    // settle before we start clicking cart-related UI.
+    await page.waitForLoadState('networkidle');
 
     // -----------------------------------------------------------------
     // 5) Open the cart view.

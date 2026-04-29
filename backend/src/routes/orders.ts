@@ -252,6 +252,7 @@ import type { ZodError } from 'zod';
 import { z } from 'zod';
 
 import type { OrderService } from '../services/order.service';
+import { serializeOrder } from './_serialize';
 
 // ---------------------------------------------------------------------------
 // Section 1: Zod schemas for inbound JSON request bodies
@@ -827,7 +828,16 @@ async function runCreateOrder(
     // satisfies that contract verbatim. No settlement fields, no
     // settlement state — the order is in the documented
     // non-terminal `'created'` state per ST-032-AC4.
-    res.status(201).json(order);
+    //
+    // QA Final D Issue #9 (CRITICAL): the repository preserves
+    // PostgreSQL NUMERIC(12,2) precision by emitting `subtotal` as a
+    // string. The wire format is consumed by the frontend's
+    // `subtotal: number` contract in `frontend/src/api/orders.ts`
+    // and pinned by the E2E suite's
+    // `expect(typeof order.subtotal).toBe('number')` invariant.
+    // {@link serializeOrder} performs the shallow string→number
+    // coercion at the transport boundary with a defensive guard.
+    res.status(201).json(serializeOrder(order));
   } catch (err) {
     // Step 5: translate. Service-layer ValidationError →
     // 400/EMPTY_CART/etc.; NotFoundError(DESIGN_NOT_FOUND) → 404;
@@ -953,7 +963,12 @@ async function runFinalizeOrder(
       orderId: orderIdParsed.data,
     });
 
-    res.status(200).json(finalized);
+    // QA Final D Issue #9 (CRITICAL): coerce repository-string
+    // subtotal to JS number for the wire format. See {@link
+    // serializeOrder} and the matching coercion in the create-order
+    // worker above. Internal precision is preserved by the
+    // repository contract; only the response shape is reshaped.
+    res.status(200).json(serializeOrder(finalized));
   } catch (err) {
     // Step 5: translate. Service-layer NotFoundError → 404,
     // ConflictError → 409 (with the originating code preserved so

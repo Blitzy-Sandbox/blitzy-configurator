@@ -298,7 +298,7 @@ test.describe('Color selection flow', () => {
   // -------------------------------------------------------------------------
   // Test 1: Primary color picker → summary sidebar
   // -------------------------------------------------------------------------
-  test('primary color selection updates summary sidebar', async ({ page }) => {
+  test('ST-045-AC1: primary color selection updates summary sidebar', async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on('console', (msg: ConsoleMessage) => {
       if (msg.type() === 'error') {
@@ -356,7 +356,7 @@ test.describe('Color selection flow', () => {
   // -------------------------------------------------------------------------
   // Test 2: Secondary color picker → summary sidebar
   // -------------------------------------------------------------------------
-  test('secondary color selection updates summary sidebar', async ({ page }) => {
+  test('ST-045-AC1: secondary color selection updates summary sidebar', async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on('console', (msg: ConsoleMessage) => {
       if (msg.type() === 'error') {
@@ -395,7 +395,7 @@ test.describe('Color selection flow', () => {
   // -------------------------------------------------------------------------
   // Test 3: Accent color picker → summary sidebar
   // -------------------------------------------------------------------------
-  test('accent color selection updates summary sidebar', async ({ page }) => {
+  test('ST-045-AC1: accent color selection updates summary sidebar', async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on('console', (msg: ConsoleMessage) => {
       if (msg.type() === 'error') {
@@ -439,7 +439,7 @@ test.describe('Color selection flow', () => {
   // -------------------------------------------------------------------------
   // Test 4: Rapid successive color changes apply in order (ST-009-AC4)
   // -------------------------------------------------------------------------
-  test('rapid successive color changes apply in order', async ({ page }) => {
+  test('ST-045-AC1: rapid successive color changes apply in order', async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on('console', (msg: ConsoleMessage) => {
       if (msg.type() === 'error') {
@@ -503,7 +503,7 @@ test.describe('Color selection flow', () => {
   // sidebar mounts with all three color pickers concurrently visible.
   // Catches a regression where, e.g., a single picker silently fails
   // to render due to a Suspense boundary or import-error swallowing.
-  test('all three color pickers are reachable', async ({ page }) => {
+  test('ST-045-AC1: all three color pickers are reachable', async ({ page }) => {
     await waitForConfiguratorReady(page);
 
     const primaryPicker = getColorPickerGroup(page, 'primary').first();

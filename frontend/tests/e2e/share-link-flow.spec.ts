@@ -160,13 +160,25 @@ import { randomUUID } from 'node:crypto';
 //
 // FIREBASE_API_KEY is the literal token the emulator accepts as a
 // query parameter. The emulator does NOT validate API keys against
-// any allowlist — the value is opaque. Using `'fake-api-key'` matches
-// the placeholder used in the SPA's bootstrap config so the
-// localStorage persistence key (which embeds the apiKey) lines up
-// with whatever the SPA's own SDK initialization writes.
+// any allowlist — the value is opaque. CRITICAL: this MUST match
+// the SPA's own apiKey (read from `VITE_FIREBASE_API_KEY` at build
+// time, currently `'local-emulator-key'` per `frontend/.env`) so the
+// localStorage persistence key the test writes
+// (`firebase:authUser:${apiKey}:[DEFAULT]`) lines up with the key
+// the SPA's Firebase JS SDK reads on page boot. A mismatch produces
+// a silent failure mode where the emulator accepts the signUp call
+// and the test successfully writes the persistence record, but the
+// SPA's own `onAuthStateChanged` never observes it because the SDK
+// looks under a different key. See QA Final D Issue #10.
+//
+// Per Rule R4, the SPA's apiKey is read from VITE_FIREBASE_API_KEY
+// with no default; the test mirrors that constant explicitly here
+// rather than reading from process.env (which is not the SPA's
+// build-time env), keeping the test deterministic regardless of
+// invocation environment.
 
 const FIREBASE_AUTH_EMULATOR_HOST = 'http://localhost:9099';
-const FIREBASE_API_KEY = 'fake-api-key';
+const FIREBASE_API_KEY = 'local-emulator-key';
 const BACKEND_BASE_URL = 'http://localhost:3000';
 
 // ---------------------------------------------------------------------------
@@ -200,13 +212,35 @@ interface ShareLinkResponse {
 
 /**
  * Canonical shape returned by the unauthenticated `GET /api/share/:token`
- * endpoint per AAP §0.6.4. The visitor receives sufficient information
- * to render the design read-only — at minimum the design's id and the
- * full configurator payload (colors, pattern, finish, logo).
+ * endpoint per the backend `SharedDesignView` interface in
+ * `backend/src/services/share-link.service.ts:460`. The visitor
+ * receives sufficient information to render the design read-only:
+ *
+ *   - `design`         — the full configurator selection set (colors,
+ *                        pattern, finish, logo placement) sufficient
+ *                        for the read-only configurator surface.
+ *   - `designId`       — the server-assigned UUID of the source design
+ *                        (so the configurator can deep-link or keep an
+ *                        identifier for future "Save a copy" flows).
+ *   - `title`          — the user-facing label, displayed in the
+ *                        read-only header.
+ *   - `lastModifiedAt` — the design's last-modification timestamp,
+ *                        ISO-8601 string after `res.json()` serialises
+ *                        the backend's `Date`.
+ *
+ * Per Rule R1, this interface and the assertion in the read-contract
+ * test below MUST match the backend's actual schema. Per ST-029-AC3,
+ * the visitor receives "enough information for the configurator to
+ * render the target design read-only" — this 4-field shape is that
+ * information. See QA Final D Issue #8 for the historical mismatch
+ * (`{id, payload}` was the prior test-side assumption; the backend
+ * schema is authoritative).
  */
 interface SharedDesignResponse {
-  id: string;
-  payload: unknown;
+  design: unknown;
+  designId: string;
+  title: string;
+  lastModifiedAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -275,126 +309,100 @@ async function registerEmulatorUser(request: APIRequestContext): Promise<Emulato
 }
 
 // ---------------------------------------------------------------------------
-// Helper — injectAuthState(page, user)
+// Helper — signInViaTestHook(page, user)
 // ---------------------------------------------------------------------------
 //
-// Seeds the Firebase JS SDK's persisted localStorage key BEFORE any
-// page script runs, so the SPA's `onAuthStateChanged()` observer
-// resolves to the seeded user immediately at boot. This avoids
-// hitting any real or emulated Firebase Auth REST endpoint via the
-// SPA's own sign-in flow.
+// Performs a real Firebase sign-in inside the running SPA via the
+// test-only `window.__strikeforge_test_auth__` hook installed by
+// `frontend/src/auth/firebase-client.ts`. The hook is gated by
+// `import.meta.env.DEV` so it is tree-shaken from production
+// builds.
 //
-// The shape written to localStorage matches the v10 Firebase JS SDK's
-// authUser persistence schema — every required field is present so
-// that Firebase's persistence-rehydrate path accepts the entry.
+// Why this approach rather than seeding localStorage:
 //
-// `addInitScript` ensures the localStorage write happens before any
-// SPA script — the Firebase JS SDK reads persistence synchronously
-// during initialization, so the seed must be present at module
-// evaluation time.
+//   - Firebase v10's default browser persistence is
+//     `indexedDBLocalPersistence`. A localStorage-seeded synthetic
+//     persistedUser record can be ignored by the SDK on rehydrate
+//     unless every internal validity check passes (apiKey match,
+//     stsTokenManager.expirationTime in the future, schema parity
+//     with the SDK's internal type). In practice, those checks
+//     diverge across SDK minor versions and the seed silently
+//     fails — the SPA boots anonymously.
+//   - The test hook calls the SAME `signInWithEmailAndPassword`
+//     code path the production sign-in UI uses. The SDK fires
+//     `onAuthStateChanged` listeners synchronously, React re-
+//     renders with `isAuthenticated = true`, and persistence is
+//     written by the SDK itself (no schema-mismatch risk).
 //
-// Per Rule R3, this function does NOT import `firebase-admin`, does
-// NOT mint a real JWT, and does NOT verify any token. It writes a
-// synthetic persistence record only.
+// Per Rule R3, this helper does NOT import `firebase-admin`, does
+// NOT mint or decode JWTs, and does NOT call `verifyIdToken()`. It
+// invokes only the public Firebase JS SDK surface via the hook.
+// Per Rule R2, this helper does NOT log credentials.
+//
+// Sequence:
+//   1. Navigate to `/` so the Vite-served SPA initializes Firebase
+//      Auth and attaches the test hook.
+//   2. Wait for `networkidle` so the initial bundle has loaded.
+//   3. Wait until `window.__strikeforge_test_auth__` is defined
+//      (synchronous attachment after `initializeFirebaseClient()`
+//      returns).
+//   4. Call the hook's `signIn(email, password)` — this is a real
+//      Identity Toolkit `accounts:signInWithPassword` call against
+//      the Firebase Auth Emulator.
+//   5. Verify `getCurrentUser()` returns the signed-in user (uid
+//      match) — fail fast with a clear diagnostic if not.
+//   6. Wait for the configurator `<canvas>` to attach (15s timeout
+//      covers software-WebGL warmup on CI runners) and park the
+//      mouse so idle auto-rotation does not fire during tests.
+//
+// After this helper returns, the page is at `/`, the user is
+// signed in, the configurator is interactive, and subsequent
+// `page.reload()` calls preserve auth state via Firebase
+// persistence.
 
-async function injectAuthState(page: Page, user: EmulatorUser): Promise<void> {
-  await page.addInitScript(
-    (args: {
-      uid: string;
-      email: string;
-      idToken: string;
-      refreshToken: string;
-      apiKey: string;
-    }) => {
-      // The persistence key format is documented in firebase-js-sdk
-      // source as `firebase:authUser:${apiKey}:${appName}`. The SPA
-      // uses the default app name `[DEFAULT]`. The apiKey embedded in
-      // the key is the SDK's *runtime* apiKey at initialization time
-      // — if the SPA's runtime apiKey diverges from the one we wrote
-      // here, the SDK simply ignores our seeded entry and proceeds
-      // anonymously. Because we register and use the user via the
-      // emulator's REST surface (which does not validate apiKeys),
-      // the test still functions — but the SPA's auth-driven UI
-      // states (e.g., "Save Design" enabled when authenticated) may
-      // not flip to authenticated. This is mitigated by ALSO using
-      // the idToken directly in API requests via the `request`
-      // fixture for any contract that the UI does not cover.
-      const persistKey = `firebase:authUser:${args.apiKey}:[DEFAULT]`;
-      const now = Date.now();
-      const persistedUser = {
-        uid: args.uid,
-        email: args.email,
-        emailVerified: false,
-        isAnonymous: false,
-        providerData: [
-          {
-            providerId: 'password',
-            uid: args.email,
-            displayName: null,
-            email: args.email,
-            phoneNumber: null,
-            photoURL: null,
-          },
-        ],
-        stsTokenManager: {
-          refreshToken: args.refreshToken,
-          accessToken: args.idToken,
-          // Tokens issued by the emulator are nominally valid for
-          // ~1 hour. We mirror that lifetime here so the SDK does
-          // not immediately attempt a refresh on first read.
-          expirationTime: now + 60 * 60 * 1000,
-        },
-        createdAt: String(now),
-        lastLoginAt: String(now),
-        apiKey: args.apiKey,
-        appName: '[DEFAULT]',
-      };
-      window.localStorage.setItem(persistKey, JSON.stringify(persistedUser));
-    },
-    {
-      uid: user.uid,
-      email: user.email,
-      idToken: user.idToken,
-      refreshToken: user.refreshToken,
-      apiKey: FIREBASE_API_KEY,
-    },
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Helper — waitForConfiguratorReady(page)
-// ---------------------------------------------------------------------------
-//
-// Drives the SPA from initial navigation to the "configurator
-// interactive" state:
-//
-//   1. Navigate to `/` (Vite serves the SPA at baseURL).
-//   2. Wait for `networkidle` so the initial bundle, the Firebase
-//      SDK's persistence rehydrate, and any startup `/api/*` prefetch
-//      have all settled.
-//   3. Wait for a `<canvas>` element to attach — this is the R3F
-//      `<Canvas>` mount signal. Until the canvas attaches, the
-//      configurator's controls sidebar may not be fully hydrated and
-//      subsequent interactions can race against React StrictMode's
-//      double-mount path.
-//   4. Park the mouse over the controls sidebar (x=50, y=300) so the
-//      idle auto-rotation timer in `useIdleAutoRotate.ts` does NOT
-//      fire during the test (it triggers only after the canvas has
-//      been mouse-still for the documented idle interval).
-//   5. Final `networkidle` to confirm any post-mount hydration work
-//      has resolved before the test starts interacting.
-//
-// 15-second timeout for the canvas-attach wait covers software-WebGL
-// warmup on CI runners (SwiftShader / llvmpipe), where R3F's initial
-// mount is approximately 5× slower than on real GPU hardware.
-
-async function waitForConfiguratorReady(page: Page): Promise<void> {
+async function signInViaTestHook(page: Page, user: EmulatorUser): Promise<void> {
   await page.goto('/');
   await page.waitForLoadState('networkidle');
+
+  await page.waitForFunction(() => typeof window.__strikeforge_test_auth__ !== 'undefined', {
+    timeout: 10_000,
+  });
+
+  await page.evaluate(
+    async (args: { email: string; password: string }) => {
+      await window.__strikeforge_test_auth__!.signIn(args.email, args.password);
+    },
+    { email: user.email, password: user.password },
+  );
+
+  await page.waitForLoadState('networkidle');
+
+  const signedInUid = await page.evaluate(() => {
+    const current = window.__strikeforge_test_auth__!.getCurrentUser();
+    return current === null ? null : current.uid;
+  });
+  if (signedInUid !== user.uid) {
+    throw new Error(
+      `signInViaTestHook: expected currentUser.uid=${user.uid} after signIn but observed ${String(
+        signedInUid,
+      )}`,
+    );
+  }
+
   await page.locator('canvas').first().waitFor({ state: 'attached', timeout: 15_000 });
   await page.mouse.move(50, 300);
   await page.waitForLoadState('networkidle');
 }
+
+// `waitForConfiguratorReady` is not declared in this spec because
+// every test in this file either (a) uses `signInViaTestHook`,
+// which handles navigation + sign-in + configurator readiness in a
+// single coherent step, or (b) is a pure backend-contract test
+// using only the `request` fixture, or (c) opens its own
+// independent `BrowserContext` for the visitor-experience test
+// (Test 5). Adding an unused helper here would trigger ESLint
+// `no-unused-vars` under the workspace's `--max-warnings 0` lint
+// gate.
 
 // ---------------------------------------------------------------------------
 // Helper — createDesignViaApi(request, idToken)
@@ -504,7 +512,7 @@ test.describe('Share link flow', () => {
   // This test runs against the backend directly via the `request`
   // fixture; no UI is driven. It is the tightest possible regression
   // probe of the share-link issuance endpoint.
-  test('authenticated user can mint a share link for their own design', async ({ request }) => {
+  test('ST-045-AC1: authenticated user can mint a share link for their own design', async ({ request }) => {
     const user = await registerEmulatorUser(request);
     const design = await createDesignViaApi(request, user.idToken);
     const shareLink = await createShareLinkViaApi(request, user.idToken, design.id);
@@ -550,7 +558,7 @@ test.describe('Share link flow', () => {
   //
   // This is the canonical visitor-experience contract: the share
   // endpoint must NOT require a session.
-  test('unauthenticated visitor can read a shared design via /api/share/:token', async ({
+  test('ST-045-AC1: unauthenticated visitor can read a shared design via /api/share/:token', async ({
     request,
   }) => {
     const owner = await registerEmulatorUser(request);
@@ -573,8 +581,21 @@ test.describe('Share link flow', () => {
     ).toBe(true);
 
     const body = (await response.json()) as SharedDesignResponse;
-    expect(body.id).toBe(design.id);
-    expect(body.payload).toBeTruthy();
+    // QA Final D Issue #8 — the backend `SharedDesignView` shape
+    // (backend/src/services/share-link.service.ts:460) is the
+    // authoritative schema per Rule R1. The visitor receives:
+    //   - `designId`       — the source design's server-assigned UUID,
+    //   - `design`         — the full configurator payload (colors,
+    //                        pattern, finish, logo placement),
+    //   - `title`          — the user-facing label,
+    //   - `lastModifiedAt` — ISO-8601 timestamp.
+    // ST-029-AC3 requires "enough information for the configurator to
+    // render the target design read-only" — this assertion pins
+    // exactly that sufficiency.
+    expect(body.designId).toBe(design.id);
+    expect(body.design).toBeTruthy();
+    expect(typeof body.title).toBe('string');
+    expect(typeof body.lastModifiedAt).toBe('string');
   });
 
   // -------------------------------------------------------------------
@@ -593,7 +614,7 @@ test.describe('Share link flow', () => {
   // existence of designs the requester cannot see). The test accepts
   // any 4xx; a 5xx server crash is a defect, and a 2xx success is a
   // critical horizontal privilege escalation defect.
-  test("minting a share link for another user's design returns an error", async ({ request }) => {
+  test("ST-045-AC1: minting a share link for another user's design returns an error", async ({ request }) => {
     const owner = await registerEmulatorUser(request);
     const stranger = await registerEmulatorUser(request);
     const design = await createDesignViaApi(request, owner.idToken);
@@ -640,19 +661,23 @@ test.describe('Share link flow', () => {
   // The Save UI is exercised in `save-design-flow.spec.ts`; the
   // orchestrated end-to-end is exercised in `critical-path-full.spec.ts`.
   // This test deliberately does not duplicate those flows.
-  test('share action UI mints a link and triggers the share endpoint', async ({
+  test('ST-045-AC1: share action UI mints a link and triggers the share endpoint', async ({
     page,
     request,
   }) => {
     const user = await registerEmulatorUser(request);
-    await injectAuthState(page, user);
 
     // Pre-create a design via API. This avoids cross-spec coupling
     // with the Save flow — if the Save UI regresses, the share-link
     // contract under test here is still validated.
     const design = await createDesignViaApi(request, user.idToken);
 
-    await waitForConfiguratorReady(page);
+    // Sign the user into the SPA via the test hook (real
+    // Identity Toolkit signInWithPassword call against the
+    // emulator). The helper navigates to `/`, signs in, verifies
+    // the auth state took effect, and waits for the configurator
+    // canvas to attach.
+    await signInViaTestHook(page, user);
 
     // The share action operates on a "current design" — for the UI
     // to know which design to share, the user typically must first
@@ -660,12 +685,15 @@ test.describe('Share link flow', () => {
     // Design List, select our pre-created design, then click Share.
     //
     // Locator tolerance: the load trigger may be labeled "Load
-    // Design", "My Designs", "Open Designs", or simply "Designs".
-    // The testid fallback (`load-design-list-trigger`) catches
+    // saved design" (current production label), "Load Design",
+    // "My Designs", "Open Designs", or simply "Designs". The
+    // testid fallback (`load-design-trigger`) catches
     // implementations that use a custom button shape.
     const loadTrigger = page
-      .getByRole('button', { name: /load design|my designs|open designs|^designs$/i })
-      .or(page.getByTestId('load-design-list-trigger'))
+      .getByRole('button', {
+        name: /load saved design|load design|my designs|open designs|^designs$/i,
+      })
+      .or(page.getByTestId('load-design-trigger'))
       .first();
     await loadTrigger.waitFor({ state: 'visible', timeout: 10_000 });
     await loadTrigger.click();
@@ -682,10 +710,89 @@ test.describe('Share link flow', () => {
     // Click the first design entry — it should be our pre-created
     // design (the only design in this user's list since each test
     // creates a fresh user).
-    const firstEntry = listPanel.getByRole('button').or(listPanel.getByRole('listitem')).first();
+    //
+    // The list dialog contains a "Refresh" and "Close saved designs
+    // panel" buttons in its header BEFORE the actual design rows.
+    // Selecting `getByRole('button').first()` would click Refresh.
+    // We therefore target by the design-row testid, which the
+    // production component sets only on the design entries
+    // (`data-testid="load-design-list-row"` per
+    // `frontend/src/features/design-management/LoadDesignList.tsx`).
+    const firstEntry = listPanel.getByTestId('load-design-list-row').first();
     await firstEntry.waitFor({ state: 'visible', timeout: 5_000 });
     await firstEntry.click();
     await page.waitForLoadState('networkidle');
+
+    // The Share button may be labeled "Share" or "Share Design".
+    // The testid fallback covers implementations that use a custom
+    // button shape without a clean accessible name.
+    const shareAction = page
+      .getByRole('button', { name: /^share( design)?$/i })
+      .or(page.getByTestId('share-design-action'))
+      .first();
+    await shareAction.waitFor({ state: 'visible', timeout: 10_000 });
+
+    // QA Final D — Issue #4 (TEST-4-FLAKE-ENABLED-WAIT): the previous
+    // implementation only waited for the button to become VISIBLE
+    // before clicking, but the Share button is gated on the
+    // ConfiguratorStore having both `savedDesignId` AND `isSaved=true`.
+    // The row-click handler in `LoadDesignList.tsx` is async — it
+    // awaits `createShareLink` (POST), then `getSharedDesign` (GET),
+    // then synchronously calls `loadDesign(payload)` which mutates
+    // both `savedDesignId` and `isSaved`. After `loadDesign`, React
+    // re-renders the ShareDesignAction with the new state, and only
+    // then is the trigger button's `disabled` attribute removed.
+    //
+    // `networkidle` waits for 500ms of HTTP silence — that covers the
+    // POST + GET + the React render that follows. In practice this is
+    // usually enough, but under parallel-test load (Playwright runs
+    // 4 workers in CI; Vite dev server is shared across workers via
+    // `reuseExistingServer`) the React render commit can lag enough
+    // that `networkidle` fires before the share button's disabled
+    // attribute is updated. The result: a ".click()" call dispatches
+    // a click on the still-disabled button, which is a no-op (HTML
+    // disabled buttons swallow clicks). The test then waits 10s for a
+    // POST that never fires, and times out.
+    //
+    // The defensive fix: wait for the button to be ENABLED (not just
+    // visible) before clicking. Playwright's `expect.toBeEnabled()`
+    // auto-retries the assertion within the configured timeout, so
+    // it handles the post-render state propagation automatically. We
+    // give 10s — same budget as the existing `waitFor` — to avoid
+    // changing the overall test budget.
+    await expect(shareAction, 'Share button must enable after design loads').toBeEnabled({
+      timeout: 10_000,
+    });
+
+    // QA Final D — Issue #4 (TEST-4-FLAKE-PANEL-MOUSEDOWN): the
+    // LoadDesignList panel registers a `mousedown` (not `click`)
+    // document-level outside-listener that closes the panel when
+    // mousedown lands outside it (see
+    // `frontend/src/features/design-management/LoadDesignList.tsx`
+    // line 1128). Clicking the Share Design button triggers the
+    // sequence:
+    //
+    //   1. mousedown on Share button
+    //   2. document mousedown listener fires → setIsOpen(false)
+    //      → React schedules re-render of LoadDesignList
+    //   3. mouseup on Share button
+    //   4. click → React synthetic onClick → handleShare()
+    //
+    // Under load, React's automatic batching combined with the
+    // out-of-band mousedown setState can interfere with the click
+    // event reaching the Share button's onClick. To eliminate this
+    // race entirely, we close the LoadDesignList panel explicitly
+    // BEFORE clicking the Share button (via the panel's own Close
+    // button — which is a click-driven affordance and does not
+    // race the outside-click handler). After the panel closes, the
+    // outside-listener detaches itself and the Share button click
+    // is uncontested.
+    const closeBtn = listPanel.getByTestId('load-design-list-close');
+    if (await closeBtn.isVisible().catch(() => false)) {
+      await closeBtn.click();
+      // Wait for the panel to actually unmount.
+      await listPanel.waitFor({ state: 'detached', timeout: 5_000 }).catch(() => undefined);
+    }
 
     // Start `waitForResponse` BEFORE clicking — Playwright requires
     // the listener to be active when the response arrives, so
@@ -696,14 +803,6 @@ test.describe('Share link flow', () => {
       { timeout: 10_000 },
     );
 
-    // The Share button may be labeled "Share" or "Share Design".
-    // The testid fallback covers implementations that use a custom
-    // button shape without a clean accessible name.
-    const shareAction = page
-      .getByRole('button', { name: /^share( design)?$/i })
-      .or(page.getByTestId('share-design-action'))
-      .first();
-    await shareAction.waitFor({ state: 'visible', timeout: 10_000 });
     await shareAction.click();
 
     const shareResponse = await sharePromise;
@@ -769,7 +868,7 @@ test.describe('Share link flow', () => {
   // `try / finally` so a mid-test failure does not leak the context
   // into subsequent tests (per LocalGCP Verification Rule:
   // integration-style flows clean up after themselves).
-  test('shared link opens in a fresh unauthenticated browser context', async ({
+  test('ST-045-AC1: shared link opens in a fresh unauthenticated browser context', async ({
     browser,
     request,
   }) => {
@@ -804,10 +903,66 @@ test.describe('Share link flow', () => {
       // Step 4: verify the page loads without prompting for sign-in.
       // The page should render the configurator (canvas) OR a
       // read-only view with the design's selections.
+      //
+      // QA Final D — Issue #5 (TEST-5-SR-ONLY-FALSE-POSITIVE): the
+      // previous selector also matched the substring "sign in to
+      // view" via `getByText`. That regex matched accessibility-only
+      // helper text rendered as `<span>` elements with the screen-
+      // reader-only style (1px clip-path, 1px×1px bounding box,
+      // `position: absolute`, `overflow: hidden`). Examples of
+      // sr-only text that the visitor would correctly see in the
+      // accessibility tree but that does NOT block their view of
+      // the design:
+      //
+      //   - `<span style={srOnlyStyle}>Sign in to view your cart.</span>`
+      //     in `frontend/src/features/cart/CartPanel.tsx` — describes
+      //     a DISABLED Cart trigger button so screen reader users
+      //     know why they cannot interact with it.
+      //
+      //   - `<span style={srOnlyStyle}>Sign in to view and load your
+      //     saved designs.</span>` in
+      //     `frontend/src/features/design-management/LoadDesignList.tsx`
+      //     — same affordance for the disabled "Load saved design"
+      //     button.
+      //
+      // These spans are CORRECT WCAG-compliant accessibility
+      // affordances that explain why an unauthenticated visitor sees
+      // disabled Cart and Load Design buttons. They are NOT sign-in
+      // prompts in the user-facing sense: there is no modal, no
+      // form, no CTA actionable button, no interstitial that the
+      // visitor must dismiss before seeing the design.
+      //
+      // The canonical contract (ST-029-AC3) is "visiting a valid,
+      // unexpired share link returns enough data for the configurator
+      // to render the target design without signing in". A
+      // "sign-in prompt" in the contract sense is an actionable
+      // button/form/modal that the visitor must use to view the
+      // design — NOT every textual mention of the word "sign in".
+      //
+      // The refined selector below catches:
+      //
+      //   1. A real sign-in `<button>` whose accessible name starts
+      //      with "Sign in", "Log in", or "Login" — this would be
+      //      a CTA the visitor must click. The disabled Cart/Save
+      //      buttons in the configurator are NOT named "Sign in" —
+      //      their accessible names are "Cart", "Save Design", and
+      //      "Load saved design", so they do NOT match this regex.
+      //
+      //   2. A "Please sign in" interstitial — this phrasing only
+      //      appears in error-recovery copy for already-authenticated
+      //      users whose token expired (see SaveDesignCta, CartPanel,
+      //      etc.). A fresh unauthenticated visitor never sees this
+      //      text because they never had a session to expire.
+      //
+      // The dropped `getByText(/sign in to view/i)` clause was a
+      // false-positive trigger for the sr-only affordance text and
+      // is replaced by the tighter `^please sign in` matcher (only
+      // matches text STARTING with "please sign in" — guards
+      // against substring matches of the kind that bit us before).
       const canvas = visitorPage.locator('canvas').first();
       const signInPrompt = visitorPage
         .getByRole('button', { name: /^sign in|^log in|^login/i })
-        .or(visitorPage.getByText(/please sign in|sign in to view/i));
+        .or(visitorPage.getByText(/^please sign in/i));
 
       // Wait for EITHER a canvas to appear OR a definitive
       // non-canvas read-only surface. Give 15s for the canvas
@@ -864,7 +1019,7 @@ test.describe('Share link flow', () => {
   // standard non-existence semantics. A 5xx is a defect (unhandled
   // exception path). A 2xx is a defect (the backend would be
   // disclosing arbitrary internal state).
-  test('invalid share token returns 4xx', async ({ request }) => {
+  test('ST-045-AC1: invalid share token returns 4xx', async ({ request }) => {
     // `randomUUID()` produces a UUID v4 — 122 bits of entropy makes
     // collision with any actually-minted token astronomically
     // unlikely. The `invalid-token-` prefix makes the intent clear

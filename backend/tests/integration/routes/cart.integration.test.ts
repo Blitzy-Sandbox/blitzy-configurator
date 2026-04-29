@@ -284,13 +284,18 @@ const FORBIDDEN_R9_PATTERN =
   /(stripe|braintree|paypal|paymentintent|payment_intent|paymentmethod|payment_method|charge|refund|tokenize)/i;
 
 /**
- * The exact subtotal string the production contract guarantees for an
- * empty cart (`backend/src/services/order.service.ts` line ~430:
- * `EMPTY_SUBTOTAL = '0.00'`). This is a STRING with two-decimal
- * precision, NOT a number — the production contract preserves the
- * Postgres `numeric` shape verbatim.
+ * The exact subtotal value the production wire format guarantees for
+ * an empty cart. The internal contract preserves Postgres NUMERIC(12,2)
+ * by emitting a string ('0.00'); the route layer's
+ * {@link backend/src/routes/_serialize.ts#serializeCart} coerces this
+ * to a JS number (0) for the wire format consumed by the frontend.
+ *
+ * QA Final D Issue #9: the wire format MUST be a JS number per the
+ * `frontend/src/api/orders.ts` Cart interface and the E2E suite's
+ * `expect(typeof cart.subtotal).toBe('number')` invariant
+ * (frontend/tests/e2e/cart-and-order-flow.spec.ts:546).
  */
-const EMPTY_CART_SUBTOTAL = '0.00';
+const EMPTY_CART_SUBTOTAL = 0;
 
 /**
  * A sentinel bearer-token value used to verify Rule R2: the response
@@ -659,8 +664,9 @@ describe('GET /api/cart (integration)', () => {
       expect(res.status).not.toBe(404);
 
       // Shape: the response body MUST contain `items` (an array) and
-      // `subtotal` (the literal string '0.00'). Other fields (e.g.
-      // `userId`) are non-strict surplus permitted by the contract.
+      // `subtotal` (the JS number 0 after route-layer coercion). Other
+      // fields (e.g. `userId`) are non-strict surplus permitted by the
+      // contract.
       expect(res.body).toBeDefined();
       expect(res.body).toHaveProperty('items');
       expect(Array.isArray(res.body.items)).toBe(true);

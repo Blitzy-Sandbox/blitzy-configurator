@@ -41,15 +41,23 @@
  * ===========================================================================
  *
  *   - Rule R2 (no credential material in logs): this file performs
- *     ZERO `console.*` calls; the constants `FAKE_ID_TOKEN` and
- *     `'fake-refresh-token-for-tests'` are placeholder strings only
- *     and are never logged. The frontend ESLint config enforces
- *     `no-console: error` (allowing only `warn` and `error`), and the
- *     workspace lint gate runs with `--max-warnings 0`.
- *   - Rule R3 (Firebase Admin SDK only on backend): this file
- *     does NOT import `firebase-admin`, never parses or verifies a
- *     JWT manually, and never invokes `verifyIdToken()`. It only
- *     seeds Firebase JS SDK persistence state via localStorage.
+ *     ZERO `console.*` calls. The Firebase Auth Emulator-issued
+ *     `idToken` and `refreshToken` are stored only on the
+ *     EmulatorUser object and used solely as opaque strings by the
+ *     SDK's signIn flow — they are never logged. The Emulator user
+ *     password (`'Test-Password-1234'`) is a shared throwaway used
+ *     only against the local emulator and is never logged. The
+ *     frontend ESLint config enforces `no-console: error` (allowing
+ *     only `warn` and `error`), and the workspace lint gate runs
+ *     with `--max-warnings 0`.
+ *   - Rule R3 (Firebase Admin SDK only on backend): this file does
+ *     NOT import `firebase-admin`, never parses or verifies a JWT
+ *     manually, and never invokes `verifyIdToken()`. The Emulator-
+ *     issued idToken is treated opaquely; the SPA's Firebase JS SDK
+ *     manages it internally after `signIn()` resolves. Token
+ *     verification still occurs server-side via the live backend
+ *     authentication middleware (which is not exercised here because
+ *     all `/api/**` calls are mocked at the page boundary).
  *   - Rule R7 / C6 (Fabric → Three texture order): this file does NOT
  *     touch the texture pipeline; the only canvas it inspects is the
  *     R3F `<canvas>` element, which is masked out of every snapshot.
@@ -65,14 +73,20 @@
  * Determinism Strategy
  * ===========================================================================
  *
- *   - Authentication is simulated via `page.addInitScript()` writing
- *     the Firebase JS SDK's persisted localStorage key
- *     `firebase:authUser:<apiKey>:[DEFAULT]`. With a persisted
- *     authenticated user already in localStorage when the SPA boots,
- *     the auth state observer resolves immediately to the seeded user
- *     and the order endpoints, which require a valid session, see a
- *     non-anonymous principal. This avoids hitting any real or
- *     emulated Firebase Auth REST endpoint.
+ *   - Authentication is established via the production E2E pattern:
+ *     each test calls `registerEmulatorUser(request)` (which talks
+ *     to the live Firebase Auth Emulator at `localhost:9099` to
+ *     create a fresh user via the Identity Toolkit signUp REST
+ *     endpoint) and then `signInViaTestHook(page, user)` (which
+ *     drives the SPA's Firebase JS SDK through the
+ *     `window.__strikeforge_test_auth__` test-only hook to invoke
+ *     `signInWithEmailAndPassword()`). After `signIn()` resolves the
+ *     SDK's `onAuthStateChanged` observer fires, React re-renders
+ *     with `isAuthenticated = true`, and the gated UI elements (the
+ *     cart trigger, the order-creation CTA, etc.) become enabled.
+ *     This replaces the prior `setAuthenticatedState` localStorage-
+ *     seeding helper, which silently failed under Firebase v10's
+ *     `browserLocalPersistence` rehydrate validation.
  *   - All `/api/cart`, `/api/designs**`, `/api/orders`, `/api/orders/:id`,
  *     and `/api/orders/:id/finalize` calls are mocked through a single
  *     dispatching `page.route('**\/api/**')` handler. Pattern matching
@@ -82,10 +96,10 @@
  *     ambiguity that overlapping `page.route()` glob registrations
  *     could otherwise produce.
  *   - Firebase Auth REST URLs (`identitytoolkit.googleapis.com` and
- *     `securetoken.googleapis.com`) are intercepted with empty 200
- *     fixtures so any background SDK refresh attempt does not produce
- *     a network error and therefore does not surface in the
- *     screenshot.
+ *     `securetoken.googleapis.com`) are NOT mocked — the new auth
+ *     bootstrap depends on the live Firebase Auth Emulator. Mocking
+ *     these endpoints would break the real `signIn()` flow and the
+ *     SDK would never settle to an authenticated principal.
  *   - Order ID, line items, subtotal, currency, and timestamps are
  *     FIXED via module-scope constants so the rendered confirmation
  *     surface is byte-deterministic across runs.
@@ -120,7 +134,109 @@
  *   proceeds straight to the confirmation container locator).
  */
 
-import { test, expect, type Page, type Route, type Request } from '@playwright/test';
+import {
+  test,
+  expect,
+  type APIRequestContext,
+  type Page,
+  type Route,
+  type Request,
+} from '@playwright/test';
+import { randomUUID } from 'node:crypto';
+
+// ---------------------------------------------------------------------------
+// QA Final D — Visual auth bootstrap
+// ---------------------------------------------------------------------------
+//
+// See `tests/visual/cart.spec.ts` for the full rationale. Briefly:
+// the prior localStorage-seeding helper (`setAuthenticatedState`)
+// silently failed under Firebase v10's `browserLocalPersistence`
+// rehydrate validation, leaving the Cart trigger button disabled
+// because the SPA booted anonymous. The current approach uses the
+// production E2E `signInViaTestHook` pattern, which talks to the live
+// Firebase Auth Emulator at localhost:9099 to create a real
+// authenticated SDK state.
+//
+// Per Rule R3 the spec does NOT import `firebase-admin`, never
+// parses or verifies a JWT manually, and never invokes
+// `verifyIdToken()`. The Emulator-issued idToken is treated opaquely;
+// the SPA's Firebase JS SDK manages it internally after `signIn()`
+// resolves. Server-side token verification still occurs in the live
+// backend authentication middleware, which is not exercised here
+// because all `/api/**` calls are mocked at the page boundary.
+//
+// Per Rule R2 the spec performs ZERO `console.*` calls. The
+// Emulator-issued idToken / refreshToken are stored only on the
+// EmulatorUser object and used solely as opaque strings by the SDK's
+// signIn flow — they are never logged. The Emulator user password
+// (`'Test-Password-1234'`) is a shared throwaway used only against
+// the local emulator and is never logged.
+
+const FIREBASE_AUTH_EMULATOR_HOST = 'http://localhost:9099';
+const FIREBASE_API_KEY = 'local-emulator-key';
+
+interface EmulatorUser {
+  uid: string;
+  email: string;
+  password: string;
+  idToken: string;
+  refreshToken: string;
+}
+
+async function registerEmulatorUser(request: APIRequestContext): Promise<EmulatorUser> {
+  const email = `visual-order-confirmation-${Date.now()}-${randomUUID()}@strikeforge.test`;
+  const password = 'Test-Password-1234';
+
+  const response = await request.post(
+    `${FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=${FIREBASE_API_KEY}`,
+    { data: { email, password, returnSecureToken: true } },
+  );
+
+  if (!response.ok()) {
+    throw new Error(
+      `Firebase Auth Emulator signUp failed with status ${response.status()}; body: ${await response.text()}`,
+    );
+  }
+
+  const body = (await response.json()) as {
+    localId: string;
+    idToken: string;
+    refreshToken: string;
+    email: string;
+  };
+
+  return {
+    uid: body.localId,
+    email: body.email,
+    password,
+    idToken: body.idToken,
+    refreshToken: body.refreshToken,
+  };
+}
+
+async function signInViaTestHook(page: Page, user: EmulatorUser): Promise<void> {
+  await page.waitForFunction(
+    () => typeof window.__strikeforge_test_auth__ !== 'undefined',
+    { timeout: 10_000 },
+  );
+
+  await page.evaluate(
+    async (args: { email: string; password: string }) => {
+      await window.__strikeforge_test_auth__!.signIn(args.email, args.password);
+    },
+    { email: user.email, password: user.password },
+  );
+
+  const signedInUid = await page.evaluate(() => {
+    const current = window.__strikeforge_test_auth__!.getCurrentUser();
+    return current === null ? null : current.uid;
+  });
+  if (signedInUid !== user.uid) {
+    throw new Error(
+      `signInViaTestHook: expected currentUser.uid=${user.uid} after signIn but observed ${String(signedInUid)}`,
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Type aliases
@@ -232,13 +348,11 @@ type DesignSummary = {
 // `npx playwright test tests/visual/order-confirmation.spec.ts --update-snapshots`
 // followed by a deliberate commit (per ST-046-AC4).
 
-/**
- * Placeholder ID-token string used to simulate an authenticated
- * session. This is NOT a real JWT — it is an opaque string that the
- * spec never logs. Per Rule R2, no `console.*` call ever references
- * this constant.
- */
-const FAKE_ID_TOKEN = 'fake-id-token-for-tests';
+// QA Final D — `FAKE_ID_TOKEN` constant removed. Auth is now driven
+// by a real Firebase Auth Emulator user via `registerEmulatorUser` +
+// `signInViaTestHook` (see "Visual auth bootstrap" section near the
+// top of the file). The SDK manages its own idToken / refreshToken
+// internally; the spec never references either directly.
 
 /**
  * Fixed ISO-8601 timestamp used for every `createdAt` and
@@ -262,78 +376,13 @@ const FIXED_TIMESTAMP = '2024-06-15T12:00:00.000Z';
 const FIXED_ORDER_ID = 'order-fixture-deterministic-001';
 
 // ---------------------------------------------------------------------------
-// Helper — setAuthenticatedState(page, options?)
+// Helper — (REMOVED) setAuthenticatedState(page, options?)
 // ---------------------------------------------------------------------------
 //
-// Seeds the Firebase JS SDK's persisted localStorage key BEFORE any
-// page script runs, so the SPA's onAuthStateChanged() observer
-// resolves to the seeded user immediately on boot — no network round
-// trip to identitytoolkit.googleapis.com, no signInWithEmailAndPassword
-// dialog, no flicker from anonymous → authenticated.
-//
-// The shape written to localStorage matches the v10 Firebase JS SDK's
-// authUser persistence schema — every required field is present so
-// that Firebase's persistence-rehydrate path accepts the entry. The
-// `apiKey` is `'fake-api-key'` here; if the real SPA constructs
-// firebase config from `import.meta.env.VITE_FIREBASE_API_KEY` and
-// that env var is absent at test time, the SDK falls back to its own
-// initialized apiKey value — but the persistence key uses whatever
-// apiKey the SDK was initialized with, NOT the one we wrote here.
-// Because we additionally mock all `identitytoolkit.googleapis.com/**`
-// and `securetoken.googleapis.com/**` calls with empty 200 fixtures,
-// any divergence between the seeded apiKey and the SDK's runtime
-// apiKey degrades gracefully — the SDK simply does not find a
-// persisted user and proceeds anonymously, but the order-flow
-// fixtures still respond deterministically because they do not
-// inspect the bearer token.
-//
-// `addInitScript` ensures the localStorage write happens before any
-// SPA script — Firebase JS SDK reads persistence synchronously
-// during its initialization, so the seed must be present at module
-// evaluation time.
-async function setAuthenticatedState(
-  page: Page,
-  options: { uid?: string; email?: string; idToken?: string } = {},
-): Promise<void> {
-  const uid = options.uid ?? 'test-user-uid-order';
-  const email = options.email ?? 'order-test@example.test';
-  const idToken = options.idToken ?? FAKE_ID_TOKEN;
-
-  await page.addInitScript(
-    (args: { uid: string; email: string; idToken: string }) => {
-      const apiKey = 'fake-api-key';
-      const persistKey = `firebase:authUser:${apiKey}:[DEFAULT]`;
-      const now = Date.now();
-      const persistedUser = {
-        uid: args.uid,
-        email: args.email,
-        emailVerified: true,
-        isAnonymous: false,
-        providerData: [
-          {
-            providerId: 'password',
-            uid: args.email,
-            displayName: null,
-            email: args.email,
-            phoneNumber: null,
-            photoURL: null,
-          },
-        ],
-        stsTokenManager: {
-          refreshToken: 'fake-refresh-token-for-tests',
-          accessToken: args.idToken,
-          expirationTime: now + 60 * 60 * 1000,
-        },
-        createdAt: String(now),
-        lastLoginAt: String(now),
-        apiKey,
-        appName: '[DEFAULT]',
-      };
-      window.localStorage.setItem(persistKey, JSON.stringify(persistedUser));
-    },
-    { uid, email, idToken },
-  );
-}
+// QA Final D — the previous localStorage-seeding helper has been
+// removed. See the "Visual auth bootstrap" section near the top of
+// the file for the replacement: `registerEmulatorUser(request)` +
+// `signInViaTestHook(page, user)`.
 
 // ---------------------------------------------------------------------------
 // Helper — mockBackendApi(page, options?)
@@ -365,24 +414,12 @@ async function mockBackendApi(
   } = {},
 ): Promise<void> {
   // ---------------------------------------------------------------------
-  // Firebase Auth REST endpoints — block both Identity Toolkit and the
-  // Secure Token Service so any background SDK refresh attempt resolves
-  // synthetically rather than producing a real network failure.
+  // QA Final D — Firebase Auth REST endpoints are NOT mocked. The new
+  // auth bootstrap (signInViaTestHook + registerEmulatorUser) talks to
+  // the live Firebase Auth Emulator at localhost:9099. Mocking the
+  // identitytoolkit.googleapis.com / securetoken.googleapis.com
+  // endpoints would break the real sign-in flow.
   // ---------------------------------------------------------------------
-  await page.route('**/identitytoolkit.googleapis.com/**', (route: Route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
-  );
-  await page.route('**/securetoken.googleapis.com/**', (route: Route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        id_token: FAKE_ID_TOKEN,
-        refresh_token: 'fake-refresh-token-for-tests',
-        expires_in: '3600',
-      }),
-    }),
-  );
 
   // ---------------------------------------------------------------------
   // Base order shape used as a template for every order response. The
@@ -511,14 +548,18 @@ async function mockBackendApi(
 // file.
 
 test.describe('Order confirmation visual regression', () => {
-  test('finalized order confirmation', async ({ page }) => {
+  test('ST-046-AC1: finalized order confirmation', async ({ page, request }) => {
     // -----------------------------------------------------------------
-    // 1) Seed authenticated session BEFORE navigation.
+    // 1) Auth bootstrap — register a fresh Emulator user.
     // -----------------------------------------------------------------
     //
-    // `addInitScript` runs in every new document, so localStorage is
-    // populated before any SPA script reads `firebase.auth()`.
-    await setAuthenticatedState(page);
+    // QA Final D — Issue #5 (ORDER-CONFIRMATION-VISUAL-AUTH).
+    // The cart trigger and order-creation flow render `[disabled]`
+    // for anonymous principals; we register a Firebase Auth Emulator
+    // user here and sign in via the SPA's test-only hook AFTER the
+    // canvas mounts (see step 5 below). Each test creates its OWN
+    // fresh user so the test is fully isolated.
+    const user = await registerEmulatorUser(request);
 
     // -----------------------------------------------------------------
     // 2) Build the deterministic fixtures.
@@ -587,7 +628,20 @@ test.describe('Order confirmation visual regression', () => {
     await page.waitForSelector('canvas', { state: 'attached', timeout: 15_000 });
 
     // -----------------------------------------------------------------
-    // 5) Open the cart view (Step 1 of the flow).
+    // 5) Drive the SPA through Firebase JS SDK signIn via the
+    //    test-only `window.__strikeforge_test_auth__` hook.
+    // -----------------------------------------------------------------
+    //
+    // After `signIn()` resolves the SDK's `onAuthStateChanged`
+    // observer fires, React re-renders with `isAuthenticated=true`,
+    // and the cart trigger (rendered `[disabled]` for anonymous
+    // principals via `title="Sign in to view your cart."`) becomes
+    // enabled.
+    await signInViaTestHook(page, user);
+    await page.waitForLoadState('networkidle');
+
+    // -----------------------------------------------------------------
+    // 6) Open the cart view (Step 1 of the flow).
     // -----------------------------------------------------------------
     //
     // The cart trigger may be:
@@ -612,8 +666,29 @@ test.describe('Order confirmation visual regression', () => {
       .or(page.getByTestId('cart-panel'));
     await cartContainer.first().waitFor({ state: 'visible', timeout: 5_000 });
 
+    // QA Final D — Wait for the cart contents to fully render before
+    // attempting to click the create-order button. The CartPanel
+    // mounts in `actionState='loading'` (rendering "Loading cart…"
+    // via `data-testid="cart-loading"`) while it fetches GET
+    // /api/cart, then transitions to `actionState='loaded'` which
+    // is when the items list and `data-testid="create-order-button"`
+    // mount. Without this wait, Playwright's locator may resolve to
+    // a transient button instance that gets detached from the DOM
+    // when React commits the loaded subtree, producing a
+    // "element was detached from the DOM, retrying" failure.
+    //
+    // We positively assert the loaded state by waiting for the first
+    // `cart-line-item` to be visible — this guarantees both that
+    // `actionState === 'loaded'` AND that items are rendered, so the
+    // create-order-button is stably mounted and ready for click.
+    await cartContainer
+      .first()
+      .getByTestId('cart-line-item')
+      .first()
+      .waitFor({ state: 'visible', timeout: 5_000 });
+
     // -----------------------------------------------------------------
-    // 6) Trigger order creation (Step 2 of the flow).
+    // 7) Trigger order creation (Step 2 of the flow).
     // -----------------------------------------------------------------
     //
     // Per Rule R9, the CTA must use ORDER terminology — "Create
@@ -629,7 +704,7 @@ test.describe('Order confirmation visual regression', () => {
     await createOrderBtn.first().click();
 
     // -----------------------------------------------------------------
-    // 7) Trigger finalization if the implementation requires a
+    // 8) Trigger finalization if the implementation requires a
     // separate "Finalize" button (Step 3 of the flow).
     // -----------------------------------------------------------------
     //
@@ -662,7 +737,7 @@ test.describe('Order confirmation visual regression', () => {
     }
 
     // -----------------------------------------------------------------
-    // 8) Wait for the order confirmation surface to render.
+    // 9) Wait for the order confirmation surface to render.
     // -----------------------------------------------------------------
     //
     // The confirmation container could be:
@@ -688,7 +763,7 @@ test.describe('Order confirmation visual regression', () => {
     await page.waitForLoadState('networkidle');
 
     // -----------------------------------------------------------------
-    // 9) Capture the visual baseline.
+    // 10) Capture the visual baseline.
     // -----------------------------------------------------------------
     //
     // The masked regions cover every potential source of dynamic

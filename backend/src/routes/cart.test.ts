@@ -54,8 +54,10 @@
  *      `orderService.getCart({ userId })` so the service queries only
  *      the authenticated user's cart (AC1).
  *   7. Returns 200 with the documented empty representation
- *      (`items: []`, `subtotal: '0.00'`) when the service reports no
- *      cart history — NOT 404 (AC3).
+ *      (`items: []`, `subtotal: 0`) when the service reports no
+ *      cart history — NOT 404 (AC3). The wire format coerces the
+ *      service-layer NUMERIC string to a JS number; see
+ *      `backend/src/routes/_serialize.ts`.
  *   8. Two consecutive requests against the same authenticated context
  *      return identical bodies; no service mutation method is called
  *      between them (AC4).
@@ -312,6 +314,12 @@ describe('GET /api/cart — ST-033-AC1/AC2 (authenticated, returns cart)', () =>
     // Arrange — service returns a cart with one line item and a
     // calculated subtotal. Per ST-033-AC2, the response must include
     // each item with quantity, designId, metadata, plus the subtotal.
+    //
+    // The repository contract preserves PostgreSQL NUMERIC(12,2) by
+    // emitting `subtotal` as a string ('50.00'). The route layer's
+    // {@link serializeCart} coerces this to a JS number (50) for the
+    // wire format; the assertion below pins the post-serialisation
+    // shape that callers actually observe.
     const cart = {
       userId: TEST_UID,
       items: [
@@ -331,9 +339,11 @@ describe('GET /api/cart — ST-033-AC1/AC2 (authenticated, returns cart)', () =>
     // Act
     const res = await request(app).get('/api/cart');
 
-    // Assert — status + body shape exactly match the service result.
+    // Assert — status + body shape match the service result with
+    // subtotal coerced to number per the wire-format contract.
     expect(res.status).toBe(200);
-    expect(res.body).toEqual(cart);
+    expect(res.body).toEqual({ ...cart, subtotal: 50 });
+    expect(typeof res.body.subtotal).toBe('number');
   });
 
   it('forwards req.uid to orderService.getCart (AC1 ownership scoping)', async () => {
@@ -384,7 +394,11 @@ describe('GET /api/cart — ST-033-AC3 (empty cart returns 200, NOT 404)', () =>
     //
     // The service contract guarantees the empty representation
     // shape `{ userId, items: [], subtotal: '0.00' }`; the route
-    // forwards verbatim with HTTP 200.
+    // layer's {@link serializeCart} coerces the NUMERIC-safe string
+    // to a JS number (0) for the wire format consumed by the
+    // frontend (see `frontend/src/api/orders.ts` Cart interface and
+    // QA Final D Issue #9 — the E2E suite asserts
+    // `typeof cart.subtotal === 'number'`).
     const orderService = buildOrderService();
     const TEST_UID = 'fresh-user-uid';
     orderService.getCart.mockResolvedValueOnce({
@@ -398,17 +412,18 @@ describe('GET /api/cart — ST-033-AC3 (empty cart returns 200, NOT 404)', () =>
 
     // Critical assertions — status is 200 (NEVER 404), body is the
     // empty shape, items is an empty array, subtotal is the
-    // documented '0.00' string.
+    // documented `0` JS number after coercion.
     expect(res.status).toBe(200);
     expect(res.status).not.toBe(404);
     expect(res.body).toEqual({
       userId: TEST_UID,
       items: [],
-      subtotal: '0.00',
+      subtotal: 0,
     });
     expect(Array.isArray(res.body.items)).toBe(true);
     expect(res.body.items).toHaveLength(0);
-    expect(res.body.subtotal).toBe('0.00');
+    expect(res.body.subtotal).toBe(0);
+    expect(typeof res.body.subtotal).toBe('number');
   });
 });
 

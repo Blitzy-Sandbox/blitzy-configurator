@@ -225,7 +225,7 @@ test.describe('Configurator load flow', () => {
   // The error-collection arrays are deliberately kept inside the
   // `test()` closure (NOT module-scope) so each test run starts with
   // a fresh empty buffer.
-  test('configurator loads with canvas, controls, and default summary', async ({ page }) => {
+  test('ST-045-AC1: configurator loads with canvas, controls, and default summary', async ({ page }) => {
     // ----- Console error detection -----
     // Buffer console errors observed during page lifecycle. Per
     // ST-001-AC4, the initial render must NOT emit console-level error
@@ -447,7 +447,7 @@ test.describe('Configurator load flow', () => {
   //     config) sits comfortably above this bound, so a hung test
   //     fails on the per-test timeout, not the assertion — the
   //     assertion only fails on actual measurable slowness.
-  test('configurator load completes within reasonable bound', async ({ page }) => {
+  test('ST-045-AC1: configurator load completes within reasonable bound', async ({ page }) => {
     const startTime = Date.now();
 
     await page.goto('/');

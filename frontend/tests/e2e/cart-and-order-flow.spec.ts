@@ -151,13 +151,16 @@ import { randomUUID } from 'node:crypto';
 //
 // FIREBASE_API_KEY is the literal token the emulator accepts as a
 // query parameter. The emulator does NOT validate API keys against
-// any allowlist — the value is opaque. Using `'fake-api-key'` matches
-// the placeholder used in the SPA's bootstrap config so the
-// localStorage persistence key (which embeds the apiKey) lines up
-// with whatever the SPA's own SDK initialization writes.
+// any allowlist — the value is opaque. CRITICAL: this MUST match
+// the SPA's own apiKey (`VITE_FIREBASE_API_KEY`, currently
+// `'local-emulator-key'` per `frontend/.env`) so the localStorage
+// persistence key the test writes
+// (`firebase:authUser:${apiKey}:[DEFAULT]`) lines up with the key
+// the SPA's Firebase JS SDK reads on page boot. See QA Final D
+// Issue #10.
 
 const FIREBASE_AUTH_EMULATOR_HOST = 'http://localhost:9099';
-const FIREBASE_API_KEY = 'fake-api-key';
+const FIREBASE_API_KEY = 'local-emulator-key';
 const BACKEND_BASE_URL = 'http://localhost:3000';
 
 // ---------------------------------------------------------------------------
@@ -275,111 +278,86 @@ async function registerEmulatorUser(request: APIRequestContext): Promise<Emulato
 }
 
 // ---------------------------------------------------------------------------
-// Helper — injectAuthState(page, user)
+// Helper — signInViaTestHook(page, user)
 // ---------------------------------------------------------------------------
 //
-// Seeds the Firebase JS SDK's persisted localStorage key BEFORE any
-// page script runs, so the SPA's `onAuthStateChanged()` observer
-// resolves to the seeded user immediately at boot. This avoids hitting
-// any real or emulated Firebase Auth REST endpoint via the SPA's own
-// sign-in flow.
+// Performs a real Firebase sign-in inside the running SPA via the
+// test-only `window.__strikeforge_test_auth__` hook installed by
+// `frontend/src/auth/firebase-client.ts`. The hook is gated by
+// `import.meta.env.DEV` so it is tree-shaken from production
+// builds.
 //
-// The shape written to localStorage matches the v10 Firebase JS SDK's
-// authUser persistence schema — every required field is present so
-// that Firebase's persistence-rehydrate path accepts the entry.
+// Why this approach rather than seeding localStorage:
 //
-// `addInitScript` ensures the localStorage write happens before any
-// SPA script — the Firebase JS SDK reads persistence synchronously
-// during initialization, so the seed must be present at module
-// evaluation time.
+//   - Firebase v10's default browser persistence is
+//     `indexedDBLocalPersistence`. A localStorage-seeded synthetic
+//     persistedUser record can be ignored by the SDK on rehydrate
+//     unless every internal validity check passes (apiKey match,
+//     stsTokenManager.expirationTime in the future, schema parity
+//     with the SDK's internal type). In practice, those checks
+//     diverge across SDK minor versions and the seed silently
+//     fails — the SPA boots anonymously.
+//   - The test hook calls the SAME `signInWithEmailAndPassword`
+//     code path the production sign-in UI uses. The SDK fires
+//     `onAuthStateChanged` listeners synchronously, React re-
+//     renders with `isAuthenticated = true`, and persistence is
+//     written by the SDK itself (no schema-mismatch risk).
 //
-// Per Rule R3, this function does NOT import `firebase-admin`, does
-// NOT mint a real JWT, and does NOT verify any token. It writes a
-// synthetic persistence record only.
+// Per Rule R3, this helper does NOT import `firebase-admin`, does
+// NOT mint or decode JWTs, and does NOT call `verifyIdToken()`. It
+// invokes only the public Firebase JS SDK surface via the hook.
+// Per Rule R2, this helper does NOT log credentials.
+//
+// Sequence:
+//   1. Navigate to `/` so the Vite-served SPA initializes Firebase
+//      Auth and attaches the test hook.
+//   2. Wait for `networkidle` so the initial bundle has loaded.
+//   3. Wait until `window.__strikeforge_test_auth__` is defined
+//      (synchronous attachment after `initializeFirebaseClient()`
+//      returns).
+//   4. Call the hook's `signIn(email, password)` — this is a real
+//      Identity Toolkit `accounts:signInWithPassword` call against
+//      the Firebase Auth Emulator.
+//   5. Verify `getCurrentUser()` returns the signed-in user (uid
+//      match) — fail fast with a clear diagnostic if not.
+//   6. Wait for the configurator `<canvas>` to attach (15s timeout
+//      covers software-WebGL warmup on CI runners) and park the
+//      mouse so idle auto-rotation does not fire during tests.
+//
+// After this helper returns, the page is at `/`, the user is
+// signed in, the configurator is interactive, and subsequent
+// `page.reload()` calls preserve auth state via Firebase
+// persistence.
 
-async function injectAuthState(page: Page, user: EmulatorUser): Promise<void> {
-  await page.addInitScript(
-    (args: {
-      uid: string;
-      email: string;
-      idToken: string;
-      refreshToken: string;
-      apiKey: string;
-    }) => {
-      // The persistence key format is documented in firebase-js-sdk
-      // source as `firebase:authUser:${apiKey}:${appName}`. The SPA
-      // uses the default app name `[DEFAULT]`.
-      const persistKey = `firebase:authUser:${args.apiKey}:[DEFAULT]`;
-      const now = Date.now();
-      const persistedUser = {
-        uid: args.uid,
-        email: args.email,
-        emailVerified: false,
-        isAnonymous: false,
-        providerData: [
-          {
-            providerId: 'password',
-            uid: args.email,
-            displayName: null,
-            email: args.email,
-            phoneNumber: null,
-            photoURL: null,
-          },
-        ],
-        stsTokenManager: {
-          refreshToken: args.refreshToken,
-          accessToken: args.idToken,
-          // Tokens issued by the emulator are nominally valid for ~1
-          // hour. We mirror that lifetime here so the SDK does not
-          // immediately attempt a refresh on first read.
-          expirationTime: now + 60 * 60 * 1000,
-        },
-        createdAt: String(now),
-        lastLoginAt: String(now),
-        apiKey: args.apiKey,
-        appName: '[DEFAULT]',
-      };
-      window.localStorage.setItem(persistKey, JSON.stringify(persistedUser));
-    },
-    {
-      uid: user.uid,
-      email: user.email,
-      idToken: user.idToken,
-      refreshToken: user.refreshToken,
-      apiKey: FIREBASE_API_KEY,
-    },
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Helper — waitForConfiguratorReady(page)
-// ---------------------------------------------------------------------------
-//
-// Drives the SPA from initial navigation to the "configurator
-// interactive" state:
-//
-//   1. Navigate to `/` (Vite serves the SPA at baseURL).
-//   2. Wait for `networkidle` so the initial bundle, the Firebase
-//      SDK's persistence rehydrate, and any startup `/api/*` prefetch
-//      have all settled.
-//   3. Wait for a `<canvas>` element to attach — this is the R3F
-//      `<Canvas>` mount signal. Until the canvas attaches, the
-//      configurator's controls sidebar may not be fully hydrated and
-//      subsequent interactions can race against React StrictMode's
-//      double-mount path.
-//   4. Park the mouse over the controls sidebar (x=50, y=300) so the
-//      idle auto-rotation timer in `useIdleAutoRotate.ts` does NOT
-//      fire during the test (it triggers only after the canvas has
-//      been mouse-still for the documented idle interval).
-//   5. Final `networkidle` to confirm any post-mount hydration work
-//      has resolved before the test starts interacting.
-//
-// 15-second timeout for the canvas-attach wait covers software-WebGL
-// warmup on CI runners (SwiftShader / llvmpipe).
-
-async function waitForConfiguratorReady(page: Page): Promise<void> {
+async function signInViaTestHook(page: Page, user: EmulatorUser): Promise<void> {
   await page.goto('/');
   await page.waitForLoadState('networkidle');
+
+  await page.waitForFunction(() => typeof window.__strikeforge_test_auth__ !== 'undefined', {
+    timeout: 10_000,
+  });
+
+  await page.evaluate(
+    async (args: { email: string; password: string }) => {
+      await window.__strikeforge_test_auth__!.signIn(args.email, args.password);
+    },
+    { email: user.email, password: user.password },
+  );
+
+  await page.waitForLoadState('networkidle');
+
+  const signedInUid = await page.evaluate(() => {
+    const current = window.__strikeforge_test_auth__!.getCurrentUser();
+    return current === null ? null : current.uid;
+  });
+  if (signedInUid !== user.uid) {
+    throw new Error(
+      `signInViaTestHook: expected currentUser.uid=${user.uid} after signIn but observed ${String(
+        signedInUid,
+      )}`,
+    );
+  }
+
   await page.locator('canvas').first().waitFor({ state: 'attached', timeout: 15_000 });
   await page.mouse.move(50, 300);
   await page.waitForLoadState('networkidle');
@@ -543,7 +521,7 @@ test.describe('Cart and order flow', () => {
   // with a SUCCESS status — never a 404. This is the headline
   // contract that distinguishes ST-033 from a generic CRUD GET.
 
-  test('empty cart returns 200 with empty representation', async ({ request }) => {
+  test('ST-045-AC1: empty cart returns 200 with empty representation', async ({ request }) => {
     const user = await registerEmulatorUser(request);
     const cart = await getCart(request, user.idToken);
 
@@ -564,7 +542,7 @@ test.describe('Cart and order flow', () => {
   // unauthenticated callers must therefore be rejected before any
   // user-scoped data is loaded.
 
-  test('cart endpoint requires authentication', async ({ request }) => {
+  test('ST-045-AC1: cart endpoint requires authentication', async ({ request }) => {
     const response = await request.get(`${BACKEND_BASE_URL}/api/cart`);
     expect(response.status(), 'Unauthenticated GET /api/cart must return 401').toBe(401);
   });
@@ -587,7 +565,7 @@ test.describe('Cart and order flow', () => {
   //       server crash, which is a real defect, not a documented
   //       rejection path.
 
-  test('create order returns state=created with server-assigned id', async ({ request }) => {
+  test('ST-045-AC1: create order returns state=created with server-assigned id', async ({ request }) => {
     const user = await registerEmulatorUser(request);
     // Seed a design so the user has at least one persisted design
     // they could nominally add to a cart. The exact mechanism for
@@ -639,7 +617,7 @@ test.describe('Cart and order flow', () => {
   //   - Defense-in-depth: the state is in the union allowlist
   //     {created, finalized} per Rule R9.
 
-  test('finalize order transitions state from created to finalized', async ({ request }) => {
+  test('ST-045-AC1: finalize order transitions state from created to finalized', async ({ request }) => {
     const user = await registerEmulatorUser(request);
     await createDesignViaApi(request, user.idToken);
 
@@ -681,7 +659,7 @@ test.describe('Cart and order flow', () => {
   // any 4xx status to insulate the test against minor convention
   // differences.
 
-  test('finalizing a non-existent order returns 4xx', async ({ request }) => {
+  test('ST-045-AC1: finalizing a non-existent order returns 4xx', async ({ request }) => {
     const user = await registerEmulatorUser(request);
     const response = await request.post(
       `${BACKEND_BASE_URL}/api/orders/${encodeURIComponent(randomUUID())}/finalize`,
@@ -710,7 +688,7 @@ test.describe('Cart and order flow', () => {
   // owned by user A, then attempts to finalize it as user B. The
   // attempt MUST fail with 4xx (not 5xx, not silent success).
 
-  test("non-owner cannot finalize another user's order", async ({ request }) => {
+  test("ST-045-AC1: non-owner cannot finalize another user's order", async ({ request }) => {
     const owner = await registerEmulatorUser(request);
     const stranger = await registerEmulatorUser(request);
 
@@ -768,19 +746,47 @@ test.describe('Cart and order flow', () => {
   // OR data-testid fallback (insulates against accessible-name
   // refactors).
 
-  test('UI exposes Add to Cart CTA in the design summary sidebar', async ({ page, request }) => {
+  test('ST-045-AC1: UI exposes Add to Cart CTA in the design summary sidebar', async ({ page, request }) => {
     const user = await registerEmulatorUser(request);
-    await injectAuthState(page, user);
+    await signInViaTestHook(page, user);
 
-    await waitForConfiguratorReady(page);
+    // Mutate the design before clicking Save. The configurator
+    // store seeds `isSaved: true` for the pristine defaults (per
+    // ST-018-AC1: a freshly opened configurator has nothing to
+    // save), so the Save CTA's `computeDisabledReason` returns
+    // `'already-saved'` and the button is DISABLED at startup.
+    // Selecting a non-default swatch flips `isSaved` to `false`,
+    // which makes the Save CTA interactive.
+    const primaryPicker = page
+      .getByRole('group', { name: /primary color/i })
+      .or(page.getByTestId('primary-color-picker'))
+      .first();
+    await primaryPicker.waitFor({ state: 'visible', timeout: 10_000 });
+    const swatches = primaryPicker.getByRole('button').or(primaryPicker.getByRole('radio'));
+    await swatches.nth(1).click();
+    await page.waitForLoadState('networkidle');
 
     // Save a design so the design summary sidebar has a current
     // saved design to expose Add to Cart against.
-    const saveCta = page
-      .getByRole('button', { name: /^save( design)?$/i })
-      .or(page.getByTestId('save-design-cta'))
+    //
+    // TWO-STEP save flow per
+    // `frontend/src/features/design-management/SaveDesignCta.tsx`:
+    //   1. Click outer Save Design button (data-testid
+    //      `save-design-button`) — opens inline title form.
+    //   2. Click inner Save submit (data-testid
+    //      `save-design-submit`) — fires POST /api/designs.
+    const saveTrigger = page
+      .getByTestId('save-design-button')
+      .or(page.getByRole('button', { name: /^save design$/i }))
       .first();
-    await saveCta.waitFor({ state: 'visible', timeout: 10_000 });
+    await saveTrigger.waitFor({ state: 'visible', timeout: 10_000 });
+    await saveTrigger.click();
+
+    const saveSubmit = page
+      .getByTestId('save-design-submit')
+      .or(page.getByRole('button', { name: /^save$/i }))
+      .first();
+    await saveSubmit.waitFor({ state: 'visible', timeout: 10_000 });
 
     // Start the response listener BEFORE clicking — the canonical
     // Playwright pattern.
@@ -789,7 +795,7 @@ test.describe('Cart and order flow', () => {
         response.url().includes('/api/designs') && response.request().method() === 'POST',
       { timeout: 10_000 },
     );
-    await saveCta.click();
+    await saveSubmit.click();
     const saveResponse = await savePromise;
     expect(
       saveResponse.status(),
@@ -832,25 +838,45 @@ test.describe('Cart and order flow', () => {
   // cart endpoint will rely on, including future automation and
   // alternate frontends.
 
-  test('UI Add to Cart triggers backend cart update', async ({ page, request }) => {
+  test('ST-045-AC1: UI Add to Cart triggers backend cart update', async ({ page, request }) => {
     const user = await registerEmulatorUser(request);
-    await injectAuthState(page, user);
+    await signInViaTestHook(page, user);
 
-    await waitForConfiguratorReady(page);
+    // Mutate the design before clicking Save (see Test 7 comment
+    // for the rationale — `isSaved: true` is the pristine default).
+    const primaryPicker = page
+      .getByRole('group', { name: /primary color/i })
+      .or(page.getByTestId('primary-color-picker'))
+      .first();
+    await primaryPicker.waitFor({ state: 'visible', timeout: 10_000 });
+    const swatches = primaryPicker.getByRole('button').or(primaryPicker.getByRole('radio'));
+    await swatches.nth(1).click();
+    await page.waitForLoadState('networkidle');
 
     // Save the design first.
-    const saveCta = page
-      .getByRole('button', { name: /^save( design)?$/i })
-      .or(page.getByTestId('save-design-cta'))
+    //
+    // TWO-STEP save flow (see Test 7 for full explanation):
+    //   1. Click outer Save Design button — opens inline form.
+    //   2. Click inner Save submit — fires POST /api/designs.
+    const saveTrigger = page
+      .getByTestId('save-design-button')
+      .or(page.getByRole('button', { name: /^save design$/i }))
       .first();
-    await saveCta.waitFor({ state: 'visible', timeout: 10_000 });
+    await saveTrigger.waitFor({ state: 'visible', timeout: 10_000 });
+    await saveTrigger.click();
+
+    const saveSubmit = page
+      .getByTestId('save-design-submit')
+      .or(page.getByRole('button', { name: /^save$/i }))
+      .first();
+    await saveSubmit.waitFor({ state: 'visible', timeout: 10_000 });
 
     const savePromise = page.waitForResponse(
       (response) =>
         response.url().includes('/api/designs') && response.request().method() === 'POST',
       { timeout: 10_000 },
     );
-    await saveCta.click();
+    await saveSubmit.click();
     // Await the save response so subsequent UI state mutations have
     // the persisted design's id available. We don't assert the
     // status here — that's tested in Test 7.

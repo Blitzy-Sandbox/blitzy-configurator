@@ -352,7 +352,7 @@ test.describe('Configurator visual regression', () => {
     await page.waitForLoadState('networkidle');
   });
 
-  test('default state', async ({ page }) => {
+  test('ST-046-AC1: configurator default state', async ({ page }) => {
     // Capture the configurator surface immediately after mount with
     // the documented store defaults applied. The `mask` array hides
     // every `<canvas>` element from the diff:
@@ -371,7 +371,7 @@ test.describe('Configurator visual regression', () => {
     });
   });
 
-  test('customized state', async ({ page }) => {
+  test('ST-046-AC1: configurator customized state', async ({ page }) => {
     // -----------------------------------------------------------------
     // 1) Select a non-default primary color.
     // -----------------------------------------------------------------

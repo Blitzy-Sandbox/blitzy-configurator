@@ -524,7 +524,29 @@ function mapSharedToLoaded(view: SharedDesignView): LoadedDesignPayload {
     design.secondaryColor ?? CONFIGURATOR_DEFAULTS.secondaryColor;
   const accentColor = design.accentColor ?? CONFIGURATOR_DEFAULTS.accentColor;
 
-  if (design.logo === null) {
+  // QA Final D — Issue #4 (FRONTEND-MAPPER-ABSENCE): the backend's
+  // `validateAndNormalizePayload` (`backend/src/services/design.service.ts`)
+  // intentionally OMITS the `logo` field from the persisted JSONB
+  // payload when the caller submits `logo: null`. The comment in the
+  // backend service reads:
+  //
+  //   "When the caller supplies `null`, the field is intentionally
+  //    omitted from the normalized object — this signals 'no logo'
+  //    in the JSONB payload by absence rather than by an explicit
+  //    `null` value."
+  //
+  // As a result, the wire-format `design` object returned by
+  // `GET /api/share/:token` carries NO `logo` key at all when the
+  // design has no logo. The previous strict equality check
+  // (`design.logo === null`) therefore evaluated to `false` for
+  // `undefined`, fell through to the else branch, and threw on
+  // `design.logo.objectKey`. Treat BOTH `null` AND `undefined` as
+  // the canonical "no logo" wire shape. The frontend's TS interface
+  // declares `logo: DesignLogo | null` but the runtime contract is
+  // less strict — defensive narrowing here closes the gap without
+  // changing the public type surface. Strict equality is used per
+  // the workspace's `eqeqeq: error` ESLint rule.
+  if (design.logo === null || design.logo === undefined) {
     return {
       id: designId,
       title,

@@ -178,6 +178,37 @@ import { SaveDesignCta } from './features/design-management/SaveDesignCta';
 import { ShareDesignAction } from './features/design-management/ShareDesignAction';
 
 // ---------------------------------------------------------------------------
+// Cart + Order-confirmation feature components — mounted by the App shell
+// ---------------------------------------------------------------------------
+//
+// `CartPanel` is the user-facing entry point to the cart and order flow
+// (ST-032, ST-033, ST-034 in the AAP §0.6 — POST /api/orders, GET /api/cart,
+// POST /api/orders/:id/finalize). The component renders its own trigger
+// button + popover dialog and fetches the cart on open. After a successful
+// order creation it transitions to the order-confirmation view via its
+// embedded `<OrderConfirmationPanel>` instance — `OrderConfirmationPanel`
+// is therefore NOT mounted directly by App.tsx; it is owned by CartPanel.
+//
+// Mount-site placement: top navigation, alongside NewDesignDialog,
+// LoadDesignList, and ShareDesignAction. This mirrors the design-management
+// affordances and provides a consistent affordance area for cross-feature
+// actions. The trigger button is always rendered (visible-but-disabled
+// when the user is not signed in) so QA visual-regression tests can
+// reliably locate `data-testid="cart-trigger"` in the initial DOM
+// regardless of authentication state.
+//
+// Rule R9 compliance is enforced INSIDE the CartPanel component: the
+// component uses ONLY "Cart", "Order", "Items", "Quantity", "Subtotal",
+// "Create Order", "Finalize", "Confirmed" vocabulary — never "Total",
+// "Payment", "Charge", "Settlement", "Tokenize", "Capture", "Authorize",
+// "Bill", or "Invoice". App.tsx itself imports neither payment SDKs nor
+// any module that performs financial settlement; the right sidebar's
+// inline Add-to-Cart affordance (provided by `DesignSummarySidebar`) and
+// the `CartPanel` here both issue ONLY non-financial state-transition
+// calls (POST /api/orders) per AAP Rule R9 and §0.7.2.
+import { CartPanel } from './features/cart/CartPanel';
+
+// ---------------------------------------------------------------------------
 // Sub-components (co-located with the App shell for clarity)
 // ---------------------------------------------------------------------------
 
@@ -270,6 +301,27 @@ function AppHeader(): JSX.Element {
          * Load Designs, NOT inside the right summary sidebar.
          */}
         <ShareDesignAction />
+
+        {/*
+         * CartPanel (AAP §0.6 — ST-032/ST-033/ST-034) — renders its
+         * own trigger button + popover dialog. The trigger is the
+         * canonical `[data-testid="cart-trigger"]` element exercised
+         * by the visual-regression suite (`tests/visual/cart.spec.ts`)
+         * and the cart-and-order E2E flow
+         * (`tests/e2e/cart-and-order-flow.spec.ts`). The popover, when
+         * open, fetches the cart via GET /api/cart and renders the
+         * line items + subtotal; clicking "Create Order" issues
+         * POST /api/orders and transitions to the order-confirmation
+         * view (provided by the embedded `<OrderConfirmationPanel>`
+         * which is owned by CartPanel).
+         *
+         * The trigger is always rendered (disabled when not signed
+         * in) so the testid is present in the initial DOM regardless
+         * of authentication state — this is a hard requirement for
+         * the visual-regression `await page.locator('[data-testid="cart-trigger"]').click()`
+         * step which must succeed within the default 30s timeout.
+         */}
+        <CartPanel />
       </nav>
     </header>
   );

@@ -161,6 +161,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
 
 import type { OrderService } from '../services/order.service';
+import { serializeCart } from './_serialize';
 
 // ---------------------------------------------------------------------------
 // Section 1: Error envelope helpers
@@ -486,7 +487,18 @@ async function runGetCart(
     // directly to the response.
     const cart = await orderService.getCart({ userId: uid });
 
-    res.status(200).json(cart);
+    // QA Final D Issue #9 (CRITICAL): the repository preserves
+    // PostgreSQL NUMERIC(12,2) precision by emitting `subtotal` as a
+    // string (see Cart interface in
+    // backend/src/repositories/order.repository.ts). The wire format,
+    // by contrast, is consumed by the frontend's `subtotal: number`
+    // contract in `frontend/src/api/orders.ts` and the E2E suite's
+    // `expect(typeof cart.subtotal).toBe('number')` invariant
+    // (frontend/tests/e2e/cart-and-order-flow.spec.ts:546). The
+    // route layer is the natural transformation boundary;
+    // {@link serializeCart} performs the shallow string→number
+    // coercion with a defensive guard against malformed input.
+    res.status(200).json(serializeCart(cart));
   } catch (err) {
     handleRouteError(err, req, res, next);
   }

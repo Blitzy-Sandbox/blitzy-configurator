@@ -404,7 +404,10 @@ describe('POST /api/orders — ST-032 success path', () => {
     // ST-032-AC2: a successful order creation returns the canonical
     // persisted order with id, items, calculated subtotal, and
     // createdAt. The route forwards the service's return value
-    // verbatim with HTTP 201.
+    // through {@link serializeOrder} which coerces the NUMERIC-safe
+    // subtotal string to a JS number for the wire format. See QA
+    // Final D Issue #9 — the E2E suite pins
+    // `expect(typeof order.subtotal).toBe('number')`.
     const order = buildOrderFixture();
     orderService.createOrder.mockResolvedValueOnce(order);
 
@@ -415,7 +418,8 @@ describe('POST /api/orders — ST-032 success path', () => {
       });
 
     expect(res.status).toBe(201);
-    expect(res.body).toEqual(order);
+    expect(res.body).toEqual({ ...order, subtotal: 50 });
+    expect(typeof res.body.subtotal).toBe('number');
     // Per ST-032-AC4: the persisted state MUST be the documented
     // non-terminal `'created'` state, NOT any settlement-state.
     expect(res.body.state).toBe('created');
@@ -508,7 +512,12 @@ describe('POST /api/orders — ST-032 success path', () => {
     expect(res.status).toBe(201);
     expect(res.body.createdAt).toBe('2025-03-04T12:00:00.000Z');
     expect(res.body.id).toBe('order-uuid-aaaa-1111');
-    expect(typeof res.body.subtotal).toBe('string');
+    // QA Final D Issue #9 — the wire format coerces NUMERIC-safe
+    // strings to JS numbers via {@link serializeOrder}. The frontend
+    // contract (`frontend/src/api/orders.ts` Order interface) and the
+    // E2E suite (`frontend/tests/e2e/cart-and-order-flow.spec.ts:507`)
+    // both pin `typeof order.subtotal === 'number'`.
+    expect(typeof res.body.subtotal).toBe('number');
   });
 });
 
@@ -731,7 +740,11 @@ describe('POST /api/orders/:id/finalize — ST-034 success path', () => {
     const res = await request(app).post('/api/orders/22222222-2222-4222-8222-222222222222/finalize').send();
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual(finalized);
+    // QA Final D Issue #9 — the wire format coerces NUMERIC-safe
+    // subtotal strings to JS numbers. The fixture uses '50.00';
+    // {@link serializeOrder} emits 50.
+    expect(res.body).toEqual({ ...finalized, subtotal: 50 });
+    expect(typeof res.body.subtotal).toBe('number');
     // The state contract — explicit assertion to make Rule R9
     // compliance visible in the test verdict.
     expect(res.body.state).toBe('finalized');
@@ -1258,16 +1271,24 @@ describe('Rule R9 — no settlement-processor vocabulary in orders.ts', () => {
     expect(source).not.toMatch(forbiddenRequireRegex);
   });
 
-  it('only imports from express, zod, and the local order.service module', () => {
+  it('only imports from express, zod, the local order.service module, and the local _serialize module', () => {
     // Positive assertion to complement the exclusion checks. The
     // route file imports exactly: express types/Router, zod
-    // types/z, and the local order.service OrderService type.
+    // types/z, the local order.service OrderService type, and the
+    // local `_serialize` wire-format helpers (see QA Final D Issue #9
+    // — `serializeOrder` coerces NUMERIC subtotals to JS numbers at
+    // the route boundary). The `_serialize` module is sibling-relative
+    // (`./_serialize`); it is NOT a payment processor SDK — it is a
+    // pure presentation-layer helper that touches only the `subtotal`
+    // arithmetic aggregate. Per Rule R9 the helper itself imports no
+    // forbidden vocabulary either (see backend/src/routes/_serialize.ts
+    // header for the Rule R9 compliance note).
     const importLines = source
       .split('\n')
       .filter((l) => /^\s*import\s/.test(l));
     // Each import line MUST come from exactly one of the allowed
     // sources.
-    const allowedSources = ['express', 'zod', '../services/order.service'];
+    const allowedSources = ['express', 'zod', '../services/order.service', './_serialize'];
     for (const line of importLines) {
       const match = /from\s+['"]([^'"]+)['"]/.exec(line);
       if (match === null) {

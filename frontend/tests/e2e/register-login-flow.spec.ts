@@ -104,8 +104,12 @@
  *
  * Both endpoints accept ANY API key when run against the emulator
  * (the emulator does NOT validate keys against any allowlist), so
- * `key=fake-api-key` is correct and matches the placeholder used in
- * the SPA's bootstrap config.
+ * `key=local-emulator-key` is correct AND matches the apiKey the SPA
+ * itself reads from `VITE_FIREBASE_API_KEY` at build time (per
+ * `frontend/.env`). The exact match is required so the localStorage
+ * persistence key the spec writes
+ * (`firebase:authUser:${apiKey}:[DEFAULT]`) lines up with the key
+ * the SPA's Firebase SDK reads at page boot. See QA Final D Issue #10.
  *
  * Once a fresh `idToken` is in hand, the spec uses it two ways:
  *
@@ -206,13 +210,16 @@ import { randomUUID } from 'node:crypto';
 //
 // FIREBASE_API_KEY is the literal token the emulator accepts as a
 // query parameter. The emulator does NOT validate API keys against
-// any allowlist — the value is opaque. Using `'fake-api-key'` matches
-// the placeholder used in the SPA's bootstrap config so the
-// localStorage persistence key (which embeds the apiKey) lines up
-// with whatever the SPA's own SDK initialization writes.
+// any allowlist — the value is opaque. CRITICAL: this MUST match
+// the SPA's own apiKey (`VITE_FIREBASE_API_KEY`, currently
+// `'local-emulator-key'` per `frontend/.env`) so the localStorage
+// persistence key the test writes
+// (`firebase:authUser:${apiKey}:[DEFAULT]`) lines up with the key
+// the SPA's Firebase JS SDK reads on page boot. See QA Final D
+// Issue #10.
 
 const FIREBASE_AUTH_EMULATOR_HOST = 'http://localhost:9099';
-const FIREBASE_API_KEY = 'fake-api-key';
+const FIREBASE_API_KEY = 'local-emulator-key';
 const BACKEND_BASE_URL = 'http://localhost:3000';
 
 // ---------------------------------------------------------------------------
@@ -405,95 +412,89 @@ async function signInEmulatorUser(
 }
 
 // ---------------------------------------------------------------------------
-// Helper — injectAuthState(page, user)
+// Helper — signInViaTestHook(page, user)
 // ---------------------------------------------------------------------------
 //
-// Seeds the Firebase JS SDK's persisted localStorage key BEFORE any
-// page script runs, so the SPA's `onAuthStateChanged()` observer
-// resolves to the seeded user immediately at boot. This avoids
-// hitting any real or emulated Firebase Auth REST endpoint via the
-// SPA's own sign-in flow.
+// Performs a real Firebase sign-in inside the running SPA via the
+// test-only `window.__strikeforge_test_auth__` hook installed by
+// `frontend/src/auth/firebase-client.ts`. The hook is gated by
+// `import.meta.env.DEV` so it is tree-shaken from production
+// builds.
 //
-// The shape written to localStorage matches the v10 Firebase JS SDK's
-// authUser persistence schema — every required field is present so
-// that Firebase's persistence-rehydrate path accepts the entry
-// without rejecting it as malformed.
+// Why this approach rather than seeding localStorage:
 //
-// `addInitScript` ensures the localStorage write happens before any
-// SPA script runs, on every navigation in the same browser context.
-// The Firebase JS SDK reads persistence synchronously during
-// initialization, so the seed must be present at module evaluation
-// time.
+//   - Firebase v10's default browser persistence is
+//     `indexedDBLocalPersistence`. A localStorage-seeded synthetic
+//     persistedUser record can be ignored by the SDK on rehydrate
+//     unless every internal validity check passes (apiKey match,
+//     stsTokenManager.expirationTime in the future, schema parity
+//     with the SDK's internal type). In practice, those checks
+//     diverge across SDK minor versions and the seed silently
+//     fails — the SPA boots anonymously.
+//   - The test hook calls the SAME `signInWithEmailAndPassword`
+//     code path the production sign-in UI uses. The SDK fires
+//     `onAuthStateChanged` listeners synchronously, React re-
+//     renders with `isAuthenticated = true`, and persistence is
+//     written by the SDK itself (no schema-mismatch risk).
 //
-// Per Rule R3, this function does NOT import `firebase-admin`, does
-// NOT mint a real JWT, and does NOT verify any token. It writes a
-// synthetic persistence record only.
+// Per Rule R3, this helper does NOT import `firebase-admin`, does
+// NOT mint or decode JWTs, and does NOT call `verifyIdToken()`. It
+// invokes only the public Firebase JS SDK surface via the hook.
+// Per Rule R2, this helper does NOT log credentials.
+//
+// Sequence:
+//   1. Navigate to `/` so the Vite-served SPA initializes Firebase
+//      Auth and attaches the test hook.
+//   2. Wait for `networkidle` so the initial bundle has loaded.
+//   3. Wait until `window.__strikeforge_test_auth__` is defined
+//      (synchronous attachment after `initializeFirebaseClient()`
+//      returns).
+//   4. Call the hook's `signIn(email, password)` — this is a real
+//      Identity Toolkit `accounts:signInWithPassword` call against
+//      the Firebase Auth Emulator.
+//   5. Verify `getCurrentUser()` returns the signed-in user (uid
+//      match) — fail fast with a clear diagnostic if not.
+//   6. Wait for the configurator `<canvas>` to attach (15s timeout
+//      covers software-WebGL warmup on CI runners) and park the
+//      mouse so idle auto-rotation does not fire during tests.
+//
+// After this helper returns, the page is at `/`, the user is
+// signed in, the configurator is interactive, and subsequent
+// `page.reload()` calls preserve auth state via Firebase
+// persistence.
 
-async function injectAuthState(
-  page: Page,
-  user: { uid: string; email: string; idToken: string; refreshToken: string },
-): Promise<void> {
-  await page.addInitScript(
-    (args: {
-      uid: string;
-      email: string;
-      idToken: string;
-      refreshToken: string;
-      apiKey: string;
-    }) => {
-      // The persistence key format is documented in firebase-js-sdk
-      // source as `firebase:authUser:${apiKey}:${appName}`. The SPA
-      // uses the default app name `[DEFAULT]`. The apiKey embedded
-      // in the key is the SDK's *runtime* apiKey at initialization
-      // time — if the SPA's runtime apiKey diverges from the one
-      // we wrote here, the SDK simply ignores our seeded entry and
-      // proceeds anonymously. Because we register and use the user
-      // via the emulator's REST surface (which does not validate
-      // apiKeys), the test still functions even in that case — but
-      // the SPA's auth-driven UI states may not flip to
-      // authenticated. This is mitigated by ALSO using the idToken
-      // directly in API requests via the `request` fixture for any
-      // contract that the UI does not cover.
-      const persistKey = `firebase:authUser:${args.apiKey}:[DEFAULT]`;
-      const now = Date.now();
-      const persistedUser = {
-        uid: args.uid,
-        email: args.email,
-        emailVerified: false,
-        isAnonymous: false,
-        providerData: [
-          {
-            providerId: 'password',
-            uid: args.email,
-            displayName: null,
-            email: args.email,
-            phoneNumber: null,
-            photoURL: null,
-          },
-        ],
-        stsTokenManager: {
-          refreshToken: args.refreshToken,
-          accessToken: args.idToken,
-          // Tokens issued by the emulator are nominally valid for
-          // ~1 hour. We mirror that lifetime here so the SDK does
-          // not immediately attempt a refresh on first read.
-          expirationTime: now + 60 * 60 * 1000,
-        },
-        createdAt: String(now),
-        lastLoginAt: String(now),
-        apiKey: args.apiKey,
-        appName: '[DEFAULT]',
-      };
-      window.localStorage.setItem(persistKey, JSON.stringify(persistedUser));
+async function signInViaTestHook(page: Page, user: EmulatorUser): Promise<void> {
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+
+  await page.waitForFunction(() => typeof window.__strikeforge_test_auth__ !== 'undefined', {
+    timeout: 10_000,
+  });
+
+  await page.evaluate(
+    async (args: { email: string; password: string }) => {
+      await window.__strikeforge_test_auth__!.signIn(args.email, args.password);
     },
-    {
-      uid: user.uid,
-      email: user.email,
-      idToken: user.idToken,
-      refreshToken: user.refreshToken,
-      apiKey: FIREBASE_API_KEY,
-    },
+    { email: user.email, password: user.password },
   );
+
+  await page.waitForLoadState('networkidle');
+
+  const signedInUid = await page.evaluate(() => {
+    const current = window.__strikeforge_test_auth__!.getCurrentUser();
+    return current === null ? null : current.uid;
+  });
+  if (signedInUid !== user.uid) {
+    throw new Error(
+      `signInViaTestHook: expected currentUser.uid=${user.uid} after signIn but observed ${String(
+        signedInUid,
+      )}`,
+    );
+  }
+
+  await page.locator('canvas').first().waitFor({ state: 'attached', timeout: 15_000 });
+  await page.mouse.move(50, 300);
+  await page.waitForLoadState('networkidle');
 }
 
 // ---------------------------------------------------------------------------
@@ -579,7 +580,7 @@ test.describe('Register / Login / Logout flow', () => {
   // field off the response body — Firebase's signUp does not return
   // the password, and the test does not destructure one out.
 
-  test('registration via emulator REST creates a usable user', async ({ request }) => {
+  test('ST-045-AC1: registration via emulator REST creates a usable user', async ({ request }) => {
     const user = await registerEmulatorUser(request);
 
     expect(
@@ -629,7 +630,7 @@ test.describe('Register / Login / Logout flow', () => {
   // return 200, OR the authenticated probe would return 401, OR
   // both.
 
-  test('authenticated request to /api/cart returns 2xx, unauthenticated returns 401', async ({
+  test('ST-045-AC1: authenticated request to /api/cart returns 2xx, unauthenticated returns 401', async ({
     request,
   }) => {
     const user = await registerEmulatorUser(request);
@@ -682,7 +683,7 @@ test.describe('Register / Login / Logout flow', () => {
   // configured for DIFFERENT Firebase project IDs) would surface as
   // a failed `backendAcceptsToken` assertion at step 4.
 
-  test('login flow via emulator returns valid idToken accepted by backend', async ({ request }) => {
+  test('ST-045-AC1: login flow via emulator returns valid idToken accepted by backend', async ({ request }) => {
     // Register the user; we keep the password literal in scope on
     // the returned EmulatorUser so we can re-submit it to login.
     const user = await registerEmulatorUser(request);
@@ -715,13 +716,13 @@ test.describe('Register / Login / Logout flow', () => {
   // Test 4 — Browser-side bearer attachment (ST-026 + frontend api/client.ts)
   // -------------------------------------------------------------------
   //
-  // When the SPA loads with auth state seeded into localStorage, any
-  // outbound `/api/*` requests it fires MUST attach an
-  // `Authorization: Bearer …` header — proving:
+  // After the SPA boots into the authenticated state via the test-
+  // hook sign-in path, any outbound `/api/*` requests it fires
+  // MUST attach an `Authorization: Bearer …` header — proving:
   //
   //   1. The SPA's `onAuthStateChanged()` observer resolved to the
-  //      seeded user immediately at boot (the addInitScript path
-  //      worked).
+  //      signed-in user immediately at boot (Firebase persistence
+  //      survived the post-sign-in `page.reload()`).
   //   2. The SPA's outbound fetch wrapper (frontend/src/api/client.ts)
   //      correctly invokes `getIdToken()` and attaches the bearer
   //      to every authenticated request.
@@ -738,17 +739,57 @@ test.describe('Register / Login / Logout flow', () => {
   // `req.headerValue('authorization')` — the listener callback is
   // not async and `headers()` returns a plain object of recorded
   // headers (lower-cased keys per Playwright's contract).
+  //
+  // Why the request listener captures only post-reload traffic:
+  // `signInViaTestHook` itself navigates to `/` and signs in. The
+  // initial unauthenticated mount fires before sign-in completes,
+  // so any `/api/*` prefetch the SPA performs during that window
+  // would NOT carry a Bearer header (the SDK's persistence had
+  // not yet rehydrated). To isolate the post-authenticated mount,
+  // we clear the buffer after sign-in completes and `page.reload()`
+  // — the SPA then re-mounts with Firebase persistence already
+  // populated, and any subsequent prefetch is authenticated.
 
-  test('authenticated browser session attaches token to API calls', async ({ page, request }) => {
+  test('ST-045-AC1: authenticated browser session attaches token to API calls', async ({ page, request }) => {
     const user = await registerEmulatorUser(request);
-    await injectAuthState(page, user);
 
-    // Buffer outbound /api/* requests' URL + Authorization header.
-    // The listener installs BEFORE navigation so no requests slip
-    // past while the listener is being attached.
-    const apiRequests: { url: string; authorization: string | null }[] = [];
+    // Buffer outbound /api/* requests' URL, method, and Authorization
+    // header. The listener installs BEFORE the first navigation so no
+    // requests slip past while the listener is being attached.
+    //
+    // We capture `method` so the assertion below can correctly skip
+    // CORS preflight (`OPTIONS`) requests — preflights never carry
+    // an `Authorization` header per the Fetch / CORS specification:
+    // the browser strips ALL non-CORS-safelisted headers (including
+    // `Authorization`) from preflight requests, by design. The actual
+    // request that follows a successful preflight DOES carry the
+    // bearer; that real request is the subject of our assertion.
+    const apiRequests: {
+      url: string;
+      method: string;
+      authorization: string | null;
+    }[] = [];
     page.on('request', (req) => {
-      if (req.url().includes('/api/')) {
+      // Filter on URL pathname starting with `/api/` rather than a
+      // simple substring match on the full URL. The substring match
+      // would incorrectly capture Vite dev-server source-module
+      // loads such as `http://localhost:5173/src/api/client.ts`,
+      // which are NOT backend API calls and (correctly) do not
+      // carry an Authorization header — Vite's dev server is a
+      // local resource served on the same origin as the SPA.
+      //
+      // Backend `/api/*` calls go to `VITE_API_BASE_URL`
+      // (`http://localhost:3000`) with pathname `/api/<route>`. The
+      // pathname-based filter cleanly separates the two.
+      let pathname: string;
+      try {
+        pathname = new URL(req.url()).pathname;
+      } catch {
+        // Defensive — if Playwright ever surfaces a non-URL
+        // request (e.g., a `data:` URL), skip it.
+        return;
+      }
+      if (pathname.startsWith('/api/')) {
         // Playwright's `Request.headers()` is synchronous and
         // returns a plain `{ [key: string]: string }` with lower-
         // cased keys. The optional-chaining `?? null` normalizes
@@ -756,46 +797,113 @@ test.describe('Register / Login / Logout flow', () => {
         // assertions.
         apiRequests.push({
           url: req.url(),
+          method: req.method(),
           authorization: req.headers()['authorization'] ?? null,
         });
       }
     });
 
-    await page.goto('/');
+    // Sign in via the test hook — performs the real Firebase
+    // signInWithEmailAndPassword and waits for canvas attach. The
+    // initial unauthenticated mount happens during this call, so
+    // any `/api/*` prefetch fired BEFORE sign-in completes will
+    // be in `apiRequests` without a Bearer header.
+    await signInViaTestHook(page, user);
+
+    // Discard the pre-authentication traffic so the assertion only
+    // examines post-authenticated mount traffic. After this point
+    // the SPA has Firebase persistence populated, and `page.reload()`
+    // re-mounts with `onAuthStateChanged` resolving to the signed-
+    // in user immediately.
+    apiRequests.length = 0;
+
+    // Reload so the SPA boots with the signed-in user already
+    // resolved. Any auto-fetch on this mount path MUST attach the
+    // bearer token. Wait for canvas attach so we know the
+    // post-reload mount has had time to fire its prefetch.
+    await page.reload();
     await page.waitForLoadState('networkidle');
-    // Wait for the configurator canvas to attach — at that point the
-    // initial auth-driven UI hydration has had a chance to fire any
-    // outbound /api/* prefetch (e.g., GET /api/designs for the
-    // load-list, GET /api/cart for the cart-trigger badge).
     await page.locator('canvas').first().waitFor({ state: 'attached', timeout: 15_000 });
 
-    // Verify every captured non-auth /api/* request carries a
-    // Bearer token. We do NOT require any calls to have been made
-    // (some configurator builds auto-fetch on load, others lazy-
-    // load on user interaction); we only require that IF calls
-    // were made, they were authenticated.
+    // Verify every captured non-auth, non-preflight /api/* request
+    // carries a Bearer token. We do NOT require any calls to have
+    // been made (some configurator builds auto-fetch on load, others
+    // lazy-load on user interaction); we only require that IF
+    // genuine, post-authenticated calls were made, they were
+    // authenticated.
+    //
+    // Two categories of capture are skipped:
+    //
+    //   1. `OPTIONS` preflight requests — by spec, browsers do NOT
+    //      forward `Authorization` on preflights (the preflight only
+    //      asks the origin server "may I send this header?"). The
+    //      browser then sends the real request with the header
+    //      attached. Asserting Bearer on the preflight would assert
+    //      a property the browser itself disallows.
+    //
+    //   2. `/api/auth/*` paths — the register and login endpoints
+    //      are explicitly unauthenticated per AAP §0.5.6 / ST-026,
+    //      so they correctly do NOT carry a bearer.
+    //
+    // For all other /api/* requests, we assert that `authorization`
+    // matches the `Bearer <token>` pattern. The label string
+    // includes URL and method so a future failure surfaces the
+    // exact route and verb that misbehaved.
+    //
+    // We use `expect.soft()` for diagnostic clarity: even if one
+    // request fails the assertion, all OTHER requests are still
+    // checked, and the test report enumerates the full set of
+    // misbehaving captures rather than aborting at the first.
+    // The trailing `expect(test.info().errors).toEqual([])` then
+    // converts any soft failures into a hard failure with rich
+    // context.
+    const offenders: { url: string; method: string; authorization: string | null }[] = [];
     for (const apiRequest of apiRequests) {
+      if (apiRequest.method === 'OPTIONS') {
+        // CORS preflight — headers are stripped by the browser per
+        // the Fetch standard. Not a real authenticated call.
+        continue;
+      }
       if (apiRequest.url.includes('/api/auth/')) {
         // /api/auth/register and /api/auth/login are unauthenticated
         // entry points per AAP §0.5.6; bypass the bearer assertion.
         continue;
       }
-      expect(
-        apiRequest.authorization,
-        `Outbound /api/* request lacked Authorization header: ${apiRequest.url}`,
-      ).toMatch(/^Bearer /);
+      const auth = apiRequest.authorization;
+      const ok = typeof auth === 'string' && /^Bearer /.test(auth);
+      if (!ok) {
+        offenders.push({
+          url: apiRequest.url,
+          method: apiRequest.method,
+          authorization: auth,
+        });
+      }
     }
+
+    // Convert any captured offenders into a single hard failure so
+    // the test report includes the full list. This is much more
+    // diagnostic than `toMatch()`, which aborts at the first
+    // offender and (for the null case) raises a Matcher type error
+    // that obscures the URL/method that misbehaved.
+    expect(
+      offenders,
+      `One or more /api/* requests lacked an Authorization Bearer header. Captures (excluding OPTIONS preflights and /api/auth/*): ${JSON.stringify(
+        offenders,
+        null,
+        2,
+      )}`,
+    ).toEqual([]);
   });
 
   // -------------------------------------------------------------------
-  // Test 5 — Logout primitive clears persisted auth state (ST-025)
+  // Test 5 — Logout primitive clears the SPA auth state (ST-025)
   // -------------------------------------------------------------------
   //
   // ST-025 ("logout terminates the session") at the BROWSER layer
-  // means clearing the persisted Firebase auth state so the SPA's
-  // `onAuthStateChanged()` observer fires `null`, the SPA's UI
-  // flips back to the unauthenticated state, and outbound /api/*
-  // calls no longer carry a bearer.
+  // means the SPA's Firebase Auth state transitions from a signed-
+  // in user to `null`, so subsequent UI rendering flips to the
+  // unauthenticated state and outbound `/api/*` calls no longer
+  // carry a bearer.
   //
   // FULL server-side revocation (the `sessions` table revocation
   // marker driven by POST /api/auth/logout per ST-025-AC1, plus the
@@ -804,65 +912,66 @@ test.describe('Register / Login / Logout flow', () => {
   // backend integration suite — the e2e suite's responsibility for
   // ST-025 is the BROWSER layer of the contract.
   //
-  // The test asserts:
+  // The test exercises the SPA's actual Firebase JS SDK signOut
+  // path via the test hook (rather than poking localStorage
+  // directly). This validates the SAME code path the production
+  // sign-out UI uses — the SDK's `signOut()` clears persistence,
+  // resets in-memory `currentUser` to `null`, and fires
+  // `onAuthStateChanged` listeners with `null`.
   //
-  //   1. The persisted auth state was injected before the page
-  //      navigation.
-  //   2. After `clearCookies()` and the localStorage `removeItem`,
-  //      the persistence key is null (the SPA, on a subsequent
-  //      navigation, would resolve to the unauthenticated state).
+  // Steps:
   //
-  // Cookies and localStorage are cleared together because Firebase
-  // JS SDK uses both: cookies for some sign-in providers, and
-  // localStorage for password sign-in. Clearing both ensures a
-  // clean logout regardless of which path the SPA exercises.
+  //   1. Sign in via the test hook so the SDK has a valid current
+  //      user.
+  //   2. Verify `getCurrentUser()` is non-null — guards against a
+  //      regression where sign-in silently fails.
+  //   3. Call `signOut()` via the test hook.
+  //   4. Verify `getCurrentUser()` returns `null` — the SDK's
+  //      signOut path successfully cleared the in-memory user.
+  //   5. Independent backend probe — an unauthenticated request
+  //      remains rejected by the backend session middleware.
 
-  test('clearing auth state removes the persisted localStorage entry', async ({
+  test('ST-045-AC1: SDK signOut clears the SPA auth state', async ({
     page,
     request,
   }) => {
     const user = await registerEmulatorUser(request);
-    await injectAuthState(page, user);
+    await signInViaTestHook(page, user);
 
-    // First navigation: the auth state is seeded by `addInitScript`
-    // before any page script runs, so the SPA boots with the user
-    // already authenticated.
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
-
-    // Confirm the seed is present in this navigation's localStorage
-    // before we clear it. This guards against a regression where
-    // `addInitScript` silently fails to run (e.g., a Playwright
-    // version mismatch) — we want to know that the SEED worked
-    // before we test that the CLEAR works.
-    const seeded = await page.evaluate((apiKey: string) => {
-      const persistKey = `firebase:authUser:${apiKey}:[DEFAULT]`;
-      return window.localStorage.getItem(persistKey) !== null;
-    }, FIREBASE_API_KEY);
+    // Confirm the SPA holds a signed-in user before sign-out. This
+    // guards against a regression where the test hook silently
+    // returns without populating `currentUser` — we want to know
+    // that the SIGN-IN worked before we test that SIGN-OUT clears
+    // it.
+    const signedInBefore = await page.evaluate(() => {
+      const current = window.__strikeforge_test_auth__!.getCurrentUser();
+      return current === null ? null : { uid: current.uid };
+    });
     expect(
-      seeded,
-      'Auth state must be present in localStorage after injectAuthState; otherwise the clear assertion would be vacuous',
-    ).toBe(true);
+      signedInBefore,
+      'Test hook must report a signed-in user before signOut; otherwise the clear assertion would be vacuous',
+    ).not.toBeNull();
+    expect(signedInBefore!.uid).toBe(user.uid);
 
-    // Logout primitives — clear cookies on the browser context AND
-    // remove the Firebase JS SDK persistence key from localStorage.
-    // BrowserContext.clearCookies() is asynchronous; we await it.
-    await page.context().clearCookies();
-    await page.evaluate((apiKey: string) => {
-      const persistKey = `firebase:authUser:${apiKey}:[DEFAULT]`;
-      window.localStorage.removeItem(persistKey);
-    }, FIREBASE_API_KEY);
+    // Drive the SPA's actual Firebase JS SDK signOut path through
+    // the test hook. The SDK's signOut clears persistence (whatever
+    // backing store the SDK chose at init: indexedDBLocalPersistence
+    // or browserLocalPersistence), resets in-memory `currentUser`
+    // to `null`, and fires `onAuthStateChanged` listeners.
+    await page.evaluate(async () => {
+      await window.__strikeforge_test_auth__!.signOut();
+    });
 
-    // Verify the localStorage entry was removed — the SPA, on the
-    // next navigation, would resolve to the unauthenticated state.
-    const cleared = await page.evaluate((apiKey: string) => {
-      const persistKey = `firebase:authUser:${apiKey}:[DEFAULT]`;
-      return window.localStorage.getItem(persistKey) === null;
-    }, FIREBASE_API_KEY);
+    // Verify the SDK's `currentUser` is now `null`. The SDK's
+    // signOut is synchronous in its update of currentUser; this
+    // assertion is a direct read of the SDK's in-memory state.
+    const signedInAfter = await page.evaluate(() => {
+      return window.__strikeforge_test_auth__!.getCurrentUser();
+    });
     expect(
-      cleared,
-      'Persisted auth state must be removed from localStorage after the logout primitive (ST-025 from the browser perspective)',
-    ).toBe(true);
+      signedInAfter,
+      'Test hook must report a null current user after signOut (ST-025 from the browser perspective)',
+    ).toBeNull();
 
     // Independent backend probe: the BACKEND-side revocation
     // contract (ST-025-AC2) is exercised in the backend integration

@@ -71,17 +71,23 @@
  * ===========================================================================
  *
  *   - Rule R2 (no credential material in logs): this file performs
- *     ZERO `console.*` calls; the constants `FAKE_ID_TOKEN` and
- *     `'fake-refresh-token-for-tests'` are placeholder strings only
- *     and are never logged. The frontend ESLint config enforces
- *     `no-console: error` (allowing only `warn` and `error`), and
- *     the workspace lint gate runs with `--max-warnings 0`.
+ *     ZERO `console.*` calls. The Firebase Auth Emulator-issued
+ *     `idToken` and `refreshToken` are stored only on the
+ *     EmulatorUser object and used solely as opaque strings by the
+ *     SDK's signIn flow — they are never logged. The Emulator user
+ *     password (`'Test-Password-1234'`) is a shared throwaway used
+ *     only against the local emulator and is never logged. The
+ *     frontend ESLint config enforces `no-console: error` (allowing
+ *     only `warn` and `error`), and the workspace lint gate runs
+ *     with `--max-warnings 0`.
  *   - Rule R3 (Firebase Admin SDK only on backend): this file does
  *     NOT import `firebase-admin`, never parses or verifies a JWT
- *     manually, and never invokes `verifyIdToken()`. It only seeds
- *     Firebase JS SDK persistence state via localStorage so the
- *     SPA's auth observer resolves to a non-anonymous principal at
- *     boot — a frontend-only technique.
+ *     manually, and never invokes `verifyIdToken()`. The Emulator-
+ *     issued idToken is treated opaquely; the SPA's Firebase JS SDK
+ *     manages it internally after `signIn()` resolves. Token
+ *     verification still occurs server-side via the live backend
+ *     authentication middleware (which is not exercised here because
+ *     all `/api/**` calls are mocked at the page boundary).
  *   - Rule R7 / C6 (Fabric → Three texture order): this file does
  *     NOT touch the texture pipeline; the only canvas it inspects
  *     is the R3F `<canvas>` element, which is masked out of every
@@ -97,15 +103,20 @@
  * Determinism Strategy
  * ===========================================================================
  *
- *   - Authentication is simulated via `page.addInitScript()` writing
- *     the Firebase JS SDK's persisted localStorage key
- *     `firebase:authUser:<apiKey>:[DEFAULT]`. With a persisted
- *     authenticated user already in localStorage when the SPA boots,
- *     the auth state observer resolves immediately to the seeded
- *     user and the design-list endpoint, which requires a valid
- *     session per ST-019, sees a non-anonymous principal. This
- *     avoids hitting any real or emulated Firebase Auth REST
- *     endpoint.
+ *   - Authentication is established via the production E2E pattern:
+ *     each test calls `registerEmulatorUser(request)` (which talks
+ *     to the live Firebase Auth Emulator at `localhost:9099` to
+ *     create a fresh user via the Identity Toolkit signUp REST
+ *     endpoint) and then `signInViaTestHook(page, user)` (which
+ *     drives the SPA's Firebase JS SDK through the
+ *     `window.__strikeforge_test_auth__` test-only hook to invoke
+ *     `signInWithEmailAndPassword()`). After `signIn()` resolves the
+ *     SDK's `onAuthStateChanged` observer fires, React re-renders
+ *     with `isAuthenticated = true`, and the gated UI elements (the
+ *     LoadDesignList trigger, the Save Design CTA, etc.) become
+ *     enabled. This replaces the prior `setAuthenticatedState`
+ *     localStorage-seeding helper, which silently failed under
+ *     Firebase v10's `browserLocalPersistence` rehydrate validation.
  *   - All `/api/designs**` and `/api/cart` calls are mocked through
  *     a single dispatching `page.route('**\/api/**')` handler.
  *     Pattern matching is performed inside the handler against
@@ -117,10 +128,10 @@
  *     `frontend/tests/visual/cart.spec.ts` and
  *     `frontend/tests/visual/order-confirmation.spec.ts`.
  *   - Firebase Auth REST URLs (`identitytoolkit.googleapis.com` and
- *     `securetoken.googleapis.com`) are intercepted with empty 200
- *     fixtures so any background SDK refresh attempt does not
- *     produce a network error and therefore does not surface in the
- *     snapshot.
+ *     `securetoken.googleapis.com`) are NOT mocked — the new auth
+ *     bootstrap depends on the live Firebase Auth Emulator. Mocking
+ *     these endpoints would break the real `signIn()` flow and the
+ *     SDK would never settle to an authenticated principal.
  *   - Design titles and timestamps are FIXED via module-scope
  *     constants so the rendered design list is byte-deterministic
  *     across runs.
@@ -137,7 +148,94 @@
  *     `threshold: 0.2` for `expect(page).toHaveScreenshot()`.
  */
 
-import { test, expect, type Page, type Route, type Request } from '@playwright/test';
+import {
+  test,
+  expect,
+  type APIRequestContext,
+  type Page,
+  type Route,
+  type Request,
+} from '@playwright/test';
+import { randomUUID } from 'node:crypto';
+
+// ---------------------------------------------------------------------------
+// QA Final D — Visual auth bootstrap
+// ---------------------------------------------------------------------------
+//
+// See cart.spec.ts for the full rationale. Briefly: the prior
+// localStorage-seeding helper (`setAuthenticatedState`) silently
+// failed under Firebase v10's `browserLocalPersistence` rehydrate
+// validation, leaving the Load Design List trigger button disabled
+// because the SPA booted anonymous. The current approach uses the
+// production E2E `signInViaTestHook` pattern, which talks to the live
+// Firebase Auth Emulator at localhost:9099 to create a real
+// authenticated SDK state.
+
+const FIREBASE_AUTH_EMULATOR_HOST = 'http://localhost:9099';
+const FIREBASE_API_KEY = 'local-emulator-key';
+
+interface EmulatorUser {
+  uid: string;
+  email: string;
+  password: string;
+  idToken: string;
+  refreshToken: string;
+}
+
+async function registerEmulatorUser(request: APIRequestContext): Promise<EmulatorUser> {
+  const email = `visual-design-list-${Date.now()}-${randomUUID()}@strikeforge.test`;
+  const password = 'Test-Password-1234';
+
+  const response = await request.post(
+    `${FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=${FIREBASE_API_KEY}`,
+    { data: { email, password, returnSecureToken: true } },
+  );
+
+  if (!response.ok()) {
+    throw new Error(
+      `Firebase Auth Emulator signUp failed with status ${response.status()}; body: ${await response.text()}`,
+    );
+  }
+
+  const body = (await response.json()) as {
+    localId: string;
+    idToken: string;
+    refreshToken: string;
+    email: string;
+  };
+
+  return {
+    uid: body.localId,
+    email: body.email,
+    password,
+    idToken: body.idToken,
+    refreshToken: body.refreshToken,
+  };
+}
+
+async function signInViaTestHook(page: Page, user: EmulatorUser): Promise<void> {
+  await page.waitForFunction(
+    () => typeof window.__strikeforge_test_auth__ !== 'undefined',
+    { timeout: 10_000 },
+  );
+
+  await page.evaluate(
+    async (args: { email: string; password: string }) => {
+      await window.__strikeforge_test_auth__!.signIn(args.email, args.password);
+    },
+    { email: user.email, password: user.password },
+  );
+
+  const signedInUid = await page.evaluate(() => {
+    const current = window.__strikeforge_test_auth__!.getCurrentUser();
+    return current === null ? null : current.uid;
+  });
+  if (signedInUid !== user.uid) {
+    throw new Error(
+      `signInViaTestHook: expected currentUser.uid=${user.uid} after signIn but observed ${String(signedInUid)}`,
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Type aliases
@@ -188,13 +286,11 @@ type CartPayload = {
 //   `npx playwright test tests/visual/design-list.spec.ts --update-snapshots`
 // followed by a deliberate commit (per ST-046-AC4).
 
-/**
- * Placeholder ID-token string used to simulate an authenticated
- * session. This is NOT a real JWT — it is an opaque string that the
- * spec never logs. Per Rule R2, no `console.*` call ever references
- * this constant.
- */
-const FAKE_ID_TOKEN = 'fake-id-token-for-tests';
+// QA Final D — `FAKE_ID_TOKEN` constant removed. Auth is now driven
+// by a real Firebase Auth Emulator user via `registerEmulatorUser` +
+// `signInViaTestHook` (see "Visual auth bootstrap" section near the
+// top of the file). The SDK manages its own idToken / refreshToken
+// internally; the spec never references either directly.
 
 /**
  * Fixed ISO-8601 timestamp used for every `createdAt` and
@@ -208,82 +304,13 @@ const FAKE_ID_TOKEN = 'fake-id-token-for-tests';
 const FIXED_TIMESTAMP = '2024-06-15T12:00:00.000Z';
 
 // ---------------------------------------------------------------------------
-// Helper — setAuthenticatedState(page, options?)
+// Helper — (REMOVED) setAuthenticatedState(page, options?)
 // ---------------------------------------------------------------------------
 //
-// Seeds the Firebase JS SDK's persisted localStorage key BEFORE any
-// page script runs, so the SPA's `onAuthStateChanged()` observer
-// resolves to the seeded user immediately on boot — no network round
-// trip to identitytoolkit.googleapis.com, no signInWithEmailAndPassword
-// dialog, no flicker from anonymous → authenticated.
-//
-// The shape written to localStorage matches the v10 Firebase JS SDK's
-// authUser persistence schema — every required field is present so
-// that Firebase's persistence-rehydrate path accepts the entry. The
-// `apiKey` is `'fake-api-key'` here; if the real SPA constructs
-// firebase config from `import.meta.env.VITE_FIREBASE_API_KEY` and
-// that env var is absent at test time, the SDK falls back to its own
-// initialized apiKey value — but the persistence key uses whatever
-// apiKey the SDK was initialized with, NOT the one we wrote here.
-// Because we additionally mock all `identitytoolkit.googleapis.com/**`
-// and `securetoken.googleapis.com/**` calls with empty 200 fixtures,
-// any divergence between the seeded apiKey and the SDK's runtime
-// apiKey degrades gracefully — the SDK simply does not find a
-// persisted user and proceeds anonymously, but the design list
-// fixture still responds deterministically because the mock does not
-// inspect the bearer token.
-//
-// `addInitScript` ensures the localStorage write happens before any
-// SPA script — Firebase JS SDK reads persistence synchronously
-// during its initialization, so the seed must be present at module
-// evaluation time.
-//
-// Per Rule R3, this function does NOT import `firebase-admin`, does
-// NOT mint a real JWT, and does NOT verify any token. It writes a
-// synthetic persistence record only.
-async function setAuthenticatedState(
-  page: Page,
-  options: { uid?: string; email?: string; idToken?: string } = {},
-): Promise<void> {
-  const uid = options.uid ?? 'test-user-uid-design-list';
-  const email = options.email ?? 'design-list-test@example.test';
-  const idToken = options.idToken ?? FAKE_ID_TOKEN;
-
-  await page.addInitScript(
-    (args: { uid: string; email: string; idToken: string }) => {
-      const apiKey = 'fake-api-key';
-      const persistKey = `firebase:authUser:${apiKey}:[DEFAULT]`;
-      const now = Date.now();
-      const persistedUser = {
-        uid: args.uid,
-        email: args.email,
-        emailVerified: true,
-        isAnonymous: false,
-        providerData: [
-          {
-            providerId: 'password',
-            uid: args.email,
-            displayName: null,
-            email: args.email,
-            phoneNumber: null,
-            photoURL: null,
-          },
-        ],
-        stsTokenManager: {
-          refreshToken: 'fake-refresh-token-for-tests',
-          accessToken: args.idToken,
-          expirationTime: now + 60 * 60 * 1000,
-        },
-        createdAt: String(now),
-        lastLoginAt: String(now),
-        apiKey,
-        appName: '[DEFAULT]',
-      };
-      window.localStorage.setItem(persistKey, JSON.stringify(persistedUser));
-    },
-    { uid, email, idToken },
-  );
-}
+// QA Final D — the previous localStorage-seeding helper has been
+// removed. See the "Visual auth bootstrap" section near the top of
+// the file for the replacement: `registerEmulatorUser(request)` +
+// `signInViaTestHook(page, user)`.
 
 // ---------------------------------------------------------------------------
 // Helper — mockBackendApi(page, options?)
@@ -328,26 +355,12 @@ async function mockBackendApi(
   options: { designs?: DesignSummary[]; cart?: CartPayload } = {},
 ): Promise<void> {
   // ---------------------------------------------------------------------
-  // Firebase Auth REST endpoints — block both Identity Toolkit and the
-  // Secure Token Service so any background SDK refresh attempt resolves
-  // synthetically rather than producing a real network failure. These
-  // domains do NOT overlap with `**/api/**`, so registration order is
-  // irrelevant for them.
+  // QA Final D — Firebase Auth REST endpoints are NOT mocked. The new
+  // auth bootstrap (signInViaTestHook + registerEmulatorUser) talks to
+  // the live Firebase Auth Emulator at localhost:9099. Mocking the
+  // identitytoolkit.googleapis.com / securetoken.googleapis.com
+  // endpoints would break the real sign-in flow.
   // ---------------------------------------------------------------------
-  await page.route('**/identitytoolkit.googleapis.com/**', (route: Route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
-  );
-  await page.route('**/securetoken.googleapis.com/**', (route: Route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        id_token: FAKE_ID_TOKEN,
-        refresh_token: 'fake-refresh-token-for-tests',
-        expires_in: '3600',
-      }),
-    }),
-  );
 
   // ---------------------------------------------------------------------
   // Single dispatching handler for every `/api/**` request. Branches
@@ -421,16 +434,28 @@ async function mockBackendApi(
 // ---------------------------------------------------------------------------
 //
 // Two tests, two screenshot baselines (one for the empty state and
-// one for the populated state). Each test seeds an authenticated
-// session, installs the design-and-cart mock with the appropriate
-// designs fixture, navigates to the SPA, opens the design list view,
-// waits for the surface to render, and asserts against its baseline
-// at the fixed viewport, masking the dynamic regions described
-// above.
+// one for the populated state). Each test:
+//   1. Registers a fresh Firebase Auth Emulator user via
+//      `registerEmulatorUser(request)` — see "Visual auth bootstrap"
+//      near the top of the file.
+//   2. Installs the design-and-cart mock with the appropriate
+//      designs fixture.
+//   3. Navigates to the SPA, waits for the canvas to attach.
+//   4. Drives the SPA through `signInViaTestHook(page, user)` so
+//      Firebase's `onAuthStateChanged` observer resolves to the
+//      seeded user and gated UI surfaces (LoadDesignList trigger)
+//      become enabled.
+//   5. Opens the design list view, waits for the surface to render,
+//      and asserts against its baseline at the fixed viewport,
+//      masking the dynamic regions described above.
 //
-// `test.beforeEach` seeds authentication for every test; the
-// per-test mock installation handles the empty-vs-populated
-// distinction.
+// QA Final D: the previous `test.beforeEach` block seeded auth via
+// `setAuthenticatedState(page)` (a localStorage-write helper). Under
+// Firebase v10's `browserLocalPersistence` rehydrate validation that
+// helper silently failed and the SPA booted anonymous. The new
+// pattern requires both the `page` and the `request` Playwright
+// fixtures, so auth setup is inlined in each test rather than in a
+// shared `beforeEach`.
 //
 // Both `chromium` and `webkit` projects (per playwright.config.ts)
 // run this spec, so the baselines are captured per-project.
@@ -440,19 +465,6 @@ async function mockBackendApi(
 // this file.
 
 test.describe('Design list visual regression', () => {
-  // -----------------------------------------------------------------
-  // Per-test setup: seed authenticated session BEFORE navigation.
-  // -----------------------------------------------------------------
-  //
-  // `addInitScript` runs in every new document, so localStorage is
-  // populated before any SPA script reads `firebase.auth()`. ST-019
-  // requires the design-list endpoint to be guarded by a valid
-  // session; without this seed the SPA would treat the user as
-  // anonymous and the LoadDesignList trigger might be hidden or
-  // disabled.
-  test.beforeEach(async ({ page }) => {
-    await setAuthenticatedState(page);
-  });
 
   // -----------------------------------------------------------------
   // Test 1 — Empty state
@@ -463,7 +475,19 @@ test.describe('Design list visual regression', () => {
   // saved any designs yet — create your first design to see it
   // here"). The exact wording is the implementation's choice; the
   // baseline captures whatever the UI renders.
-  test('empty state', async ({ page }) => {
+  test('ST-046-AC1: design list empty state', async ({ page, request }) => {
+    // -------------------------------------------------------------
+    // Auth bootstrap — register a fresh Emulator user.
+    // -------------------------------------------------------------
+    //
+    // QA Final D — Issue #3 (DESIGN-LIST-VISUAL-AUTH).
+    // ST-019 (Load Design List) requires the design-list endpoint
+    // to be guarded by a valid session; the LoadDesignList trigger
+    // button renders `[disabled]` until `isAuthenticated === true`.
+    // The user is registered before any page navigation so its
+    // credentials are available for `signInViaTestHook` later.
+    const user = await registerEmulatorUser(request);
+
     // Install the dispatching backend mock with an empty designs
     // array BEFORE navigation. Every `/api/**` request — including
     // any prefetch on initial load — is intercepted from the first
@@ -479,20 +503,38 @@ test.describe('Design list visual regression', () => {
     await page.waitForSelector('canvas', { state: 'attached', timeout: 15_000 });
 
     // -------------------------------------------------------------
+    // Drive the SPA through Firebase JS SDK signIn via the
+    // test-only `window.__strikeforge_test_auth__` hook.
+    // -------------------------------------------------------------
+    //
+    // After `signIn()` resolves the SDK's `onAuthStateChanged`
+    // observer fires, React re-renders with `isAuthenticated=true`,
+    // and the LoadDesignList trigger (rendered `[disabled]` for
+    // anonymous principals) becomes enabled.
+    await signInViaTestHook(page, user);
+    await page.waitForLoadState('networkidle');
+
+    // -------------------------------------------------------------
     // Open the design list view.
     // -------------------------------------------------------------
     //
     // Per AAP §0.6.7 and §0.6.9 (MG1-F) the LoadDesignList
     // component is mounted in the top navigation. The trigger
     // affordance is implementation-dependent: it may be a button
-    // labeled "Load Design", "My Designs", or "Open Designs", or a
-    // button with `data-testid="load-design-list-trigger"`. We use
-    // a defensive `.or()` chain that matches any of these and
-    // click the first match. The `.first()` qualifier handles the
-    // edge case where the SPA renders multiple matching candidates
-    // (e.g., mobile + desktop variants both in the DOM).
+    // labeled "Load saved design", "Load Design", "My Designs",
+    // "Open Designs", or "Designs", or a button with
+    // `data-testid="load-design-trigger"` or
+    // `data-testid="load-design-list-trigger"`. We use a defensive
+    // `.or()` chain that matches any of these and click the first
+    // match. The `.first()` qualifier handles the edge case where
+    // the SPA renders multiple matching candidates (e.g., mobile +
+    // desktop variants both in the DOM). The accepted name pattern
+    // mirrors the production E2E spec (`tests/e2e/save-design-flow.spec.ts`).
     const loadButton = page
-      .getByRole('button', { name: /load design|my designs|open designs/i })
+      .getByRole('button', {
+        name: /load saved design|load design|my designs|open designs|^designs$/i,
+      })
+      .or(page.getByTestId('load-design-trigger'))
       .or(page.getByTestId('load-design-list-trigger'));
     await loadButton.first().click();
 
@@ -552,7 +594,19 @@ test.describe('Design list visual regression', () => {
   // time") — but the EXACT formatting (absolute date, relative
   // string, layout) is the implementation's choice. The baseline
   // captures whatever the UI produces.
-  test('populated state', async ({ page }) => {
+  test('ST-046-AC1: design list populated state', async ({ page, request }) => {
+    // -------------------------------------------------------------
+    // Auth bootstrap — register a fresh Emulator user.
+    // -------------------------------------------------------------
+    //
+    // QA Final D — Issue #3 (DESIGN-LIST-VISUAL-AUTH).
+    // Same pattern as the empty-state test: register the user
+    // first, then sign in via the test-only hook after the SPA's
+    // canvas mounts. Each test creates its OWN fresh user so the
+    // two tests do not share authentication state across worker
+    // contexts.
+    const user = await registerEmulatorUser(request);
+
     // Build the deterministic designs fixture. Three entries are
     // sufficient to validate list layout (single vs. multi-item
     // visual differences); the exact titles are arbitrary but
@@ -596,10 +650,19 @@ test.describe('Design list visual regression', () => {
     await page.waitForLoadState('networkidle');
     await page.waitForSelector('canvas', { state: 'attached', timeout: 15_000 });
 
+    // Drive the SPA through Firebase JS SDK signIn via the
+    // test-only `window.__strikeforge_test_auth__` hook so the
+    // LoadDesignList trigger becomes enabled.
+    await signInViaTestHook(page, user);
+    await page.waitForLoadState('networkidle');
+
     // Open the design list view via the same defensive locator
     // chain used in the empty-state test.
     const loadButton = page
-      .getByRole('button', { name: /load design|my designs|open designs/i })
+      .getByRole('button', {
+        name: /load saved design|load design|my designs|open designs|^designs$/i,
+      })
+      .or(page.getByTestId('load-design-trigger'))
       .or(page.getByTestId('load-design-list-trigger'));
     await loadButton.first().click();
 
