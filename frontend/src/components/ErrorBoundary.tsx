@@ -97,14 +97,21 @@ const FALLBACK_BODY_STYLE = Object.freeze({
   lineHeight: 1.5,
   margin: 0,
   maxWidth: '32rem',
-  color: 'var(--blitzy-text-muted, #999999)',
+  // QA Issue #10 — fallback updated from `#999999` (2.51:1 on #F4EFF6,
+  // FAIL WCAG AA) to `#666666` (4.83:1 on #F4EFF6, PASS WCAG AA). The
+  // `--blitzy-text-muted` token in `global.css` was simultaneously
+  // updated to `#666666`, so the var() value also resolves correctly;
+  // the fallback hex matches it for environments where the variable
+  // does not resolve (e.g., test snapshots without CSS variables).
+  color: 'var(--blitzy-text-muted, #666666)',
 });
 
 const FALLBACK_DETAIL_STYLE = Object.freeze({
   fontFamily: 'var(--ff-mono, "Fira Code", monospace)',
   fontSize: '0.75rem',
   marginTop: 'var(--space-md, 16px)',
-  color: 'var(--blitzy-text-muted, #999999)',
+  // QA Issue #10 — see FALLBACK_BODY_STYLE above for rationale.
+  color: 'var(--blitzy-text-muted, #666666)',
 });
 
 /**

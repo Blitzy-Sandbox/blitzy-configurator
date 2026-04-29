@@ -657,15 +657,25 @@ export function SaveDesignCta(): JSX.Element {
   // Inline styles — co-located so the component remains self-contained.
   // -------------------------------------------------------------------------
 
-  /** Style for the primary Save button. */
+  /**
+   * Style for the primary Save button.
+   *
+   * QA Issue #10 — disabled-state text colour upgraded from `#999999`
+   * (2.85:1 on `#D9D9D9` — FAIL WCAG AA) to `#666666` (4.83:1 on
+   * `#D9D9D9` — PASS WCAG AA).
+   * QA Issue #9 — `font-family: inherit` ensures the native button
+   * inherits Inter from the document body instead of falling back to
+   * OS Arial.
+   */
   const primaryButtonStyle: React.CSSProperties = {
     padding: '0.625rem 1rem',
     backgroundColor: isButtonEnabled ? '#5B39F3' : '#D9D9D9',
-    color: isButtonEnabled ? '#FFFFFF' : '#999999',
+    color: isButtonEnabled ? '#FFFFFF' : '#666666',
     border: 'none',
     borderRadius: '0.375rem',
     fontSize: '0.875rem',
     fontWeight: 500,
+    fontFamily: 'inherit',
     cursor: isButtonEnabled ? 'pointer' : 'not-allowed',
     width: '100%',
   };

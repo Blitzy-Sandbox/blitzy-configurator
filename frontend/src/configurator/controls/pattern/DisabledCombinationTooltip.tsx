@@ -66,7 +66,8 @@
  *   avoids polluting the global store with enablement metadata."
  */
 
-import { type CSSProperties, type HTMLAttributes } from 'react';
+import { useLayoutEffect, useState, type CSSProperties, type HTMLAttributes } from 'react';
+import { createPortal } from 'react-dom';
 
 import type { MaterialFinish, StitchingPattern } from '../../../state/configuratorStore';
 
@@ -329,6 +330,16 @@ export function getDisabledFinishReason(
  * caller cannot accidentally inject interactive elements like buttons
  * or links that would complicate `pointer-events: none`.
  *
+ * The `anchorElement` prop is REQUIRED for QA Issue #1: the tooltip is
+ * rendered through a React portal at `document.body` and dynamically
+ * positioned below this anchor element (centered horizontally, 6 px
+ * below). The portal escape avoids the parent `<aside>`'s
+ * `overflow-y: auto` clipping rectangle that previously truncated the
+ * tooltip text. The anchor is typically the trigger `<button>` element
+ * that the tooltip describes; passing the live element (rather than a
+ * RefObject) lets the parent reuse its array-based ref pattern without
+ * allocating a separate ref-object per row.
+ *
  * The component extends `HTMLAttributes<HTMLSpanElement>` so callers
  * can forward `data-*` attributes (for Playwright targeting),
  * `className`, `style`, and event handlers. `role`, `id`, and
@@ -342,6 +353,13 @@ export interface DisabledCombinationTooltipProps
   id: string;
   /** User-facing explanation for why the option is disabled. */
   reason: string;
+  /**
+   * Anchor element below which the tooltip is centered. May be `null`
+   * during the very first render before the parent's ref callback has
+   * run; in that case the tooltip renders with `visibility: hidden`
+   * and re-positions on the next layout cycle.
+   */
+  anchorElement: HTMLElement | null;
 }
 
 /**
@@ -361,16 +379,18 @@ export interface DisabledCombinationTooltipProps
  * the tooltip would re-mount … producing a visible flicker. Disabling
  * pointer events on the tooltip eliminates this flicker entirely.
  *
- * Positioning: `top: calc(100% + 6px)` places the tooltip 6 px below
- * the disabled button (the parent must establish a positioning context
- * via `position: relative`); the `transform: translateX(-50%)` paired
- * with `left: 50%` centers the tooltip horizontally below the button.
+ * Positioning (QA Issue #1 fix): the tooltip is rendered via
+ * `createPortal` at `document.body`, escaping the parent
+ * `<aside aria-label="Configurator controls">`'s
+ * `overflow-y: auto` clipping rectangle. The base style sets
+ * `position: fixed`; concrete `top` + `left` values are computed at
+ * runtime from the anchor element's `getBoundingClientRect()` and
+ * applied as additional inline styles in the component body. The
+ * `transform: translateX(-50%)` keeps the tooltip horizontally
+ * centered relative to the resolved `left` coordinate.
  */
 const TOOLTIP_CONTAINER_STYLE: CSSProperties = {
-  position: 'absolute',
-  top: 'calc(100% + 6px)',
-  left: '50%',
-  transform: 'translateX(-50%)',
+  position: 'fixed',
   zIndex: 100,
   pointerEvents: 'none',
   minWidth: '12rem',
@@ -413,8 +433,7 @@ const TOOLTIP_ARROW_STYLE: CSSProperties = {
 
 /**
  * Tooltip surfaced when a disabled pattern or finish option is hovered
- * or focused (ST-013-AC2). Rendered as a sibling of the disabled
- * button, positioned absolutely relative to the button's container.
+ * or focused (ST-013-AC2).
  *
  * ARIA contract:
  *   - `role="tooltip"` identifies this element to assistive technology.
@@ -423,37 +442,108 @@ const TOOLTIP_ARROW_STYLE: CSSProperties = {
  *     screen reader announces the explanation when focus reaches the
  *     button.
  *
- * Visibility model: this component is mounted only when the tooltip
- * should be visible; when the user moves focus or hover off the
- * disabled button the caller unmounts the component. This "render or
- * don't" approach avoids the complexity of CSS transitions, timers, or
- * aria-hidden juggling. The trade-off is that there is no fade-in
- * animation — the tooltip appears instantly. For a configurator that
- * runs at ≥30 FPS (ST-005), this is acceptable.
+ * Visibility model: this component is mounted while the conflict
+ * exists (so `aria-describedby` continues to resolve to a real
+ * element); the parent passes an `opacity: 0` style override when the
+ * tooltip should be hidden from sighted users.
+ *
+ * Positioning (QA Issue #1 fix): the tooltip is rendered through
+ * `ReactDOM.createPortal` at `document.body` so that it cannot be
+ * clipped by ancestor `overflow: auto/hidden/scroll` containers (in
+ * particular `.app-shell-controls`, which has `overflow-y: auto`).
+ * `useLayoutEffect` reads the anchor element's `getBoundingClientRect()`
+ * after every commit and on `resize` / `scroll` events, then sets the
+ * tooltip's fixed `top` / `left` so the tooltip stays visually anchored
+ * 6 px below the trigger button. Capture-phase scroll listening is
+ * required because the relevant scroll happens on the inner
+ * `.app-shell-controls` container, not on `window`.
  *
  * Tag choice: a `<span>` is used because the tooltip is a phrase, not
  * a block-level document region. `span` + `role="tooltip"` ensures
- * assistive technology announces the content as inline text. The
- * positioning is provided by the inline style, not by tag semantics.
+ * assistive technology announces the content as inline text.
  */
 export function DisabledCombinationTooltip({
   id,
   reason,
+  anchorElement,
   style: overrideStyle,
   className: overrideClassName,
   ...rest
-}: DisabledCombinationTooltipProps): JSX.Element {
+}: DisabledCombinationTooltipProps): JSX.Element | null {
+  // Tooltip position in viewport coordinates (top + left of horizontal center).
+  // `null` until measured — the tooltip renders with `visibility: hidden`
+  // until the layout effect computes a real position so users never see a
+  // single-frame flash of the tooltip at (0,0).
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (anchorElement === null) {
+      // No anchor yet; defer measurement until the parent's ref callback
+      // populates the trigger element on the next render.
+      setPosition(null);
+      return;
+    }
+
+    const measureAndApply = (): void => {
+      const rect = anchorElement.getBoundingClientRect();
+      setPosition({
+        top: rect.bottom + 6,
+        // Center horizontally below the trigger; the tooltip's
+        // `transform: translateX(-50%)` aligns its midpoint to this x.
+        left: rect.left + rect.width / 2,
+      });
+    };
+
+    // Initial measurement after the parent commits the trigger element.
+    measureAndApply();
+
+    // Re-measure on viewport resize and on ANY scroll (capture: true so
+    // we hear scroll events on inner overflow containers like
+    // `.app-shell-controls` — `window` scroll alone misses these).
+    window.addEventListener('resize', measureAndApply);
+    window.addEventListener('scroll', measureAndApply, true);
+    return () => {
+      window.removeEventListener('resize', measureAndApply);
+      window.removeEventListener('scroll', measureAndApply, true);
+    };
+  }, [anchorElement]);
+
+  // SSR safety: `document` is unavailable during server rendering. The
+  // configurator is a client-only Vite app, but the type-safe guard
+  // keeps the component portable.
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
   const className = overrideClassName
     ? `disabled-combination-tooltip ${overrideClassName}`
     : 'disabled-combination-tooltip';
 
-  return (
+  // Compose the resolved style: base + measured position + caller override.
+  // When position is `null` (anchor not yet known), render off-screen with
+  // `visibility: hidden` so the DOM structure (and `aria-describedby`
+  // resolution) is preserved while sighted users see nothing.
+  const positionedStyle: CSSProperties = position
+    ? {
+        ...TOOLTIP_CONTAINER_STYLE,
+        top: position.top,
+        left: position.left,
+        transform: 'translateX(-50%)',
+      }
+    : {
+        ...TOOLTIP_CONTAINER_STYLE,
+        top: 0,
+        left: 0,
+        visibility: 'hidden',
+      };
+
+  return createPortal(
     <span
       {...rest}
       id={id}
       role="tooltip"
       className={className}
-      style={{ ...TOOLTIP_CONTAINER_STYLE, ...overrideStyle }}
+      style={{ ...positionedStyle, ...overrideStyle }}
     >
       <span
         aria-hidden="true"
@@ -461,6 +551,7 @@ export function DisabledCombinationTooltip({
         style={TOOLTIP_ARROW_STYLE}
       />
       {reason}
-    </span>
+    </span>,
+    document.body,
   );
 }

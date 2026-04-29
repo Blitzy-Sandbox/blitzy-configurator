@@ -422,6 +422,22 @@ const SCALE_LABEL_TEXT_STYLE: CSSProperties = {
 
 const SCALE_SLIDER_STYLE: CSSProperties = {
   flex: 1,
+  // ---------------------------------------------------------------------
+  // QA Issue #15 — brand-colour the native range slider's filled track
+  // and thumb. Without `accent-color`, Chromium / WebKit / Firefox
+  // render the slider in their default neutral grey (~`#9D968E`),
+  // which is OFF the AAP Blitzy palette and makes the slider visibly
+  // off-brand against the surrounding purple swatches and primary
+  // CTA. `accent-color: #5B39F3` (Blitzy primary) recolours the
+  // filled portion of the track and the thumb in every modern
+  // browser using the documented brand primary, with no need for
+  // browser-specific `::-webkit-slider-thumb` pseudo-elements.
+  // The value is hard-coded rather than `var(--blitzy-primary)`
+  // because `accent-color` does not interpolate CSS variables in
+  // every browser engine version (notably older Safari) — using the
+  // literal hex guarantees deterministic rendering.
+  // ---------------------------------------------------------------------
+  accentColor: '#5B39F3',
 };
 
 const SCALE_VALUE_STYLE: CSSProperties = {

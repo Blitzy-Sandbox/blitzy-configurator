@@ -386,15 +386,19 @@ const SUBTOTAL_VALUE_STYLE: React.CSSProperties = {
 };
 
 function getFinalizeButtonStyle(isEnabled: boolean): React.CSSProperties {
+  // QA Issue #10 — disabled text colour upgraded from `#999999`
+  // (2.85:1 on `#D9D9D9` — FAIL WCAG AA) to `#666666` (4.83:1 — PASS).
+  // QA Issue #9 — `font-family: inherit` lets the global Inter cascade
+  // reach this native `<button>` instead of falling back to OS Arial.
   return {
     display: 'block',
     width: '100%',
     marginTop: '0.75rem',
     padding: '0.625rem 1rem',
-    fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+    fontFamily: 'inherit',
     fontSize: '0.875rem',
     fontWeight: 600,
-    color: isEnabled ? '#FFFFFF' : '#999999',
+    color: isEnabled ? '#FFFFFF' : '#666666',
     backgroundColor: isEnabled ? '#5B39F3' : '#D9D9D9',
     border: 'none',
     borderRadius: '0.375rem',

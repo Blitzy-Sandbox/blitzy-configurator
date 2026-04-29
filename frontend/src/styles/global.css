@@ -78,12 +78,21 @@
   --blitzy-surface-3: #D9D9D9; /* Mid-grey — disabled controls. */
 
   /* ---- Borders ------------------------------------------------------- */
-  --blitzy-border: #999999;       /* Standard border. */
+  --blitzy-border: #999999;       /* Standard border (decorative — not text). */
   --blitzy-border-soft: #D9D9D9;  /* Hairline border for cards. */
 
   /* ---- Text ---------------------------------------------------------- */
+  /*
+   * QA Issue #10 (WCAG 1.4.3 Contrast): #999999 produces only 2.85:1
+   * on #FFFFFF, which fails WCAG AA (≥4.5:1 for normal text).
+   * Adjusted to #666666 (5.74:1 on white, 4.83:1 on #F4EFF6) so that
+   * the muted text token is universally accessible across the brand
+   * surface tokens. Border tokens above intentionally retain #999999
+   * because borders are decorative and have no text-contrast
+   * requirement under WCAG.
+   */
   --blitzy-text: #333333;         /* Primary body text on light surfaces. */
-  --blitzy-text-muted: #999999;   /* Secondary / disabled text. */
+  --blitzy-text-muted: #666666;   /* Secondary / disabled text (WCAG AA-compliant). */
   --blitzy-text-invert: #FFFFFF;  /* Text on dark/gradient surfaces. */
 
   /* ---- Typography ---------------------------------------------------- */
@@ -201,6 +210,32 @@ body {
 }
 
 /* ---------------------------------------------------------------------
+ * Native form-element typography inheritance (QA Issue #9).
+ * ---------------------------------------------------------------------
+ *
+ * Browsers do NOT inherit `font-family` / `font-size` / `line-height`
+ * onto native <button>, <input>, <select>, <textarea> by default; they
+ * default to the OS's "system UI" font (typically Arial-like). This
+ * silently breaks the AAP brand-typography contract whenever a
+ * component author forgets to declare `fontFamily` inline.
+ *
+ * Forcing inheritance here means `var(--ff-body)` (Inter) cascades
+ * into every native form element by default while still allowing
+ * per-component overrides where intentional (e.g. monospace in hex
+ * value spans).
+ * ------------------------------------------------------------------ */
+button,
+input,
+select,
+textarea,
+optgroup {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+}
+
+/* ---------------------------------------------------------------------
  * Headings (display family).
  * ------------------------------------------------------------------ */
 h1,
@@ -244,11 +279,56 @@ samp {
 /* ---------------------------------------------------------------------
  * Focus indicator — visible 2px outline using the brand primary, kept
  * accessible for ST-001-AC4-style "no console errors / no a11y warnings".
+ *
+ * QA Issue #17: programmatic focus visibility. Some components apply
+ * an inline `outline: transparent solid 2px` initial state to color
+ * swatches and only switch the outline color via a React `onFocus`
+ * handler. That works for keyboard tab navigation (which fires React
+ * focus events) but NOT for `element.focus()` invoked from JS / tests
+ * / Skipped focus restoration paths. The `:focus-visible` rule below
+ * uses `!important` so brand-correct focus rendering happens from any
+ * focus path regardless of inline overrides.
  * ------------------------------------------------------------------ */
 :focus-visible {
-  outline: 2px solid var(--blitzy-primary);
+  outline: 2px solid var(--blitzy-primary) !important;
   outline-offset: 2px;
   border-radius: var(--radius-sm);
+}
+
+/* ---------------------------------------------------------------------
+ * Skip-navigation link (QA Issue #16, WCAG 2.4.1 Bypass Blocks).
+ * ---------------------------------------------------------------------
+ *
+ * Visually hidden until focused. Pressing Tab from the page start
+ * surfaces a "Skip to main content" link that jumps to the preview /
+ * main content area, bypassing the ~40-element top-nav and
+ * color-picker tab order required by ST-002 / ST-006-009.
+ * ------------------------------------------------------------------ */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 0;
+  z-index: 1000;
+  padding: var(--space-sm) var(--space-md);
+  background-color: var(--blitzy-primary);
+  color: var(--blitzy-text-invert);
+  font-family: var(--ff-body);
+  font-weight: 600;
+  font-size: 0.875rem;
+  text-decoration: none;
+  border: 2px solid var(--blitzy-text-invert);
+  border-top: 0;
+  border-left: 0;
+  border-radius: 0 0 var(--radius-sm) 0;
+  transition: top 150ms ease-out;
+}
+
+.skip-link:focus,
+.skip-link:focus-visible {
+  top: 0;
+  /* Keep the brand outline visible against the purple background. */
+  outline: 2px solid var(--blitzy-text-invert) !important;
+  outline-offset: -4px;
 }
 
 /* ---------------------------------------------------------------------
@@ -263,6 +343,34 @@ a {
 
 a:hover {
   text-decoration: underline;
+}
+
+/* ---------------------------------------------------------------------
+ * Hover-state affordances (QA Issue #14).
+ * ---------------------------------------------------------------------
+ *
+ * Subtle hover feedback on enabled native buttons so users get a
+ * confirmation that the element is interactive. Specific component
+ * styles (e.g. selected color swatch, disabled-state visuals)
+ * override these via inline styles or `:disabled` selectors below.
+ * ------------------------------------------------------------------ */
+button:not(:disabled):not([aria-disabled='true']):hover {
+  /*
+   * `filter: brightness()` is a reliable hover affordance because it
+   * works on both filled (brand-purple) and outlined (transparent)
+   * triggers without our needing to know the underlying background
+   * color. 0.92 is a 8% darken — perceptible without being startling.
+   */
+  filter: brightness(0.92);
+}
+
+/*
+ * Disabled and aria-disabled native form elements should be visually
+ * non-interactive — also blocks the global :hover from applying.
+ */
+button:disabled,
+button[aria-disabled='true'] {
+  cursor: not-allowed;
 }
 
 /* ---------------------------------------------------------------------
@@ -359,10 +467,42 @@ a:hover {
 /*
  * Responsive collapse for narrow viewports — the controls and summary
  * sidebars stack vertically below the preview so it remains the focus.
+ *
+ * QA Issue #2 (mobile nested-scroll antipattern): at narrow viewports
+ * the application shell previously locked at `height: 100%` and forced
+ * controls/summary into ~133-261px tall scroll regions, hiding ~85% of
+ * controls behind nested scrollbars. This breakpoint now uses
+ * `min-height` plus `auto` rows for controls/summary, allowing each
+ * region to occupy its natural intrinsic height. The document body
+ * scrolls (browser-native) instead of nested asides — the standard
+ * mobile pattern.
  */
 @media (max-width: 900px) {
+  /*
+   * On mobile/tablet, allow the document to grow taller than the
+   * viewport. The browser's native scrollbar handles overflow while
+   * each region (controls, summary) renders at full intrinsic height.
+   */
+  html,
+  body {
+    height: auto;
+    min-height: 100%;
+  }
+
+  #root {
+    height: auto;
+    min-height: 100%;
+  }
+
   .app-shell {
+    height: auto;
+    min-height: 100%;
     grid-template-columns: 1fr;
+    /*
+     * `auto` rows let controls and summary occupy their natural
+     * intrinsic height; preview is given a minimum 360px tall row so
+     * the 3D ball remains the visual anchor.
+     */
     grid-template-rows: auto 360px auto auto;
     grid-template-areas:
       'header'
@@ -375,6 +515,11 @@ a:hover {
     border-right: 0;
     border-left: 0;
     border-top: 1px solid var(--blitzy-border-soft);
+    /*
+     * Disable nested vertical scroll — the parent document scrolls
+     * instead, which is the expected native pattern on mobile/tablet.
+     */
+    overflow-y: visible;
   }
 }
 

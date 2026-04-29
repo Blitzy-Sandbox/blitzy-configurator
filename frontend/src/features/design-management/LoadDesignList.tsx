@@ -1175,15 +1175,29 @@ export function LoadDesignList(): JSX.Element {
    *     the trigger) explains why.
    */
   const triggerButtonStyle: React.CSSProperties = {
-    padding: '0.625rem 1rem',
+    // QA Issue #7 — unify top-nav trigger button styling. Previously
+    // each top-nav action used a slightly different padding (8/14,
+    // 10/16, 8/16) which produced visually mismatched buttons. The
+    // canonical top-nav trigger style mirrors NewDesignDialog's
+    // `triggerButtonStyle`: 0.5rem 0.875rem padding (8px 14px),
+    // white background, 1px solid #D9D9D9 border, 0.375rem (6px)
+    // radius, Inter 14px 500. Authenticated state stays brand-purple
+    // (outline) for primary affordance distinction; the
+    // disabled / unauthenticated state matches the "soft neutral"
+    // treatment used elsewhere.
+    // QA Issue #10 — disabled-state text colour upgraded from
+    // `#999999` (2.85:1 — FAIL WCAG AA) to `#666666` (PASS).
+    padding: '0.5rem 0.875rem',
     backgroundColor: isAuthenticated ? 'transparent' : '#F5F5F5',
-    color: isAuthenticated ? '#5B39F3' : '#999999',
+    color: isAuthenticated ? '#5B39F3' : '#666666',
     border: isAuthenticated ? '1px solid #5B39F3' : '1px solid #D9D9D9',
     borderRadius: '0.375rem',
     fontSize: '0.875rem',
     fontWeight: 500,
+    fontFamily: 'inherit',
+    lineHeight: 1.5,
     cursor: isAuthenticated ? 'pointer' : 'not-allowed',
-    width: '100%',
+    width: 'auto',
   };
 
   /**
@@ -1279,10 +1293,15 @@ export function LoadDesignList(): JSX.Element {
     fontWeight: 500,
   };
 
-  /** Style for the row's metadata line. */
+  /**
+   * Style for the row's metadata line.
+   *
+   * QA Issue #10 — `#999` (≡ `#999999`) on white was 2.85:1 (FAIL
+   * WCAG AA 1.4.3). Upgraded to `#666666` (5.74:1 on white — PASS).
+   */
   const rowMetaStyle: React.CSSProperties = {
     fontSize: '0.75rem',
-    color: '#999',
+    color: '#666666',
   };
 
   /** Style for the empty-state message. */

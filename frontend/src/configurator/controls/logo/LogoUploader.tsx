@@ -284,7 +284,11 @@ const SECTION_STYLE: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: '0.5rem',
-  padding: '0.875rem',
+  // QA Issue #6 — standardise card padding to 0.75rem (12px) across
+  // all control sub-sections (color pickers, pattern, finish, logo
+  // upload, logo positioner). LogoUploader previously used 0.875rem
+  // (14px) which was the only outlier among the six cards.
+  padding: '0.75rem',
   border: '1px solid #D9D9D9',
   borderRadius: '0.375rem',
   backgroundColor: '#FFFFFF',

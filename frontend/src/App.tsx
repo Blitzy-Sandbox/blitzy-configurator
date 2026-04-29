@@ -350,7 +350,27 @@ function ControlSidebar(): JSX.Element {
       data-testid="control-sidebar"
     >
       <span className="brand-accent-bar" aria-hidden="true" />
-      <span className="brand-eyebrow">Customize</span>
+      {/*
+       * Heading hierarchy bridge (QA Issue #11 / WCAG 1.3.1).
+       *
+       * The page heading order is `h1` (page title in `<AppHeader>`) →
+       * `h2` (this region) → `h3` (each control sub-section like
+       * "Primary color", "Stitching pattern", etc.). Promoting the
+       * "Customize" eyebrow from a presentational `<span>` to a proper
+       * `<h2>` element closes the previously-flagged h1→h3 jump in the
+       * controls aside without changing visual styling — the
+       * `brand-eyebrow` class continues to render the small-caps label
+       * treatment, and inline `margin: 0` removes the default heading
+       * margins so the visual rhythm is identical to the previous span.
+       *
+       * Screen-reader users navigating by heading level now see the
+       * controls aside as `Customize → Primary color → Secondary color
+       * → ...`, matching the right-aside `Design Summary` (also `h2`)
+       * for symmetry.
+       */}
+      <h2 className="brand-eyebrow" style={{ margin: 0 }}>
+        Customize
+      </h2>
 
       <PrimaryColorPicker />
       <SecondaryColorPicker />
@@ -478,13 +498,45 @@ export function App(): JSX.Element {
 
   return (
     <div className="app-shell" data-testid="app-shell">
+      {/*
+       * Skip-to-content link (QA Issue #16 / WCAG 2.4.1).
+       *
+       * Per WCAG 2.4.1 "Bypass Blocks", a mechanism MUST be available
+       * for keyboard users to skip past repeated content (the brand
+       * lockup + 4 top-nav action triggers + the entire 3-column
+       * control sidebar with ~30 focusable swatches/buttons) directly
+       * to the main preview region. Without this link, a keyboard
+       * user pressing Tab from the document start has to step through
+       * ~40 focusable elements to reach the preview.
+       *
+       * The link is the FIRST focusable element in the document so
+       * pressing Tab once from page load lands here. The
+       * `.skip-link` CSS class (defined in `global.css`) keeps the
+       * link visually hidden (positioned at `top: -100px`) until it
+       * receives focus, at which point it slides into view as a
+       * brand-purple ribbon at the top-left. Activating the link
+       * navigates to `#main-content`, which is the
+       * `<main class="app-shell-preview" id="main-content">` element
+       * declared below.
+       *
+       * Implementation note: the skip-link MUST sit OUTSIDE the
+       * `<header>` and `<aside>` landmarks so screen-reader users
+       * navigating by landmarks encounter it first. It is therefore
+       * a direct child of `.app-shell` rather than of `<AppHeader>`.
+       */}
+      <a className="skip-link" href="#main-content">
+        Skip to main content
+      </a>
+
       <AppHeader />
       <ControlSidebar />
       <main
+        id="main-content"
         className="app-shell-preview"
         role="main"
         aria-label="Live 3D ball preview"
         data-testid="preview-region"
+        tabIndex={-1}
       >
         {/*
          * Wrap `<BallCanvas />` in an `<ErrorBoundary>` (QA Issue #12).

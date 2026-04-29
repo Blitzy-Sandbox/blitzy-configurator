@@ -366,16 +366,27 @@ export function ShareDesignAction(): JSX.Element {
   // -------------------------------------------------------------------------
 
   /**
-   * Trigger button style. Brand purple; goes ghost-grey when disabled.
+   * Trigger button style.
+   *
+   * QA Issue #7 — unify top-nav trigger button styling. The canonical
+   * top-nav trigger style is the "outline" treatment from
+   * NewDesignDialog: 0.5rem 0.875rem padding (8px 14px), white bg,
+   * 1px solid #D9D9D9 border, 0.375rem (6px) radius, Inter 14px 500.
+   * The enabled state surfaces the brand-purple primary by switching
+   * the bg to `#5B39F3` and text to white; the disabled state uses
+   * the same outline shape with neutral surface and `#666666` text
+   * for WCAG-AA contrast (QA Issue #10).
    */
   const triggerButtonStyle: React.CSSProperties = {
     padding: '0.5rem 0.875rem',
-    backgroundColor: isButtonEnabled ? '#5B39F3' : '#D9D9D9',
-    color: isButtonEnabled ? '#FFFFFF' : '#999',
-    border: 'none',
+    backgroundColor: isButtonEnabled ? '#5B39F3' : '#FFFFFF',
+    color: isButtonEnabled ? '#FFFFFF' : '#666666',
+    border: isButtonEnabled ? '1px solid #5B39F3' : '1px solid #D9D9D9',
     borderRadius: '0.375rem',
     fontSize: '0.875rem',
     fontWeight: 500,
+    fontFamily: 'inherit',
+    lineHeight: 1.5,
     cursor: isButtonEnabled ? 'pointer' : 'not-allowed',
   };
 

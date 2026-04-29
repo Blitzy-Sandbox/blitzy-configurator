@@ -166,9 +166,14 @@
  *   - Backdrop click does NOT dismiss the dialog (deliberate UX for the
  *     destructive `aria-modal="true"` path — the user must explicitly
  *     choose Cancel or Discard). The backdrop is presentational only:
- *     role="presentation" + aria-hidden="true" + NO onClick handler, so
- *     AT does not traverse into it and pointer users cannot inadvertently
- *     dismiss via a mis-aimed click.
+ *     role="presentation" + NO onClick handler, so AT does not traverse
+ *     into the backdrop's own role and pointer users cannot inadvertently
+ *     dismiss via a mis-aimed click. The dialog content INSIDE the
+ *     backdrop wrapper is fully exposed to AT via `aria-modal="true"` —
+ *     `aria-hidden="true"` was DELIBERATELY removed (QA Issue #3) because
+ *     it caused a WCAG 4.1.2 violation by putting the focused Cancel
+ *     button inside an aria-hidden subtree. See the inline comment at
+ *     the backdrop element below for the full reasoning.
  *
  * ============================================================================
  * Test contract (data-testid attributes for the Playwright suite — ST-045)
@@ -557,9 +562,28 @@ export function NewDesignDialog(): JSX.Element {
       {isOpen && (
         /*
           Backdrop:
-            - role="presentation" + aria-hidden="true" mark the backdrop
-              as decorative; AT users interact with the dialog inside,
-              not the backdrop.
+            - role="presentation" marks the backdrop as decorative; AT
+              users interact with the dialog inside, not the backdrop.
+            - DELIBERATELY does NOT use `aria-hidden="true"` — that
+              attribute previously caused a WCAG 4.1.2 violation
+              (QA Issue #3) because the focused dialog buttons are
+              descendants of this wrapper, and `aria-hidden` propagates
+              to descendants. The browser's accessibility engine emits
+              "Blocked aria-hidden on an element because its descendant
+              retained focus" warnings when a focused element sits
+              inside an aria-hidden subtree. The correct pattern is:
+                1. `role="presentation"` on the backdrop wrapper
+                   (already removes the wrapper's semantics from the AT
+                   tree — sufficient to keep the backdrop itself silent
+                   to screen readers).
+                2. `aria-modal="true"` on the inner dialog (already
+                   present below) — this is the canonical ARIA-modal
+                   signal that AT engines use to constrain the
+                   accessible reading order to the dialog content.
+              The combination delivers the same UX (backdrop is
+              announced as nothing; dialog content is fully exposed)
+              without putting focused buttons inside an aria-hidden
+              subtree.
             - DELIBERATELY no onClick handler. Backdrop clicks must NOT
               dismiss the dialog because this is a destructive
               confirmation — the user must explicitly choose Cancel or
@@ -573,7 +597,6 @@ export function NewDesignDialog(): JSX.Element {
         */
         <div
           role="presentation"
-          aria-hidden="true"
           data-testid="new-design-backdrop"
           style={backdropStyle}
         >

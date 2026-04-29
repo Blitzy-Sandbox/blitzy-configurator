@@ -306,15 +306,29 @@ const SECTION_STYLE: React.CSSProperties = {
 };
 
 function getTriggerButtonStyle(isAuthenticated: boolean): React.CSSProperties {
+  // QA Issue #7 — unify top-nav trigger button styling across the
+  // four affordances (NewDesignDialog, LoadDesignList, ShareDesignAction,
+  // CartPanel). Shared specs:
+  //   padding: 0.5rem 0.875rem (8px 14px) — matches NewDesignDialog
+  //   font-size: 0.875rem
+  //   font-weight: 500 — matches NewDesignDialog (was 600 here)
+  //   border-radius: 0.375rem
+  //   border: 1px solid (brand purple when enabled, #D9D9D9 when disabled)
+  // QA Issue #10 — disabled-state text colour upgraded from `#999999`
+  // (2.85:1 — FAIL WCAG AA) to `#666666` (PASS WCAG AA).
+  // QA Issue #9 — `font-family: inherit` ensures Inter (the body font
+  // declared on `<html>` / `<body>`) propagates into the native button
+  // element instead of falling back to OS Arial.
   return {
     display: 'inline-flex',
     alignItems: 'center',
     gap: '0.5rem',
-    padding: '0.5rem 1rem',
-    fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+    padding: '0.5rem 0.875rem',
+    fontFamily: 'inherit',
     fontSize: '0.875rem',
-    fontWeight: 600,
-    color: isAuthenticated ? '#5B39F3' : '#999999',
+    fontWeight: 500,
+    lineHeight: 1.5,
+    color: isAuthenticated ? '#5B39F3' : '#666666',
     backgroundColor: 'transparent',
     border: `1px solid ${isAuthenticated ? '#5B39F3' : '#D9D9D9'}`,
     borderRadius: '0.375rem',
@@ -419,15 +433,19 @@ const SUBTOTAL_VALUE_STYLE: React.CSSProperties = {
 };
 
 function getCreateOrderButtonStyle(isEnabled: boolean): React.CSSProperties {
+  // QA Issue #10 — disabled-state text colour upgraded from `#999999`
+  // (2.85:1 on `#D9D9D9` — FAIL WCAG AA) to `#666666` (4.83:1 — PASS).
+  // QA Issue #9 — `font-family: inherit` ensures Inter propagates into
+  // the native button instead of falling back to OS Arial.
   return {
     display: 'block',
     width: '100%',
     marginTop: '0.75rem',
     padding: '0.625rem 1rem',
-    fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+    fontFamily: 'inherit',
     fontSize: '0.875rem',
     fontWeight: 600,
-    color: isEnabled ? '#FFFFFF' : '#999999',
+    color: isEnabled ? '#FFFFFF' : '#666666',
     backgroundColor: isEnabled ? '#5B39F3' : '#D9D9D9',
     border: 'none',
     borderRadius: '0.375rem',

@@ -511,8 +511,16 @@ export function DesignSummarySidebar(): JSX.Element {
         gap: '1rem',
         padding: '1.25rem',
         backgroundColor: '#FFFFFF',
-        border: '1px solid #E5E5E5',
-        borderRadius: '0.5rem',
+        // QA Issues #8 + #12 — match the controls-aside card pattern
+        // exactly: border colour `#D9D9D9` (the documented Blitzy
+        // border-soft neutral) and radius `0.375rem` (6px). Previously
+        // used `#E5E5E5` (off-palette) and `0.5rem` (8px) which made
+        // the right summary aside visually inconsistent with the left
+        // controls aside even though both function as "live data
+        // panels". `#E5E5E5` is NOT in the documented Blitzy palette;
+        // `#D9D9D9` is `--blitzy-surface-3` and `--blitzy-border-soft`.
+        border: '1px solid #D9D9D9',
+        borderRadius: '0.375rem',
       }}
     >
       <h2
@@ -562,7 +570,12 @@ export function DesignSummarySidebar(): JSX.Element {
               style={{
                 fontSize: '0.875rem',
                 color: '#333',
-                fontFamily: 'monospace',
+                // QA Issue #13 — use the documented `--ff-mono` (Fira Code)
+                // stack for hex values. The previous inline `monospace`
+                // resolved to whatever generic system monospace each OS
+                // provides (Courier/Menlo/Liberation Mono), defeating the
+                // AAP brand typography pin.
+                fontFamily: 'var(--ff-mono)',
               }}
             >
               {primaryColor}
@@ -590,7 +603,10 @@ export function DesignSummarySidebar(): JSX.Element {
               style={{
                 fontSize: '0.875rem',
                 color: '#333',
-                fontFamily: 'monospace',
+                // QA Issue #13 — use the documented `--ff-mono` (Fira Code)
+                // stack for hex values. See summary-value-primary above
+                // for full rationale.
+                fontFamily: 'var(--ff-mono)',
               }}
             >
               {secondaryColor}
@@ -618,7 +634,10 @@ export function DesignSummarySidebar(): JSX.Element {
               style={{
                 fontSize: '0.875rem',
                 color: '#333',
-                fontFamily: 'monospace',
+                // QA Issue #13 — use the documented `--ff-mono` (Fira Code)
+                // stack for hex values. See summary-value-primary above
+                // for full rationale.
+                fontFamily: 'var(--ff-mono)',
               }}
             >
               {accentColor}
@@ -682,7 +701,11 @@ export function DesignSummarySidebar(): JSX.Element {
        */}
       <div
         style={{
-          borderTop: '1px solid #F0F0F0',
+          // QA Issue #12 — `#F0F0F0` is OFF the documented Blitzy
+          // neutral palette. Use `#D9D9D9` (`--blitzy-border-soft`)
+          // which is the canonical sub-section divider colour used
+          // by every card border across the configurator.
+          borderTop: '1px solid #D9D9D9',
           paddingTop: '1rem',
           display: 'flex',
           flexDirection: 'column',
@@ -712,8 +735,17 @@ export function DesignSummarySidebar(): JSX.Element {
           }
           style={{
             padding: '0.625rem 1rem',
-            backgroundColor: isCartCtaEnabled ? '#0066CC' : '#D9D9D9',
-            color: isCartCtaEnabled ? '#FFFFFF' : '#999999',
+            // QA Issue #12 — `#0066CC` is OFF the documented Blitzy
+            // palette. Use the canonical Blitzy primary `#5B39F3` so
+            // the Add-to-Cart CTA matches the brand-purple visual
+            // language used on selected swatches and pattern/finish
+            // selected states. Disabled state continues to use
+            // `#D9D9D9` (border-soft neutral) which IS in palette.
+            backgroundColor: isCartCtaEnabled ? '#5B39F3' : '#D9D9D9',
+            // QA Issue #10 — disabled-state text colour upgraded
+            // from `#999999` (2.85:1 on `#D9D9D9` — FAIL WCAG AA)
+            // to `#666666` (4.83:1 on `#D9D9D9` — PASS WCAG AA).
+            color: isCartCtaEnabled ? '#FFFFFF' : '#666666',
             border: 'none',
             borderRadius: '0.375rem',
             fontSize: '0.875rem',

@@ -216,27 +216,51 @@ const STITCHING_PATTERN_LABELS: Readonly<Record<StitchingPattern, string>> = {
  * mirror `FinishSelector.tsx` so the two selectors stack cleanly in
  * the sidebar with consistent spacing.
  */
+// QA Issue #5 — adopt the canonical "card" container treatment used by
+// PrimaryColorPicker / SecondaryColorPicker / AccentColorPicker /
+// LogoUploader / LogoPositioner so all six control sub-sections in the
+// `<aside aria-label="Configurator controls">` share one visual idiom.
+// The card pattern is: white bg, 1px solid #D9D9D9 border, 0.375rem
+// radius, 0.75rem padding (QA Issue #6 — uniform padding across cards).
 const SECTION_STYLE: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: '0.5rem',
   marginBottom: '1rem',
+  padding: '0.75rem',
+  border: '1px solid #D9D9D9',
+  borderRadius: '0.375rem',
+  backgroundColor: '#FFFFFF',
 };
 
-/** Style for the visible "Stitching pattern" heading. */
+/**
+ * Style for the visible "Stitching pattern" heading.
+ *
+ * QA Issue #4 — standardise h3 typography across the configurator:
+ *   - Removed inline `fontFamily: 'Inter'` override so the global
+ *     `h3 { font-family: var(--ff-display); }` rule (Space Grotesk)
+ *     applies, matching the color pickers' h3 treatment.
+ *   - `fontSize` reduced from 0.95rem (15.2px) to 0.875rem (14px) so
+ *     all control h3 elements use a single visual size.
+ */
 const HEADING_STYLE: CSSProperties = {
-  fontFamily: 'Inter, system-ui, sans-serif',
   fontWeight: 600,
-  fontSize: '0.95rem',
+  fontSize: '0.875rem',
   margin: 0,
   color: '#333333',
 };
 
-/** Style for the live "Currently <label>" hint. */
+/**
+ * Style for the live "Currently <label>" hint.
+ *
+ * QA Issue #10 — `#999999` against white was 2.85:1 (FAIL WCAG AA).
+ * `#666666` against white is 5.74:1 (PASS WCAG AA), matching the
+ * updated `--blitzy-text-muted` token in `global.css`.
+ */
 const HINT_STYLE: CSSProperties = {
   fontFamily: 'Inter, system-ui, sans-serif',
   fontSize: '0.75rem',
-  color: '#999999',
+  color: '#666666',
   margin: 0,
 };
 
@@ -711,6 +735,13 @@ export function StitchingPatternSelector(): JSX.Element {
                 <DisabledCombinationTooltip
                   id={tooltipId}
                   reason={reason}
+                  // QA Issue #1 fix: the tooltip is portaled to
+                  // document.body and dynamically positioned from
+                  // this anchor element's getBoundingClientRect(),
+                  // so the `<aside aria-label="Configurator
+                  // controls">`'s `overflow-y: auto` no longer
+                  // clips the tooltip text on the right edge.
+                  anchorElement={buttonRefs.current[index] ?? null}
                   data-testid={`stitching-pattern-tooltip-${pattern}`}
                   // The `data-visible` attribute is the contract a
                   // future Playwright spec could exercise to verify

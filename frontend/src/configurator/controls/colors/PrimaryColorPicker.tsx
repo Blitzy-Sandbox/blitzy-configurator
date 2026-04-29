@@ -230,7 +230,10 @@ const HEADING_STYLE: CSSProperties = {
 
 const HINT_STYLE: CSSProperties = {
   fontSize: '0.75rem',
-  color: '#999999',
+  // QA Issue #10 — `#999999` on white was 2.85:1 (FAIL WCAG AA 1.4.3).
+  // `#666666` on white is 5.74:1 (PASS WCAG AA), matching the updated
+  // `--blitzy-text-muted` token defined in `global.css`.
+  color: '#666666',
   margin: 0,
 };
 
