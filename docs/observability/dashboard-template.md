@@ -12,6 +12,14 @@ The dashboard is organized into four horizontal rows, each tuned to a specific o
 
 Color conventions adopt the Blitzy brand accent palette once rehydrated into the chosen dashboard tool, with warning thresholds shaded in the primary-light band and critical thresholds shaded in the deep-primary band. The default time range is the last 24 hours; typical zoom shortcuts are 1 hour, 6 hours, 24 hours, and 7 days. Every panel supports drill-down from any selected time window to the list of individual correlation identifiers observed inside that window, enabling an operator to pivot from a spike on any chart directly into the structured log stream for the offending requests.
 
+Each panel below carries an explicit alert policy describing how a threshold breach escalates from a ticket to a page.
+
+The global cadence rules in `## Cadence, De-duplication, and Escalation Conventions` apply to every alert policy uniformly so that no panel can quietly invent its own escalation contract.
+
+Where a panel inherits its alert policy from another panel — for example, the Error Rate breakout inherits the top-line Error Rate panel's alert policy — that inheritance is named explicitly in the inheriting panel's alert policy entry rather than left implicit.
+
+This naming convention ensures an operator never has to guess which alert policy is in force when responding to a paged incident.
+
 ## Panel Catalog
 
 The following panels are the canonical set. Each panel is specified by name, query description, thresholds, and alert policy. Panels are cataloged linearly below in row-then-position order.
@@ -53,7 +61,7 @@ The following panels are the canonical set. Each panel is specified by name, que
 
 ### Active Sessions
 
-- **Query:** Count of valid, non-expired session tokens issued by the authentication service, sampled every minute and visualized as a line chart. The data source is the metrics stream emitted by the session-issuance service; the sample is a gauge of currently-valid sessions at read time.
+- **Query:** Net count of currently-valid sessions, computed from the structured log stream as the running difference between `event: "session.issued"` records (login path) and `event: "session.revoked"` records (logout path) over a sliding window aligned with the SLO window, sampled every minute and visualized as a line chart. The data source is the structured log stream filtered on the two session lifecycle event categories; the running net difference is a robust proxy for the true active-session count and converges to the authoritative value as the window approaches the maximum session lifetime. A periodic reconciliation read against the `sessions` table (counting rows where `revoked_at IS NULL` and `expires_at > now()`) anchors the running net and corrects for process restarts.
 - **Thresholds:** Warning at drop ≥ 50% compared to the 7-day rolling median at the same time-of-day for 15 minutes — indicates a likely authentication regression or a product-surface outage preventing users from reaching the configurator. Critical at drop ≥ 90% for 15 minutes — indicates near-total authentication failure.
 - **Alert Policy:** Warning creates a ticket for the product team within one hour. Critical pages the primary on-call immediately — treat as a user-impacting incident because session collapse blocks the entire authenticated feature surface.
 - **Layout Position:** Row 3, left.
@@ -101,12 +109,30 @@ The dashboard panels map to the service-level objectives defined in the EP-011 b
 - `SLO-004 — Session integrity` is monitored via the Active Sessions panel's trend deviation; sustained negative deviation beyond the warning threshold consumes the error budget for this SLO.
 - `SLO-005 — Order-flow continuity` is monitored via the Order Creation Rate panel's trend deviation; sustained negative deviation beyond the warning threshold consumes the error budget for this SLO.
 
+## Implementation Notes
+
+This template specification has been translated into a live Prometheus + log-based scraping setup as part of the implementation phase. The concrete data sources for each panel are now:
+
+- **Request Rate, Error Rate, P95 Latency, Error Rate Breakout** — sourced from the `/metrics` endpoint emitted by `backend/src/routes/metrics.ts` using the `prom-client` library. Metrics carry the three mandated labels (`service`, `environment`, `version`) per ST-048-AC2. The endpoint serves Prometheus text format with content type `text/plain; version=0.0.4; charset=utf-8`.
+- **Correlation ID Throughput** — sourced from the structured log stream emitted by `backend/src/logging/pino.ts` plus the AsyncLocalStorage propagation in `backend/src/middleware/correlation.ts`. A pipeline-level dashboard query counts distinct `correlationId` values per minute bucket from the JSON log lines. Every log record carries a `correlationId` populated from the AsyncLocalStorage hook, ensuring the throughput count is a direct proxy for the inbound request rate.
+- **Active Sessions** — sourced from the structured log stream emitted by `backend/src/logging/pino.ts`, filtered on two session lifecycle event categories: `event: "session.issued"` records emitted by `backend/src/services/session.service.ts` on the login path (ST-024) and `event: "session.revoked"` records emitted by the same service on the logout path (ST-025). Each record carries the `correlationId` and the Firebase `uid` only — no credential, idToken, or token reference value appears in any record per Rule R2 (verified by the pino serializer allow-list in `backend/src/logging/pino.ts`). The dashboard query computes the running net difference (issued minus revoked) over the SLO window. For a periodic reconciliation that corrects drift across process restarts, the dashboard tooling SHOULD additionally execute a low-frequency scrape (every 5 minutes is sufficient) against the `sessions` table — `SELECT COUNT(*) FROM sessions WHERE revoked_at IS NULL AND expires_at > now()` — and reset the running net to that value. A dedicated `active_sessions` gauge metric is intentionally NOT emitted in the current implementation: AAP §0.6.5 (ST-048) names exactly four metric primitives (`http_requests_total`, `http_errors_total`, `http_request_duration_seconds`, `process_up`), and adding session-lifecycle counters to the metrics surface beyond that set is deferred to a future observability story. Until that story lands, the structured-log-derived computation above is the authoritative data source for this panel and for SLO-004.
+- **Order Creation Rate** — sourced from the structured log stream filtered on `event: "order.created"` records emitted by `backend/src/services/order.service.ts` (ST-032). Each record carries the `correlationId`, `userId` (only the Firebase `uid`, never credential material per Rule R2), and `orderId` for downstream attribution.
+- **Deploy Markers** — sourced from Cloud Build's `build-metadata.json` artifact emitted by the `cloudbuild.yaml` build step. Each completed build produces a deployment marker event with `commitSha`, `imageDigest`, and `deploymentId`. The Cloud Deploy `promotion` step extends each marker with the target environment (`development`, `staging`, `production`) per ST-042.
+
+Concrete dashboarding tool selection is deferred to the infrastructure track. Until that selection occurs, this template remains the authoritative blueprint and the verification commands in `docs/observability/README.md` § Local Verification exercise each data source against the local development environment. The alert policy entries here are the source of truth for the eventual rehydrated dashboard's alert configuration.
+
 ## Cross-References
 
 - Observability catalog: [./README.md](./README.md)
 - Epic: [EP-011 Observability & Error Tracking](../../tickets/epics/EP-011-observability-error-tracking.md)
-- Story — Dashboard Template: [ST-049](../../tickets/stories/)
 - Decision log: [../decisions/README.md](../decisions/README.md)
+- Story — Distributed Tracing & Dashboard Template Stub: [ST-049 — Distributed Tracing & Dashboard Template Stub](../../tickets/stories/ST-049-distributed-tracing-dashboard-template-stub.md)
+- Story — Metrics Endpoint, Health/Readiness Probes: [ST-048 — Metrics Endpoint, Health/Readiness Probes](../../tickets/stories/ST-048-metrics-endpoint-health-readiness-probes.md)
+- Story — Structured Logs & Correlation ID: [ST-047 — Structured Logs & Correlation ID](../../tickets/stories/ST-047-structured-logs-correlation-id.md)
+- Implementation — Metrics route: [../../backend/src/routes/metrics.ts](../../backend/src/routes/metrics.ts)
+- Implementation — Health/readiness routes: [../../backend/src/routes/health.ts](../../backend/src/routes/health.ts)
+- Implementation — Pino logger: [../../backend/src/logging/pino.ts](../../backend/src/logging/pino.ts)
+- Implementation — Correlation middleware: [../../backend/src/middleware/correlation.ts](../../backend/src/middleware/correlation.ts)
 
 ## Document Maintenance
 

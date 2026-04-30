@@ -1,0 +1,7 @@
+# This file exists only so that `backend/migrations/` is committed and
+# present at Docker build time (the `backend/Dockerfile` builder stage
+# performs a `COPY migrations ./migrations` that requires the directory
+# to exist on the host). Track 1 / Group 1 will populate this directory
+# with the three node-pg-migrate forward+reverse files specified in
+# AAP §0.6.3 (ST-031, ST-030, ST-035 — every filename must embed its
+# story ID per Rule R10).

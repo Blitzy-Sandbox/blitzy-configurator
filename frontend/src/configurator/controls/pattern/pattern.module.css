@@ -1,0 +1,217 @@
+/*
+ * =====================================================================
+ * Pattern + finish selectors — shared styles (ST-010, ST-011, ST-012, ST-013).
+ * =====================================================================
+ *
+ * Authority:
+ *   - AAP §0.3.4 / §0.6.7 — pattern and finish controls share a
+ *     toggle-style button layout.
+ *   - AAP §0.8.2 — uses brand tokens declared in `global.css`.
+ *
+ * Responsibilities:
+ *   1. Render the pattern and finish selectors as accessible button
+ *      groups with visible selected and disabled states.
+ *   2. Provide tooltip styling for the disabled-combination tooltip
+ *      (ST-013); the tooltip is anchored next to the disabled finish
+ *      button via CSS positioning.
+ *   3. Provide transition feedback styling for ST-012 — a soft
+ *      pulsing indicator that appears for the duration of a
+ *      pattern/finish change.
+ *
+ * Cross-cutting rules: N/A (pure CSS).
+ * =====================================================================
+ */
+
+.selector {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-lg);
+}
+
+.selector__heading {
+  font-family: var(--ff-display);
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin: 0;
+  color: var(--blitzy-text);
+}
+
+.selector__hint {
+  font-size: 0.75rem;
+  color: var(--blitzy-text-muted);
+  margin: 0;
+}
+
+.selector__group {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+  gap: var(--space-sm);
+  margin: 0;
+  padding: 0;
+}
+
+.option {
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--blitzy-surface-0);
+  color: var(--blitzy-text);
+  border: 1px solid var(--blitzy-border-soft);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  /*
+   * 8px vertical / 12px horizontal padding gives a comfortable
+   * 36-40px tap target on touch devices while staying compact in the
+   * 280px sidebar.
+   */
+  padding: var(--space-sm) var(--space-md);
+  font-family: var(--ff-body);
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-align: center;
+  transition:
+    background-color 120ms ease-out,
+    border-color 120ms ease-out,
+    transform 120ms ease-out,
+    box-shadow 120ms ease-out,
+    color 120ms ease-out;
+  /*
+   * The relative position lets the disabled-combination tooltip
+   * anchor itself inside the button via `position: absolute`.
+   */
+  position: relative;
+}
+
+.option:hover:not(.option--disabled) {
+  border-color: var(--blitzy-primary-light);
+  transform: translateY(-1px);
+}
+
+.option--selected {
+  background: var(--blitzy-primary);
+  color: var(--blitzy-text-invert);
+  border-color: var(--blitzy-primary-dark);
+  box-shadow: 0 2px 8px rgba(91, 57, 243, 0.25);
+}
+
+.option--disabled {
+  /*
+   * Disabled buttons stay focusable for a11y (per ST-013 — keyboard
+   * users should be able to read why the option is unavailable),
+   * but their visual treatment communicates non-interactivity:
+   * mid-grey surface, dashed border, muted text, no hover lift.
+   */
+  background: var(--blitzy-surface-3);
+  color: var(--blitzy-text-muted);
+  border-style: dashed;
+  cursor: not-allowed;
+  /*
+   * Override the default `:hover` lift — disabled options must not
+   * appear interactive even when the cursor passes over them.
+   */
+  transform: none;
+}
+
+.option--disabled:hover {
+  border-color: var(--blitzy-border);
+}
+
+.option__label {
+  display: block;
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.option__description {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--blitzy-text-muted);
+  margin-top: var(--space-xs);
+}
+
+.option--selected .option__description {
+  color: var(--blitzy-surface-0);
+  opacity: 0.8;
+}
+
+/*
+ * Disabled-combination tooltip (ST-013).
+ *
+ * Anchored below the disabled finish button; revealed on hover or
+ * focus of the button. The tooltip carries `role="tooltip"` and is
+ * referenced via `aria-describedby` on the disabled button so screen
+ * readers announce its content automatically.
+ */
+.tooltip {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--blitzy-primary-dark);
+  color: var(--blitzy-text-invert);
+  font-size: 0.7rem;
+  line-height: 1.3;
+  font-weight: 500;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(45, 28, 119, 0.25);
+  /*
+   * Hidden by default. Visibility is toggled via the `--visible`
+   * modifier so we can control announcement timing precisely without
+   * triggering a layout shift on every hover.
+   */
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition:
+    opacity 150ms ease-out,
+    transform 150ms ease-out;
+  z-index: 5;
+}
+
+.tooltip--visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/*
+ * ST-012 transition-feedback bar.
+ *
+ * A short 1.5s pulsing strip rendered inline below the selector
+ * heading whenever the pattern or finish changes. Communicates that
+ * the preview is updating without flashing the entire viewport.
+ */
+.transitionFeedback {
+  height: 4px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--blitzy-surface-2) 0%,
+    var(--blitzy-primary-light) 50%,
+    var(--blitzy-surface-2) 100%
+  );
+  background-size: 200% 100%;
+  animation: transitionPulse 1.4s ease-in-out infinite;
+  margin: var(--space-xs) 0 var(--space-sm);
+}
+
+@keyframes transitionPulse {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: -100% 50%;
+  }
+}
+
+.transitionFeedback__srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

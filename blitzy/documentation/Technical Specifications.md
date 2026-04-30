@@ -2,989 +2,1069 @@
 
 # 0. Agent Action Plan
 
-## 0.1 Intent Clarification
+## 0.1 Environment Setup
 
-### 0.1.1 Core Feature Objective
+This sub-section catalogs the runtimes, emulators, and tooling that the Blitzy platform must provision before any track work begins. The repository baseline is documentation-only — <cite index="2-2,2-5">the repository root is a documentation- and backlog-oriented workspace rather than an application source tree</cite>, and <cite index="7-3">there is no pre-existing implementation, no legacy codebase, and no prior design documentation to reference</cite>. Every runtime, framework, package, and container below must be newly installed at the exact versions pinned by the user's prompt; no version substitutions are permitted.
 
-Based on the prompt, the Blitzy platform understands that the new feature requirement is to author a complete, cross-layer agile backlog for **StrikeForge** — a soccer ball configurator web application — and to materialize that backlog as Markdown artifacts inside the currently empty `blitzy-configurator` repository. The deliverable is a backlog of requirements, not an implementation of the StrikeForge product; no runtime source code for the configurator itself is in scope.
+### 0.1.1 Required Runtimes and Version Resolution
 
-The following feature requirements are restated with technical precision:
+The user's prompt pins all runtime versions explicitly under Section 3 "Technology Specifications". These pins override any defaults or ranges suggested elsewhere in the technical specification. Version resolution for runtimes not pinned by the user follows the "highest explicitly documented supported version" rule against each ecosystem's native manifest.
 
-- **R1 — Backlog Scaffold Creation.** Create three directories inside the repository root: `/tickets/epics/`, `/tickets/stories/`, and `/tickets/templates/`. Each directory is the sole filesystem location permitted for its respective artifact type.
-- **R2 — Epic Authoring.** Author at least ten (10) epic files — the prompt domain table enumerates eleven (EP-001 through EP-011) — each at path `/tickets/epics/EP-00N-[slug].md`. Every epic file MUST carry the exact YAML frontmatter schema defined in the user prompt (`id`, `title`, `layer`, `stories`) and list ≥1 child story identifier.
-- **R3 — Story Authoring.** Author at least forty-five (45) story files, each at path `/tickets/stories/ST-00N-[slug].md`. Every story file MUST carry the exact YAML frontmatter schema (`id`, `title`, `epic`, `layer`, `points`, `priority`, with conditional `test-type` and `depends-on`). Every story body MUST follow the persona format `As a [persona], I want [capability], so that [value]` and include ≥3 observable acceptance criteria.
-- **R4 — Template Scaffolds.** Create exactly three files under `/tickets/templates/`: `epic-template.md`, `story-template.md`, and `README.md`. Templates MUST be empty scaffolds containing placeholder syntax only — no pre-filled content, no example data, no narrative prose.
-- **R5 — Layer Coverage.** Every one of the six enumerated layers — frontend, backend, database, ci-cd, testing, observability — MUST have ≥1 epic and ≥3 stories.
-- **R6 — Epic Domain Binding.** The eleven epic slots (EP-001 through EP-011) MUST correspond exactly to the domain table supplied in the prompt, preserving each epic's declared primary layer alignment.
-- **R7 — CI/CD Minimum Coverage.** EP-009 MUST contain ≥7 child stories whose acceptance criteria collectively cover: lint gate, type-check gate, unit test gate, integration test gate, build stage, deploy stage, and environment promotion.
-- **R8 — Test Coverage Breadth.** EP-010 stories MUST collectively cover ≥4 distinct `test-type` values (unit, integration, e2e, visual-regression). The `test-type` field applies to EP-010 stories only and is omitted from all other epics.
-- **R9 — Identifier Discipline.** Story IDs MUST be globally unique and sequentially numbered (ST-001, ST-002, …) with no gaps. Epic IDs follow the same discipline (EP-001 through EP-011).
-- **R10 — Scoping Discipline.** Each story MUST be scoped to exactly one layer; cross-layer work MUST be split into separate stories with explicit `depends-on:` links declared in frontmatter.
-
-**Implicit requirements surfaced from the user-provided implementation rules:**
-
-- **I1 — Observability Deliverable.** The "Observability" user rule mandates that every deliverable ship with structured logging with correlation IDs, distributed tracing across service boundaries, a metrics endpoint, health/readiness checks, and a dashboard template — and that this observability be verified in the local development environment. For a backlog deliverable, this translates into an observability documentation artifact describing what was reused from the existing environment, what was added, and how each capability is exercised. This artifact is authored as Markdown at `/docs/observability/README.md`.
-- **I2 — Explainability Deliverable.** The "Explainability" user rule mandates a decision log as a Markdown table (what was decided, alternatives, rationale, risks) plus a bidirectional traceability matrix for any migration or refactor. For a greenfield backlog, the decision log captures non-trivial scoping, splitting, and estimation decisions. It is authored at `/docs/decisions/README.md`.
-- **I3 — Executive Presentation Deliverable.** The "Executive Presentation" user rule mandates a single self-contained reveal.js HTML file scoped to the work performed, covering scope, business value, architecture, risks, and onboarding, in 12–18 slides, with strict Blitzy brand and slide-type constraints. This artifact is authored at `/docs/executive-summary.html`.
-
-**Feature dependencies and prerequisites:**
-
-- The repository currently contains only `README.md`; no dependency manifest, no source tree, no pre-existing ticket scaffolding. All artifacts are created from a blank slate.
-- No external systems, APIs, or services must be consulted to author the backlog content itself. The tech stack named in the prompt's Section 3 is agent reference only and MUST NOT appear in any output file body.
-- The reveal.js deliverable depends on three CDN-hosted libraries pinned to exact versions (reveal.js 5.1.0, Mermaid 11.4.0, Lucide 0.460.0) and on Google Fonts for three typefaces (Inter, Space Grotesk, Fira Code); these are loaded at runtime in the browser and are not added to any package manifest.
-
-### 0.1.2 Special Instructions and Constraints
-
-The user has issued several non-negotiable directives that constrain how the backlog is authored. These directives are captured verbatim below and are repeated here because they override any default authoring pattern.
-
-- **CRITICAL — Tech stack concealment.** The user explicitly states: "Tech stack context (agent reference only — MUST NOT appear in any output file, including story bodies, acceptance criteria, epic descriptions, or templates)." This means every proper noun in the user's Section 3 list — the names of cloud platforms, programming languages, frameworks, libraries, container technologies, and identity providers — is FORBIDDEN from appearing inside `/tickets/**/*.md` bodies, acceptance criteria, or template placeholder text. The backlog describes capabilities and observable behaviors in a technology-neutral vocabulary.
-- **CRITICAL — No implementation artifacts in tickets.** The user states: "MUST NOT write implementation code, library API calls, or code snippets in any file." Story and epic bodies describe desired behavior and verifiable outcomes, not how to implement them.
-- **CRITICAL — Library name embargo.** The user states: "MUST NOT reference library or framework names inside story bodies or acceptance criteria." This constraint is enforced by a verification search that MUST return zero matches.
-- **CRITICAL — Payment out of scope.** The user states: "MUST NOT include payment processor integration (annotate as out of scope in EP-008)." The Cart & Order Flow epic MUST carry an explicit out-of-scope annotation for payment integration.
-- **CRITICAL — One-layer-per-story.** The user states: "Each story MUST be scoped to exactly one layer — cross-layer work MUST be split into separate stories with explicit `depends-on:` links." Compound stories are forbidden; a single ticket MUST NOT span frontend and backend work.
-- **CRITICAL — Empty templates.** The user states: "Templates MUST be empty scaffolds with placeholder syntax only — no pre-filled content." Template files carry frontmatter skeletons, heading skeletons, and explicit placeholder tokens, with no example narrative.
-
-**Architectural conventions inferred from the prompt:**
-
-- The 11 epic domains and their primary-layer bindings (EP-001 through EP-011) are fixed by the prompt's domain table and are used verbatim as the epic inventory.
-- Story IDs are zero-padded to three digits (ST-001, ST-002, …). At 49 planned stories the prefix remains `ST-` with three-digit numbering.
-- Slug portions of filenames use kebab-case and reflect the ticket title.
-- Personas drawn from the prompt are the exclusive persona vocabulary: `end user`, `authenticated user`, `developer`, `QA engineer`, `DevOps engineer`.
-
-**User-preserved examples (captured verbatim for downstream authoring):**
-
-- **User Example — Story format:** `"As a [persona], I want [capability], so that [value]."`
-- **User Example — Story ID format:** `ST-00N` zero-padded to three digits; sequential with no gaps.
-- **User Example — Epic ID format:** `EP-00N` zero-padded to three digits; EP-001 through EP-011.
-- **User Example — File path format:** `/tickets/epics/EP-00N-[slug].md` and `/tickets/stories/ST-00N-[slug].md`.
-- **User Example — Story frontmatter schema:** YAML block with `id`, `title`, `epic`, `layer`, `points`, `priority`, optional `test-type` (EP-010 only), optional `depends-on` (omit when empty).
-- **User Example — Epic frontmatter schema:** YAML block with `id`, `title`, `layer`, `stories`.
-- **User Example — CI/CD seven-gate coverage:** lint gate, type-check gate, unit test gate, integration test gate, build stage, deploy stage, environment promotion.
-
-**Web search requirements:** No external research is required to author the backlog itself, because the prompt is fully self-describing for the domain (soccer ball configurator with enumerated feature surfaces) and the backlog bodies are technology-neutral. Web search is used only to confirm the exact CDN versions for the three reveal.js dependencies used in the executive presentation (already pinned explicitly in the user's rule and therefore verified, not discovered).
-
-### 0.1.3 Technical Interpretation
-
-These feature requirements translate to the following technical implementation strategy:
-
-- To establish the backlog file tree, we will create three new directories — `/tickets/epics/`, `/tickets/stories/`, `/tickets/templates/` — and author plain-text Markdown files inside them without modifying any existing file. The only pre-existing file, `README.md`, remains untouched.
-- To satisfy the epic coverage requirement, we will author eleven Markdown files under `/tickets/epics/` — one per EP-001 through EP-011 — each carrying the exact four-field epic frontmatter and a body that states the epic's goal and enumerates its child stories in technology-neutral language.
-- To satisfy the story coverage requirement, we will author forty-nine Markdown files under `/tickets/stories/` (comfortably exceeding the ≥45 floor and yielding ≥3 stories per layer across six layers). Each file carries the exact frontmatter, a one-line persona narrative, and ≥3 observable acceptance criteria.
-- To satisfy the template requirement, we will author exactly three files under `/tickets/templates/`: `epic-template.md` and `story-template.md` containing YAML frontmatter skeletons with `<placeholder>` tokens plus Markdown heading scaffolds, and `README.md` explaining how to copy a template to create a new epic or story.
-- To satisfy the CI/CD seven-gate requirement, EP-009 will list seven child story IDs whose acceptance criteria collectively name the seven trigger points (lint, type-check, unit test, integration test, build, deploy, environment promotion) and identify the configuration artifacts they consume and emit.
-- To satisfy the test breadth requirement, EP-010 will contain child stories whose `test-type` values collectively span `unit`, `integration`, `e2e`, and `visual-regression`.
-- To satisfy the user's Observability rule, we will author `/docs/observability/README.md` cataloging structured logging, correlation ID propagation, distributed tracing across service boundaries, the metrics endpoint contract, health and readiness probe semantics, and a dashboard template stub, plus explicit notes on what exists in the local development environment and how each capability is exercised.
-- To satisfy the user's Explainability rule, we will author `/docs/decisions/README.md` as a Markdown decision-log table with columns for decision, alternatives, rationale, and risks. Because this is a greenfield authoring task rather than a migration, no bidirectional traceability matrix is emitted; the absence of a migration source is itself recorded as a decision-log entry.
-- To satisfy the user's Executive Presentation rule, we will author `/docs/executive-summary.html` as a single self-contained HTML document containing 16 `<section>` elements (mid-range of the 12–18 target), embedded Blitzy brand CSS custom properties, pinned CDN loads for reveal.js 5.1.0, Mermaid 11.4.0, and Lucide 0.460.0, and the required Mermaid initialization and Lucide icon hooks on the reveal.js `ready` and `slidechanged` events. Every slide carries at least one non-text visual element.
-
-The strategy is file-creation-only. No existing file content is mutated. No runtime code is executed. Verification is performed by grep, directory listing, frontmatter parsing, and — for the executive deck — opening the HTML file in a browser and confirming that Mermaid diagrams and Lucide icons render.
-
-## 0.2 Repository Scope Discovery
-
-### 0.2.1 Repository Baseline
-
-The following baseline was established by direct inspection of the repository root and by the Technical Specification's existing Sections 1.1, 1.3, 2.1, 3.3, and 3.4.
-
-| Artifact Class | Current State | Source of Truth |
-|---|---|---|
-| Source code | None present | Section 1.1.1 — "no source code, configuration manifests, build tooling, dependency declarations, test suites, or subsidiary documentation yet committed" |
-| Dependency manifests | None present | Section 3.4.1 — all manifest categories verified absent |
-| Tests | None present | Section 1.3.1 — "Key Technical Requirements: None specified" |
-| CI/CD configuration | None present | Section 3.4.1 |
-| Documentation beyond root README | None present | Section 1.1.1 |
-| `/tickets/` directory | Absent | Directory listing of repository root |
-| `/docs/` directory | Absent | Directory listing of repository root |
-| `.blitzyignore` files | None found | `find / -name ".blitzyignore"` returned zero results |
-| `README.md` at root | Present — sole artifact — 21 bytes — single H1 heading `# blitzy-configurator` | Direct read |
-
-Because no source modules, test modules, build files, or configuration files exist, there is **no pre-existing code to modify**. Every path in this Agent Action Plan is a path for a file to be **created**. The sole existing file — `README.md` — is NOT modified by this work.
-
-### 0.2.2 Comprehensive File Creation Inventory
-
-The following tables enumerate every file to be created. Wildcards denote pattern-matched sets; explicit file paths denote singleton artifacts.
-
-#### Group A — Ticket Directory Scaffold
-
-| Path Pattern | Count | Purpose |
-|---|---|---|
-| `/tickets/epics/EP-001-*.md` through `/tickets/epics/EP-011-*.md` | 11 | One Markdown file per epic (EP-001 through EP-011) with YAML frontmatter and technology-neutral body |
-| `/tickets/stories/ST-001-*.md` through `/tickets/stories/ST-049-*.md` | 49 | One Markdown file per story with YAML frontmatter, persona narrative, and ≥3 acceptance criteria |
-| `/tickets/templates/epic-template.md` | 1 | Empty epic scaffold with frontmatter skeleton and heading placeholders |
-| `/tickets/templates/story-template.md` | 1 | Empty story scaffold with frontmatter skeleton and heading placeholders |
-| `/tickets/templates/README.md` | 1 | Instructions for copying a template and filling it in |
-
-The count `49` reflects the following distribution, which exceeds every minimum floor stated in the prompt:
-
-| Epic | Domain | Stories | Layer(s) Covered |
+| Runtime / Tool | Pinned Version | Source of Truth | Rationale |
 |---|---|---|---|
-| EP-001 | 3D Ball Preview & Interaction | 5 | frontend |
-| EP-002 | Panel Color Customization | 4 | frontend |
-| EP-003 | Stitching Pattern & Finish Selection | 4 | frontend |
-| EP-004 | Branding & Logo Customization | 4 | frontend |
-| EP-005 | Design Management (save, load, share, new) | 5 | frontend (split from backend via `depends-on`) |
-| EP-006 | User Authentication & Sessions | 4 | backend |
-| EP-007 | Design Persistence API & Data Model | 5 | backend + database (split per story) |
-| EP-008 | Cart & Order Flow | 4 | backend + database (split per story) |
-| EP-009 | CI/CD Pipeline & Environment Promotion | 7 | ci-cd |
-| EP-010 | Test Coverage & Quality Gates | 4 | testing (one story per `test-type` value) |
-| EP-011 | Observability & Error Tracking | 3 | observability |
-| **Total** | — | **49** | — |
+| Node.js | 20 LTS | User prompt §3 "Backend runtime" | Required as the Express runtime; must be declared in `backend/package.json` `engines` field and `.nvmrc` |
+| TypeScript | 5.x (strict: true throughout) | User prompt §3 "Language" | Applied to both `backend/` and `frontend/` packages |
+| npm | Bundled with Node 20 LTS | Node.js distribution | Package manager for monorepo workspaces |
+| PostgreSQL | 15 | User prompt §3 "Database" | Cloud SQL target; local container in `docker-compose.yml` |
+| Docker Engine | Current stable with Compose V2 | Implied by user prompt §4 Gate A (`docker compose up -d`) | Required for Phase A scaffolding verification |
+| Firebase Auth Emulator | Latest (via `firebase-tools`) | Implied by user prompt §4 Gate T1-C (emulator endpoints at `localhost:9099`) | Required for local auth flow testing |
+| GCS Emulator (fake-gcs-server) | Latest stable | Implied by user prompt env var `GCS_EMULATOR_HOST` and LocalGCP rule | Required for local GCS upload testing |
+| `gcloud` CLI | Latest stable | Implied by user prompt §4 Gate MG2-G (`gcloud run services describe`, `gcloud deploy rollouts list`) | Required for Cloud Build, Cloud Deploy, and Cloud Run interactions |
 
-Per-layer tallies (validated against Rule 3 "every layer ≥3 stories"):
+### 0.1.2 Installation Sequence
 
-| Layer | Story Count | Epics Contributing |
+The Blitzy platform must execute installation in this order so that each tool is verified before downstream tools depend on it:
+
+- Install Node.js 20 LTS via the non-interactive NodeSource script or `nvm install 20 --lts` followed by `nvm use 20` — verify with `node --version` reporting a `v20.x.x` string.
+- Create `.nvmrc` at the repository root containing exactly `20` so that subsequent shells select the correct Node version automatically.
+- Install Docker Engine with Compose V2 via the non-interactive Docker convenience script (`DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin`).
+- Install `gcloud` CLI via the non-interactive apt-installable `google-cloud-cli` package.
+- Bootstrap the monorepo workspaces by running `npm install` inside `backend/` and `frontend/` after their respective `package.json` files are authored in Phase A. All dependency versions are resolved from lockfiles when available, with versions pinned to exact releases as declared in §0.4 "Dependency Inventory".
+- Start local infrastructure via `docker compose up -d` to bring up `backend`, `postgres`, `firebase-auth-emulator`, and `gcs-emulator` services. Verify with `docker compose ps --format json | jq -r '.[].State' | sort | uniq` returning exactly `running` — this is Gate A.
+
+### 0.1.3 Environment Variables with No Source Defaults
+
+All six environment variables must throw at startup when unset. The user's prompt declares under §3 "Environment variables (MUST have no defaults in source code)" — this is Rule R4 and is a non-negotiable constraint.
+
+| Variable | Consumer | Failure Mode When Unset |
 |---|---|---|
-| frontend | 22 | EP-001 (5), EP-002 (4), EP-003 (4), EP-004 (4), EP-005 (5) |
-| backend | 10 | EP-005 backend stories (via depends-on), EP-006 (4), EP-007 (3), EP-008 (2) |
-| database | 3 | EP-007 (2), EP-008 (1) |
-| ci-cd | 7 | EP-009 (7) |
-| testing | 4 | EP-010 (4) |
-| observability | 3 | EP-011 (3) |
-| **Total** | **49** | — |
+| `DATABASE_URL` | All database connections (both local TCP and Cloud SQL Unix socket paths) | Backend process exits non-zero within 2 seconds with a descriptive error |
+| `FIREBASE_PROJECT_ID` | Firebase Admin SDK init | Backend process exits non-zero with a descriptive error |
+| `GCS_BUCKET_NAME` | Logo upload and retrieval via `@google-cloud/storage` v7 | Backend process exits non-zero with a descriptive error |
+| `GCS_EMULATOR_HOST` | Local/CI GCS emulator target | Backend process exits non-zero with a descriptive error when operating in local/CI profile |
+| `COVERAGE_THRESHOLD` | Unit test gate integer threshold (0–100) | Jest unit test invocation fails during threshold evaluation |
+| `GCP_REGION` | Cloud Deploy CLI commands and Cloud Run deployment | CI/CD deploy stage fails with descriptive error |
 
-Note: Story-to-layer tallies assume the backend/database split inside EP-005, EP-007, and EP-008; exact counts per epic are finalized during story authoring while preserving the ≥3-per-layer invariant.
+The `.env.example` file authored in Phase A must list every one of these six variables with documentation-only placeholder values (`# required` comment, never a fallback value). The backend entry point must read these via a fail-closed module (for example, `backend/src/config/env.ts`) that calls a helper such as `requireEnv('DATABASE_URL')` which throws a descriptive `Error` when the variable is absent.
 
-#### Group B — Observability Documentation (Implicit Requirement)
+### 0.1.4 Setup, Infrastructure, and Build-Time Configuration Issues
+
+The Blitzy platform has evaluated the target environment and documents the following configuration notes for downstream awareness:
+
+- The repository baseline provides no `package.json`, no `tsconfig.json`, no `docker-compose.yml`, no `.env.example`, and no source code — every scaffolding artifact listed in Phase A must be authored from scratch.
+- The monorepo layout (per user prompt §3): `backend/`, `frontend/`, `cloudbuild.yaml`, `skaffold.yaml`, `delivery-pipeline/`, `docker-compose.yml`, `.env.example` — none of these exist yet and must be created during Phase A.
+- The user's prompt specifies Node.js 20 LTS, but current ambient Node installations may be newer — the Blitzy platform must explicitly pin to 20 LTS via `.nvmrc` and `backend/package.json` `engines` to prevent silent version drift.
+- The LocalGCP implementation rule (user-provided) mandates that every GCP service interaction be verifiable against emulators with zero live GCP credentials — this constrains `docker-compose.yml` to include both `firebase-auth-emulator` and `gcs-emulator` services, and constrains integration tests to create and clean up their own resources rather than depending on pre-existing emulator state.
+- The CI/CD runner (Cloud Build) will need the same Docker daemon, PostgreSQL 15, Firebase Auth emulator, and GCS emulator profiles reproduced in-build so that lint/type-check/unit/integration gates run against identical infrastructure to the developer workstation.
+
+
+## 0.2 Intent Clarification
+
+This sub-section restates the user's requirements in precise technical language, surfaces implicit requirements, and maps each requirement to concrete implementation actions. The intent statements below represent exactly what the Blitzy platform will deliver; downstream agents must treat these statements as the authoritative interpretation of the user's prompt.
+
+### 0.2.1 Core Feature Objective
+
+Based on the prompt, the Blitzy platform understands that the new feature requirement is to implement all 49 stories (ST-001 through ST-049) across 12 epics (EP-001 through EP-012) of the StrikeForge 3D sports ball configurator as production-ready, tested, and deployed software — not as plans, not as scaffolding, and not as a subset. The Blitzy platform further understands that every story's acceptance criteria checkboxes in `tickets/stories/ST-NNN-*.md` are the single authoritative specification, and every one of those checkboxes must be satisfied before its enclosing track gate is declared passing.
+
+The feature set delivers, as a cohesive product:
+
+- A live, interactive 3D ball preview that renders a spherical ball centered in the configurator with immediate design updates, click-and-drag rotation, idle auto-rotation, and a documented interactive framerate floor (≥30 FPS sustained during drag rotation) and initial-load budget (≤2s initial sphere render). <cite index="9-2,9-3">The epic delivers the live, interactive 3D ball preview that anchors the configurator experience, with a user opening the configurator seeing a spherical ball rendered at the center of the screen, with every customization choice applied through the surrounding controls reflected on the sphere in real time</cite>.
+- Panel color customization for primary, secondary, and accent colors with real-time preview synchronization, visible selected-swatch state, and accessibility across mouse, touch, keyboard, and assistive technology (ST-006 through ST-009).
+- Stitching pattern selection and material finish selection with preview transitions and disabled-state tooltips for unsupported combinations (ST-010 through ST-013).
+- Branding and logo customization including upload, immediate preview placement, interactive repositioning and resizing, and rejection of unsupported or oversized files (ST-014 through ST-017).
+- Design management features: save design, load design, start a new design with confirmation, shareable links with time-limited expiry, and a live design summary sidebar (ST-018 through ST-022).
+- Backend user authentication and sessions delivered via registration, login/session-token issuance, logout/session revocation, and session validation middleware (ST-023 through ST-026).
+- Backend design persistence API: create design, retrieve designs by user (paginated, max 100 per page), and time-limited share-link issuance (ST-027 through ST-029).
+- Backend cart and order flow: retrieve cart, create order from cart contents, and order finalization post-processing — explicitly excluding any payment processing, charge authorization, tokenization, or refund logic (ST-032 through ST-034).
+- Database foundation: three forward-and-reverse PostgreSQL migrations introducing `users` + `sessions`, `designs`, and `orders` + `order_items` tables with ownership foreign keys and indexes supporting documented query patterns (ST-030, ST-031, ST-035).
+- CI/CD pipeline: a seven-step Cloud Build delivery pipeline — lint → type-check → unit tests → integration tests → build → deploy → environment promotion across development/staging/production with recorded human approval identifiers (ST-036 through ST-042).
+- Test coverage: unit (Jest), integration (Jest with dockerized dependencies), end-to-end (Playwright Chromium + WebKit exercising register → login → create design → save → share → add-to-cart → create order), and visual regression (Playwright `toHaveScreenshot()` with baselines committed to `visual-baselines/`) (ST-043 through ST-046).
+- Observability foundation: structured JSON logging via pino with correlation ID propagation, `/metrics` (Prometheus text format with `service`, `environment`, `version` labels), `/healthz` liveness, `/readyz` readiness (503 when DB unreachable), distributed tracing via `@opentelemetry/sdk-node` with `@opentelemetry/auto-instrumentations-node`, W3C `traceparent` header propagation, and a dashboard template stub at `docs/observability/dashboard-template.md` with all 8 panels (request rate, error rate, P95 latency, error breakout, correlation throughput, active sessions, order creation rate, deploy markers) including thresholds, alert policies, and SLO tie-ins (ST-047 through ST-049).
+
+Implicit requirements the Blitzy platform has surfaced from the prompt:
+
+- **Monorepo package management.** The user's monorepo layout (`backend/` + `frontend/` + root-level `cloudbuild.yaml`, `skaffold.yaml`, `delivery-pipeline/`, `docker-compose.yml`, `.env.example`) implies a top-level `package.json` with workspaces, separate `tsconfig.json` configurations per workspace, and a shared root `.eslintrc.json` that each workspace extends.
+- **Firebase user mirroring in PostgreSQL.** ST-031 requires a `users` table with a credential-digest column but the user's prompt mandates Firebase Admin SDK `verifyIdToken` for authentication. The implicit resolution is that the local `users` table stores the Firebase `uid` as the server-assigned identifier along with login-identifier and timestamp columns, and the "credential digest" column is retained at a minimum safe size per ST-031-AC4 but is never populated because credentials live exclusively in Firebase — this preserves ST-031's schema shape while honoring the Firebase-only validation mandate (Rule R3).
+- **Session persistence semantics.** ST-024, ST-025, ST-026 reference "session tokens" but the user's Firebase-Admin-SDK-only constraint means sessions are tracked by Firebase `idToken` on inbound requests. The `sessions` table becomes a revocation-list and issuance-audit log: a session row is created on login with the `uid`, issued timestamp, expiration timestamp, and a revocation marker; logout marks the row revoked; session validation cross-references the `verifyIdToken` result against the revocation marker.
+- **Share-link read-side access.** ST-029 requires that visiting a share link returns enough data for the configurator to render the target design without signing in — this implies a separate unauthenticated GET endpoint (e.g., `/api/share/:token`) that joins the `share_links` store with the underlying `designs` record, and ST-021 (share clipboard UX) copies this full URL to the clipboard.
+- **Correlation ID on every outbound HTTP call.** C5 mandates that the correlation ID be attached to every outbound HTTP header, not just the inbound request — this applies to Firebase Admin SDK HTTP calls, GCS SDK HTTP calls, and any internal-service HTTP calls. Implementation requires a pino log plumbing layer combined with HTTP-client request interceptors reading from `AsyncLocalStorage`.
+- **Dashboard template is a Markdown artifact, not a live dashboard.** ST-049-AC5 calls for a "dashboard template stub" delivered as a versioned artifact at `/docs/observability/dashboard-template.md`. The Blitzy platform understands this is a technology-neutral documentation file, not a Grafana/Cloud Monitoring JSON file. The file must enumerate all 8 panels, their query descriptions, thresholds, and alert policies.
+
+### 0.2.2 Special Instructions and Constraints
+
+The user prompt embeds six critical implementation constraints (C1–C6) and ten rules (R1–R10) that are named failure points. Each one is restated here in precise technical language with its file-level implication. These are non-negotiable and must be enforced exactly as specified.
+
+**C1 — GCS v7 signed URL syntax (Rule R5 also applies).** Every call site in `backend/src/**/*.ts` that invokes `bucket.file(name).getSignedUrl` MUST pass an options object containing `version: 'v4', action: 'read', expires: Date.now() + 15 * 60 * 1000`. The v7 SDK removed `getSignedUrl` from `File` instances without explicit `version`; omitting the `version` key throws at runtime. Verification: `grep -rn "getSignedUrl" backend/src` must show `version: 'v4'` alongside every occurrence.
+
+**C2 — Firebase Admin token verification (Rule R3 also applies).** The authentication middleware MUST extract the `rawBearerToken` from the `Authorization: Bearer <token>` header and call `admin.auth().verifyIdToken(rawBearerToken)` exclusively. No custom JWT parsing, signature verification, expiry checking, or JWKS fetching is permitted. Verification: `backend/package.json` must not include `jsonwebtoken`, `jose`, or `jwt-decode`.
+
+**C3 — Cloud SQL connection dual-path.** The database connection module in `backend/src/db/` MUST construct a connection configuration entirely from `DATABASE_URL`. When running on Cloud Run, the URL form uses Unix socket host `/cloudsql/<PROJECT>:<REGION>:<INSTANCE>`. When running locally or in CI, the URL form uses TCP host `127.0.0.1` on port `5432`. There must be zero hard-coded host paths in connection logic — both paths are encoded only in `DATABASE_URL`.
+
+**C4 — OpenTelemetry auto-instrumentation registration order (Rule R6 also applies).** The file `backend/src/tracing.ts` (or equivalent OTel bootstrap file) MUST register `@opentelemetry/auto-instrumentations-node` before any application `import`/`require` statements. The backend entry point (`backend/src/index.ts`) MUST import the tracing module as its first line. This is required because auto-instrumentation monkey-patches `pg`, `http`, and `express`, and any application import before registration produces duplicate spans or no spans at all.
+
+**C5 — Correlation ID propagation.** A middleware at the request boundary MUST generate a UUID v4 as the correlation ID when the inbound `x-correlation-id` header is absent, and preserve it verbatim when present. The correlation ID MUST be stored in Node's `AsyncLocalStorage` (from `node:async_hooks`). A pino hook MUST attach the correlation ID to every log record emitted during the request lifecycle. Every outbound HTTP client call MUST attach the correlation ID to its outbound headers. Log records MUST contain only `correlationId` and `uid` as identity fields — passwords, bearer tokens, session tokens, and API keys MUST NEVER appear in any log record, enforced by a pino serializer allow-list (Rule R2) rather than ad-hoc per-call discipline.
+
+**C6 — R3F + Fabric.js texture update order (Rule R7 also applies).** When a configurator selection changes, the sequence MUST be: (1) call `fabricCanvas.renderAll()`, then (2) only after `renderAll` completes, set `threeTexture.needsUpdate = true`. Reversing this order produces a one-frame stale texture that is visible as flicker in Playwright visual-regression baselines. The texture update coordinator lives in `frontend/src/configurator/texture/` and must be the single code path that mutates `threeTexture.needsUpdate`.
+
+Documented architectural requirements:
+
+- **Every story's acceptance criteria are authoritative (Rule R1).** The Blitzy platform MUST read and satisfy every checkbox in `tickets/stories/ST-NNN-*.md` before declaring a story's track gate passing. The epic overviews and the prompt's phase descriptions are orientation only; they do NOT replace the per-story acceptance criteria.
+- **Gates fail closed (Rule R8).** Any infrastructure or tooling error in a CI gate (lint, type-check, unit, integration, build, deploy) MUST produce a failed verdict. A tooling crash is a failed run, never a silent pass.
+- **Payment processing is excluded (Rule R9).** No payment processor integration, charge authorization, tokenization, or refund logic of any kind may appear in `backend/src`. Order finalization (ST-034) transitions to a documented non-terminal finalized state without any financial settlement.
+- **Migrations embed story ID (Rule R10).** Every file in `backend/migrations/` MUST match the pattern `{timestamp}_ST-0NN_{description}.js`.
+- **Parallel delivery structure.** Phase A is the prerequisite for all work. After Gate A passes, three tracks run concurrently: Track 1 (backend), Track 2 (frontend core), and Track 3 (CI/CD config authoring). Merge Gate 1 unlocks when Track 1 Gate C and Track 2 gate both pass. Merge Gate 2 unlocks when Merge Gate 1 passes. Within each track, each step MUST pass before the next step in that track begins.
+
+User-Provided Rules (from the "User specified implementation rules" input):
+
+- **Observability Rule.** "The application is not complete until it is observable." Every deliverable MUST include: structured logging with correlation IDs, distributed tracing across service boundaries, a metrics endpoint, health/readiness checks, and a dashboard template — all verifiable in the local development environment.
+- **Explainability Rule.** Every non-trivial implementation decision MUST be documented in a Markdown decision-log table at `docs/decisions/README.md` with columns "Decision | Alternatives | Rationale | Risks". Any deviation from a literal interpretation of the requirements MUST have an explicit entry in the decision log. Rationale must NOT be embedded in code comments — the decision log is the single source of truth for "why".
+- **Executive Presentation Rule.** Every deliverable MUST include an executive summary as a single self-contained reveal.js HTML file at `docs/executive-summary.html`, covering: what was done, why, architectural changes, risks and mitigations, and team onboarding. 12–18 slides (target 16), with slide types Title (`slide-title`), Section Divider (`slide-divider`), Content (default), Closing (`slide-closing`). Every slide must include at least one non-text visual element (Mermaid diagram, KPI card, styled table, or Lucide SVG icon via `<i data-lucide="icon-name"></i>`). Zero emoji. No fenced code blocks inside slides. Blitzy brand colors and typography (Inter body, Space Grotesk display, Fira Code mono) pinned; reveal.js 5.1.0, Mermaid 11.4.0, Lucide 0.460.0 via CDN.
+- **LocalGCP Verification Rule.** Every GCP service interaction MUST be verifiable against LocalGCP (Firebase Auth emulator + fake-gcs-server) with zero live GCP dependencies in tests or local dev workflows. Integration tests MUST create their own resources during setup and clean up after teardown.
+- **Segmented PR Review Rule.** Code changes MUST pass a sequential, multi-phase pre-approval review before a Pull Request can be opened. When triggered, generate a `CODE_REVIEW.md` at the repository root with YAML frontmatter tracking phase name, status (OPEN, IN_REVIEW, BLOCKED, or APPROVED), and file count per phase. Domains: Infrastructure/DevOps, Security, Backend Architecture, QA/Test Integrity, Business/Domain, Frontend, or Other SME. A Principal Reviewer Agent renders the final verdict after all domain phases reach a terminal status.
+
+User Examples preserved verbatim from the prompt:
+
+- **User Example (Phase A Gate A):** `docker compose up -d` then `docker compose ps --format json | jq -r '.[].State' | sort | uniq` — expected output: `running`.
+- **User Example (Track 1 Gate T1-B):** `docker compose exec backend npx node-pg-migrate up` then `docker compose exec postgres psql -U postgres -d strikeforge -c "\dt" | grep -cE "users|sessions|designs|orders|order_items"` — expected: `5`.
+- **User Example (Track 1 Gate T1-C, design create):** `curl -sf -X POST http://localhost:3000/api/designs -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"title":"Gate C","payload":{"primaryColor":"#FF0000","pattern":"classic","finish":"matte"}}' | jq '.id' | grep -v null`.
+- **User Example (Gate T1-D, readiness degraded):** `docker compose stop postgres && sleep 3; curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/readyz` — expected: `503`.
+- **User Example (Gate T1-I, trace propagation):** `curl -s "http://localhost:3000/api/designs" -H "Authorization: Bearer $TOKEN" -H "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"` then `docker compose logs backend --tail 20 | grep -c "4bf92f3577b34da6a3ce929d0e0e4736"` — expected: `≥1`.
+- **User Example (Rule R2 credential sentinel):** `curl -X POST http://localhost:3000/api/auth/login -H "Content-Type: application/json" -d '{"email":"test@example.com","password":"SENTINEL_CRED_99"}'` then `grep "SENTINEL_CRED_99" <(docker compose logs backend)` — expected: 0 lines returned.
+- **User Example (Rule R4 fail-fast):** Starting backend without `DATABASE_URL` exits non-zero with a descriptive error within 2 seconds.
+
+Web search requirements: No external research is required. All technology versions are pinned by the user's prompt (§3 "Technology Specifications"), and all package APIs (GCS v7 signed URL, Firebase Admin SDK, OTel auto-instrumentation, pino redaction, Fabric.js + R3F texture ordering) are fully specified in Sections C1–C6 of the user's prompt.
+
+### 0.2.3 Technical Interpretation
+
+These feature requirements translate to the following technical implementation strategy. Each requirement line below uses the format "To [implement feature], the Blitzy platform will [create/modify/extend] [specific components]."
+
+- To satisfy EP-001 (3D Ball Preview & Interaction), the Blitzy platform will **create** `frontend/src/configurator/preview/` with `BallCanvas.tsx` (R3F `<Canvas>` root), `Sphere.tsx` (geometry + material), `useDragRotation.ts` (pointer events → quaternion), `useIdleAutoRotate.ts` (idle timer + rAF rotation), and `performance.ts` (FPS meter + Playwright performance hooks).
+- To satisfy EP-002 (Panel Color Customization), the Blitzy platform will **create** `frontend/src/configurator/controls/colors/` with `PrimaryColorPicker.tsx`, `SecondaryColorPicker.tsx`, `AccentColorPicker.tsx`, and `useColorStore.ts` (Zustand or equivalent state store) that drives the texture pipeline via the C6-compliant texture coordinator.
+- To satisfy EP-003 (Stitching Pattern + Finish), the Blitzy platform will **create** `frontend/src/configurator/controls/pattern/StitchingPatternSelector.tsx` (six patterns), `FinishSelector.tsx` (three finishes), and `DisabledCombinationTooltip.tsx` with disabled-state rules enforced by a combination-matrix module.
+- To satisfy EP-004 (Branding & Logo), the Blitzy platform will **create** `frontend/src/configurator/controls/logo/LogoUploader.tsx` (file-picker with valid-MIME allow-list), `LogoPositioner.tsx` (Fabric.js drag-resize-rotate handles), and a `texturePipeline.ts` coordinator that rigorously follows C6 (Fabric `renderAll()` first, then Three `needsUpdate = true`).
+- To satisfy EP-005 (Design Management), the Blitzy platform will **create** `frontend/src/features/design-management/` containing `SaveDesignCta.tsx`, `LoadDesignList.tsx`, `NewDesignDialog.tsx`, `ShareDesignAction.tsx`, and `DesignSummarySidebar.tsx`. Pre-Merge-Gate-1, these call a mock/stub API layer; post-Merge-Gate-1 they call the live backend endpoints.
+- To satisfy EP-006 (Authentication & Sessions), the Blitzy platform will **create** `backend/src/routes/auth.ts` (registration, login, logout), `backend/src/middleware/session.ts` (Rule-R3 Firebase-Admin-SDK-only validation), and `backend/src/services/session.service.ts` (sessions table CRUD with revocation).
+- To satisfy EP-007 (Design Persistence API), the Blitzy platform will **create** `backend/src/routes/designs.ts` (POST create, GET list with pagination max 100, POST share-link), `backend/src/services/design.service.ts`, `backend/src/services/share-link.service.ts`, and `backend/src/repositories/design.repository.ts` (pg connection pool queries).
+- To satisfy EP-008 (Cart & Order Flow), the Blitzy platform will **create** `backend/src/routes/orders.ts` (POST create, GET cart, POST finalize), `backend/src/services/order.service.ts`, and `backend/src/repositories/order.repository.ts`. Payment processing is explicitly excluded per Rule R9.
+- To satisfy EP-009 (CI/CD Pipeline), the Blitzy platform will **create** `cloudbuild.yaml` (seven steps with explicit `waitFor`), `skaffold.yaml`, and `delivery-pipeline/clouddeploy.yaml` (development → staging → production targets with recorded-approval promotion gates).
+- To satisfy EP-010 (Test Suites), the Blitzy platform will **create** `backend/jest.config.unit.ts` + `backend/jest.config.integration.ts`, unit tests under `backend/src/**/*.test.ts`, integration tests under `backend/tests/integration/`, E2E tests under `frontend/tests/e2e/`, visual tests under `frontend/tests/visual/`, and visual baselines under `frontend/visual-baselines/`.
+- To satisfy EP-011 (Observability), the Blitzy platform will **create** `backend/src/tracing.ts` (OTel SDK init — imported first per C4/R6), `backend/src/logging/pino.ts` (with serializer allow-list per R2), `backend/src/middleware/correlation.ts` (C5 AsyncLocalStorage), `backend/src/routes/metrics.ts` (Prometheus text format with `service`/`environment`/`version` labels), `backend/src/routes/health.ts` (`/healthz` and `/readyz`), and **update** `docs/observability/dashboard-template.md` to contain all 8 panels with thresholds and alert policies.
+- To satisfy EP-012 (Database Schemas), the Blitzy platform will **create** three node-pg-migrate migration files in `backend/migrations/`, each filename embedding its story ID per Rule R10: `{timestamp}_ST-031_users_sessions.js`, `{timestamp}_ST-030_designs.js`, and `{timestamp}_ST-035_orders_order_items.js`.
+- To satisfy the user-provided Executive Presentation Rule, the Blitzy platform will **replace** the existing `docs/executive-summary.html` with a 16-slide reveal.js deck covering the implementation, risks, and onboarding — preserving the existing Blitzy brand theme and slide conventions.
+- To satisfy the user-provided Explainability Rule, the Blitzy platform will **update** `docs/decisions/README.md` with a decision table enumerating every non-trivial implementation choice (e.g., "why Zustand vs Redux for frontend state", "why node-pg-migrate vs Knex", "why pino vs winston").
+
+
+## 0.3 Repository Scope Discovery
+
+This sub-section enumerates every existing file and folder the Blitzy platform has inspected, every file to be created, and every integration touchpoint affected by the feature. Because <cite index="2-2">the repository root is a documentation- and backlog-oriented workspace rather than an application source tree</cite>, the scope is dominated by **new** source files; existing files are touched almost exclusively within `docs/` and `tickets/` to keep documentation in step with the shipped implementation.
+
+### 0.3.1 Comprehensive File Analysis — Existing Files Evaluated
+
+The following repository artifacts were retrieved, summarized, and evaluated for relevance to this feature addition.
+
+| Path | Type | Role in Feature Addition |
+|---|---|---|
+| `README.md` | File | Project identity marker (contains only `# blitzy-configurator`); MODIFY to add project description, local-dev quick-start, and links to `docs/` artifacts |
+| `blitzy/documentation/Project Guide.md` | File | Completion/handoff narrative for the backlog; READ-ONLY context — not modified by implementation |
+| `blitzy/documentation/Technical Specifications.md` | File | Authoritative specification governing documentation production; READ-ONLY context — this Agent Action Plan becomes part of this document |
+| `docs/executive-summary.html` | File | Existing reveal.js deck for the backlog package; REPLACE with a deck that summarizes the shipped implementation per the user-provided Executive Presentation Rule |
+| `docs/decisions/README.md` | File | Decision log table for the backlog; MODIFY to append implementation decisions per the user-provided Explainability Rule |
+| `docs/observability/README.md` | File | Observability contract catalog linking ST-047/ST-048/ST-049 to deliverables; MODIFY to document what was reused versus added in the live implementation |
+| `docs/observability/dashboard-template.md` | File | Vendor-neutral dashboard blueprint; MODIFY to include all 8 panels (request rate, error rate, P95 latency, error breakout, correlation throughput, active sessions, order creation rate, deploy markers) with thresholds, alert policies, and SLO tie-ins per ST-049-AC5 |
+| `tickets/epics/EP-001-*.md` through `EP-012-*.md` | 12 Files | Authoritative epic specifications; READ-ONLY — MUST be honored, never rewritten |
+| `tickets/stories/ST-001-*.md` through `ST-049-*.md` | 49 Files | Authoritative story specifications with acceptance criteria checkboxes per Rule R1; READ-ONLY source of truth, each checkbox MUST be marked complete before its gate passes. Checkbox updates are permitted; rewording of the acceptance criteria is not. |
+| `tickets/templates/README.md`, `epic-template.md`, `story-template.md` | 3 Files | Template scaffolds for backlog authoring; READ-ONLY — not relevant to implementation |
+
+**Conclusion of existing-file evaluation:** The repository contains no application source code, no build manifests, no CI/CD configuration, and no infrastructure definitions. Every runtime, library, container, database, and deploy artifact is new and must be authored from scratch.
+
+### 0.3.2 New Files to Create — Root and Scaffolding
 
 | Path | Purpose |
 |---|---|
-| `/docs/observability/README.md` | Catalogs structured logging with correlation IDs, distributed tracing across service boundaries, metrics endpoint contract, health and readiness probes, and dashboard template stub; records what was reused from the local dev environment and what was added |
-| `/docs/observability/dashboard-template.md` | Dashboard template specification in Markdown — panels, queries, thresholds |
+| `package.json` | Monorepo root with `workspaces: ["backend", "frontend"]`, shared `devDependencies` (ESLint, Prettier, TypeScript) |
+| `tsconfig.json` | Root TypeScript config with `strict: true`; referenced by `backend/tsconfig.json` and `frontend/tsconfig.json` |
+| `.eslintrc.json` | Shared ESLint config (consumed by Track 3 and MG1-E lint gate per ST-036) |
+| `.prettierrc` | Shared formatter config |
+| `.nvmrc` | Contents: `20` — pins Node.js 20 LTS |
+| `.gitignore` | Node, Docker, Playwright, coverage, build output exclusions |
+| `.env.example` | All six required environment variables (per Rule R4) with placeholder comments — NEVER fallback values |
+| `docker-compose.yml` | Services: `backend`, `postgres` (v15), `firebase-auth-emulator`, `gcs-emulator`; used for Phase A Gate A |
+| `cloudbuild.yaml` | Cloud Build pipeline with seven explicit `waitFor` steps: lint, type-check, unit, integration, build, deploy, artifacts (ST-036–ST-041) |
+| `skaffold.yaml` | Cloud Deploy / Skaffold orchestration reference |
+| `delivery-pipeline/clouddeploy.yaml` | Cloud Deploy pipeline with `development` → `staging` → `production` targets, approval gates per ST-042 |
+| `CODE_REVIEW.md` | Generated at change time per the user-provided Segmented PR Review Rule |
 
-#### Group C — Explainability Documentation (Implicit Requirement)
+### 0.3.3 New Files to Create — Backend (`backend/`)
 
 | Path | Purpose |
 |---|---|
-| `/docs/decisions/README.md` | Decision log as Markdown table — what, alternatives, rationale, risks — one row per non-trivial authoring decision |
+| `backend/package.json` | Express, pg, Firebase Admin, `@google-cloud/storage`, pino, OpenTelemetry, node-pg-migrate, Jest dependencies |
+| `backend/tsconfig.json` | Extends root; `"strict": true`, `"target": "ES2022"`, `"module": "commonjs"` |
+| `backend/Dockerfile` | Multi-stage build: `builder` (full devDeps + compile) → `production` (pruned node_modules + dist) |
+| `backend/src/index.ts` | Entry point; FIRST line is `import './tracing'` per C4/R6; then env validation; then Express bootstrap |
+| `backend/src/tracing.ts` | OTel SDK init with `@opentelemetry/auto-instrumentations-node` BEFORE any app imports |
+| `backend/src/config/env.ts` | `requireEnv()` helper that throws on absent variable per Rule R4 |
+| `backend/src/db/pool.ts` | `pg` connection pool reading `DATABASE_URL` (C3) |
+| `backend/src/db/client.ts` | Query helpers with pool acquisition, release, and OTel span annotation |
+| `backend/src/auth/firebase-admin.ts` | Firebase Admin initialization; `verifyIdToken` wrapper per C2/R3 |
+| `backend/src/middleware/session.ts` | Session validation: extract bearer, call `verifyIdToken`, check `sessions` revocation marker, attach `uid` to request |
+| `backend/src/middleware/correlation.ts` | Correlation-ID middleware per C5; AsyncLocalStorage, pino hook, outbound header propagation |
+| `backend/src/logging/pino.ts` | Pino logger with redaction allow-list per Rule R2; serializer drops `password`, `Authorization`, `credential`, bearer-token-pattern fields |
+| `backend/src/routes/auth.ts` | `/api/auth/register` (ST-023), `/api/auth/login` (ST-024), `/api/auth/logout` (ST-025) |
+| `backend/src/routes/designs.ts` | `/api/designs` POST (ST-027), GET paginated (ST-028), `/api/designs/:id/share-link` POST (ST-029) |
+| `backend/src/routes/share.ts` | `/api/share/:token` GET — unauthenticated read-only design access |
+| `backend/src/routes/cart.ts` | `/api/cart` GET (ST-033) |
+| `backend/src/routes/orders.ts` | `/api/orders` POST (ST-032), `/api/orders/:id/finalize` POST (ST-034) |
+| `backend/src/routes/metrics.ts` | `/metrics` Prometheus text format: `http_requests_total` counter, `http_request_duration_seconds` histogram, `process_up` gauge with `service`/`environment`/`version` labels (ST-048) |
+| `backend/src/routes/health.ts` | `/healthz` (liveness) and `/readyz` (readiness; 503 when DB unreachable) (ST-048) |
+| `backend/src/services/session.service.ts` | Session issuance + revocation (ST-024, ST-025) |
+| `backend/src/services/design.service.ts` | Create/list/share-link orchestration |
+| `backend/src/services/share-link.service.ts` | Time-limited share token generation + validation (ST-029) |
+| `backend/src/services/order.service.ts` | Cart retrieval, order creation, finalization post-processing (ST-032–ST-034) |
+| `backend/src/services/gcs.service.ts` | `@google-cloud/storage` v7 wrapper; ALL `getSignedUrl` calls pass `version: 'v4'` per C1/R5 |
+| `backend/src/repositories/user.repository.ts` | CRUD for `users` table |
+| `backend/src/repositories/session.repository.ts` | CRUD for `sessions` table |
+| `backend/src/repositories/design.repository.ts` | CRUD for `designs` table with pagination (max 100 per ST-028) |
+| `backend/src/repositories/order.repository.ts` | CRUD for `orders` and `order_items` tables |
+| `backend/src/repositories/share-link.repository.ts` | CRUD for share-link persistence |
+| `backend/migrations/{ts}_ST-031_users_sessions.js` | Forward + reverse migration introducing `users` and `sessions` tables per ST-031 |
+| `backend/migrations/{ts}_ST-030_designs.js` | Forward + reverse migration introducing `designs` table per ST-030 |
+| `backend/migrations/{ts}_ST-035_orders_order_items.js` | Forward + reverse migration introducing `orders` and `order_items` tables per ST-035 |
+| `backend/jest.config.unit.ts` | Jest config with coverage threshold from `COVERAGE_THRESHOLD` env var; authored in Track 3 |
+| `backend/jest.config.integration.ts` | Jest config for service-boundary tests; authored in Track 3 |
+| `backend/src/**/*.test.ts` | Co-located unit tests per ST-043 |
+| `backend/tests/integration/**/*.test.ts` | Service-boundary integration tests per ST-044 |
 
-#### Group D — Executive Presentation (Implicit Requirement)
+### 0.3.4 New Files to Create — Frontend (`frontend/`)
 
 | Path | Purpose |
 |---|---|
-| `/docs/executive-summary.html` | Single self-contained reveal.js presentation — 16 `<section>` elements — Blitzy brand theme embedded inline — CDN-pinned reveal.js 5.1.0, Mermaid 11.4.0, Lucide 0.460.0 |
+| `frontend/package.json` | React 18, Vite, @react-three/fiber, @react-three/drei, Three.js, Fabric.js 6.x, Playwright |
+| `frontend/tsconfig.json` | Extends root; `"jsx": "react-jsx"`, `"strict": true` |
+| `frontend/vite.config.ts` | Vite dev server + build config |
+| `frontend/index.html` | Vite entry HTML |
+| `frontend/Dockerfile` | Multi-stage build: `builder` (Vite build) → `production` (nginx + static dist) |
+| `frontend/src/main.tsx` | React 18 `createRoot` bootstrap |
+| `frontend/src/App.tsx` | Top-level layout: preview + control sidebar + summary sidebar |
+| `frontend/src/configurator/preview/BallCanvas.tsx` | R3F `<Canvas>` root (ST-001) |
+| `frontend/src/configurator/preview/Sphere.tsx` | Sphere geometry + material with texture slot |
+| `frontend/src/configurator/preview/useDragRotation.ts` | Click-and-drag rotation (ST-002) |
+| `frontend/src/configurator/preview/useIdleAutoRotate.ts` | Idle auto-rotation (ST-003) |
+| `frontend/src/configurator/preview/performance.ts` | FPS meter + initial-load timer (ST-005) |
+| `frontend/src/configurator/controls/colors/PrimaryColorPicker.tsx` | ST-006 |
+| `frontend/src/configurator/controls/colors/SecondaryColorPicker.tsx` | ST-007 |
+| `frontend/src/configurator/controls/colors/AccentColorPicker.tsx` | ST-008 |
+| `frontend/src/configurator/controls/colors/useColorSync.ts` | Real-time preview sync (ST-009) |
+| `frontend/src/configurator/controls/pattern/StitchingPatternSelector.tsx` | Six patterns (ST-010) |
+| `frontend/src/configurator/controls/pattern/FinishSelector.tsx` | Three finishes (ST-011) |
+| `frontend/src/configurator/controls/pattern/TransitionFeedback.tsx` | Visual transition feedback (ST-012) |
+| `frontend/src/configurator/controls/pattern/DisabledCombinationTooltip.tsx` | Incompatible-combination tooltip (ST-013) |
+| `frontend/src/configurator/controls/logo/LogoUploader.tsx` | File-picker (ST-014) |
+| `frontend/src/configurator/controls/logo/LogoPositioner.tsx` | Fabric.js drag-resize handles (ST-015, ST-016) |
+| `frontend/src/configurator/controls/logo/InvalidFileFeedback.tsx` | Rejection messages (ST-017) |
+| `frontend/src/configurator/texture/texturePipeline.ts` | Fabric-first-then-Three coordinator per C6/R7 |
+| `frontend/src/configurator/texture/fabricCanvas.ts` | Fabric.js canvas singleton |
+| `frontend/src/configurator/texture/threeTexture.ts` | Three.js texture wrapping the Fabric canvas |
+| `frontend/src/features/design-management/SaveDesignCta.tsx` | ST-018 |
+| `frontend/src/features/design-management/LoadDesignList.tsx` | ST-019 |
+| `frontend/src/features/design-management/NewDesignDialog.tsx` | ST-020 |
+| `frontend/src/features/design-management/ShareDesignAction.tsx` | ST-021 |
+| `frontend/src/features/design-management/DesignSummarySidebar.tsx` | ST-022 |
+| `frontend/src/api/client.ts` | Fetch wrapper attaching Firebase `idToken` Bearer + `x-correlation-id` |
+| `frontend/src/api/designs.ts` | Design API calls — stubbed during Track 2, wired to live backend during MG1-F |
+| `frontend/src/api/orders.ts` | Cart + order API calls |
+| `frontend/src/auth/firebase-client.ts` | Firebase client SDK init, `getIdToken()` helper |
+| `frontend/src/state/configuratorStore.ts` | Zustand (or equivalent) store holding design selections |
+| `frontend/playwright.config.ts` | Playwright projects `chromium` + `webkit`, visual-snapshots mode |
+| `frontend/tests/configurator/*.spec.ts` | Configurator smoke + interaction tests (Gate T2) |
+| `frontend/tests/performance/*.spec.ts` | FPS ≥30 and initial load ≤2000 ms assertions (Gate T2) |
+| `frontend/tests/e2e/*.spec.ts` | Critical flows register → login → create → save → share → cart → order (ST-045) |
+| `frontend/tests/visual/*.spec.ts` | `toHaveScreenshot()` visual regression (ST-046) |
+| `frontend/visual-baselines/**/*.png` | Baseline PNGs committed to repo (ST-046) |
 
-#### Group E — No Files Modified
+### 0.3.5 Integration Point Discovery
 
-No existing file is modified by this plan. `README.md` is read-only and preserved verbatim.
+The following integration points connect the feature set internally and externally.
 
-### 0.2.3 Integration Point Discovery
-
-Because the repository has no prior code, there are no runtime integration points (no API endpoints, no database models, no service classes, no controllers, no middleware) to touch. The only integration points in this plan are **documentary cross-references** among the artifacts being created:
-
-| Integration Point | Mechanism | Enforced By |
+| Integration Point | Where | Direction |
 |---|---|---|
-| Epic → Story linkage | `stories: [ST-00N, ...]` array in epic frontmatter | Gate 1 (End-to-End Boundary) |
-| Story → Epic linkage | `epic: EP-00N` field in story frontmatter | Rule 6 (100% match rate) |
-| Story → Story linkage | `depends-on: [ST-00N, ...]` array in story frontmatter | Gate 9 (Integration Wiring) and Gate 13 (Registration-Invocation Pairing) |
-| CI/CD stage dependencies | Acceptance criteria naming consumed env vars and stage outputs | Gate 12 (Config Propagation) |
-| Test trigger bindings | Acceptance criteria naming concrete execution triggers | Gate 10 (Test Execution Binding) |
+| Firebase Auth Emulator (local) / Firebase Auth (prod) | `backend/src/auth/firebase-admin.ts`, `frontend/src/auth/firebase-client.ts` | Outbound |
+| PostgreSQL (Cloud SQL via Unix socket in prod; TCP in local/CI per C3) | `backend/src/db/pool.ts` | Outbound |
+| GCS (fake-gcs-server locally; real GCS in prod) | `backend/src/services/gcs.service.ts` | Outbound |
+| Cloud Run | Deployed via Cloud Deploy from `cloudbuild.yaml` | Ingress for backend service |
+| Cloud Build | Authored in `cloudbuild.yaml`; triggered by pull requests per ST-036–ST-042 | CI runner |
+| Cloud Deploy | Authored in `delivery-pipeline/clouddeploy.yaml`; dev → staging → prod | Deployment orchestrator |
+| `/metrics` endpoint (Prometheus scraper) | `backend/src/routes/metrics.ts` | Inbound scrape |
+| `/healthz`, `/readyz` probes (Cloud Run platform, local orchestrator) | `backend/src/routes/health.ts` | Inbound health check |
+| W3C `traceparent` header | `backend/src/tracing.ts` auto-instrumentation; propagated via `http` client | Bidirectional |
+| Correlation-ID `x-correlation-id` header | `backend/src/middleware/correlation.ts` | Bidirectional (preserve in, attach out) |
 
-### 0.2.4 Web Search Research Conducted
+### 0.3.6 Web Search Research Conducted
 
-Per the prompt's instruction to document research, the following targeted research was performed or confirmed:
+No external web search is required. The user's prompt pins every package at a specific major version and names every critical API (GCS v7 `getSignedUrl({ version: 'v4', ... })`, Firebase Admin `verifyIdToken`, OTel auto-instrumentation registration order, pino serializer allow-list, Fabric `renderAll()` → Three `needsUpdate`). Downstream agents implementing this action plan should rely on the prompt's named symbols verbatim rather than searching for alternative APIs.
 
-- **Backlog authoring conventions** — persona format, Fibonacci story point values, YAML frontmatter patterns, and empty-template scaffolding are standard product management practice and were sourced from general knowledge, not a specific library. No web fetch required.
-- **Reveal.js CDN versions** — The user rule explicitly pins `reveal.js 5.1.0`, `Mermaid 11.4.0`, `Lucide 0.460.0`. These versions are accepted as given and used verbatim in the executive deck `<script>` and `<link>` tags. No web fetch required; the pins are user-supplied.
-- **Google Fonts families** — The user rule explicitly names `Inter` (400/500/600/700), `Space Grotesk` (500/600/700), `Fira Code` (400/500). These are loaded via a single Google Fonts `<link>`. No web fetch required.
-- **CommonMark validity** — All Markdown bodies must be valid CommonMark with well-formed YAML frontmatter per Gate 2. Well-established CommonMark specification; no web fetch required.
+### 0.3.7 Files Ignored by `.blitzyignore`
 
-### 0.2.5 New File Requirements Summary
+The repository contains **no `.blitzyignore` files** at any level (verified by `find . -name ".blitzyignore"` returning zero results). All paths in the repository are available for inspection, modification, and creation subject to the rules declared elsewhere in this Agent Action Plan.
 
-Total new files: **67 files + 3 new directories**.
 
-- 11 epic files under `/tickets/epics/`
-- 49 story files under `/tickets/stories/`
-- 3 template files under `/tickets/templates/`
-- 2 observability documentation files under `/docs/observability/`
-- 1 decision log file under `/docs/decisions/`
-- 1 executive presentation HTML file under `/docs/`
+## 0.4 Dependency Inventory
 
-Zero files are modified. Zero files are deleted.
+This sub-section enumerates every public and private package that the feature addition depends on. All versions are pinned exactly as the user's prompt declares; no version is invented, loosened, or substituted.
 
-## 0.3 Dependency Inventory
+### 0.4.1 Backend Dependencies (`backend/package.json`)
 
-### 0.3.1 Package and Dependency Posture
-
-The repository has no dependency manifest and this Agent Action Plan does not create one. The Markdown backlog artifacts (`/tickets/**/*.md`, `/docs/**/*.md`) have zero runtime dependencies — they are authored in CommonMark with YAML frontmatter and consumed by Markdown renderers. No `package.json`, `requirements.txt`, `pyproject.toml`, `go.mod`, `Gemfile`, or equivalent manifest is introduced by this plan.
-
-The only artifact with runtime dependencies is `/docs/executive-summary.html`, which loads its dependencies from pinned public CDNs at browser run time. Because CDN-loaded assets are not declared in any package registry manifest, they are documented here in lieu of a lockfile entry.
-
-### 0.3.2 CDN-Loaded Runtime Dependencies (Executive Presentation Only)
-
-The executive presentation HTML file loads the following assets via `<link>` and `<script>` tags. Versions are pinned exactly as specified in the user's Executive Presentation rule.
-
-| Registry / Source | Package / Asset | Version | Purpose |
+| Package | Version | Registry | Purpose |
 |---|---|---|---|
-| jsDelivr / cdnjs (public CDN) | `reveal.js` CSS theme and JS | `5.1.0` | Slide framework — renders `<section>` elements as navigable slides |
-| jsDelivr / cdnjs (public CDN) | `mermaid` JS | `11.4.0` | Renders Mermaid diagrams embedded as `<pre class="mermaid">` elements |
-| jsDelivr / cdnjs (public CDN) | `lucide` JS | `0.460.0` | Renders Lucide SVG icons referenced via `<i data-lucide="icon-name"></i>` |
-| Google Fonts | `Inter` | Google Fonts CSS2 API — current service version | Body typography — weights 400, 500, 600, 700 |
-| Google Fonts | `Space Grotesk` | Google Fonts CSS2 API — current service version | Display headings — weights 500, 600, 700 |
-| Google Fonts | `Fira Code` | Google Fonts CSS2 API — current service version | Monospace eyebrows and inline code — weights 400, 500 |
+| `typescript` | 5.x (strict) | npm | Language (user prompt §3 pin) |
+| `@types/node` | 20.x | npm | Node 20 LTS type definitions |
+| `express` | 4.x | npm | HTTP framework (user prompt §3 pin) |
+| `@types/express` | 4.x | npm | Express type definitions |
+| `pg` | ^8.x | npm | PostgreSQL client with connection pool (user prompt §3 "Database client") |
+| `@types/pg` | ^8.x | npm | `pg` type definitions |
+| `node-pg-migrate` | ^6.x | npm | Migration tool (user prompt §3 "Migration tool") |
+| `firebase-admin` | ^12.x | npm | Firebase Admin SDK for `verifyIdToken` (user prompt §3 "Authentication"); Rule R3 forbids any JWT library substitute |
+| `@google-cloud/storage` | ^7.x | npm | GCS client; Rule R5 requires `version: 'v4'` on every `getSignedUrl` call |
+| `pino` | ^8.x | npm | Structured JSON logging (user prompt §3 "Observability") |
+| `pino-http` | ^8.x | npm | Pino Express middleware |
+| `@opentelemetry/sdk-node` | ^0.50.x | npm | OTel SDK (user prompt §3 "Observability") |
+| `@opentelemetry/auto-instrumentations-node` | ^0.47.x | npm | Auto-instrumentation; Rule R6 requires registration before any application import |
+| `@opentelemetry/api` | ^1.x | npm | OTel public API |
+| `uuid` | ^9.x | npm | UUID v4 for correlation IDs (C5) |
+| `prom-client` | ^15.x | npm | Prometheus text-format metrics for `/metrics` (ST-048) |
+| `zod` | ^3.x | npm | Runtime schema validation for request bodies |
+| `dotenv` | ^16.x | npm | Local `.env` loading in dev only — Rule R4 still enforces throw-on-missing |
 
-No private packages are introduced. No package registry credentials are required.
+**DevDependencies (backend):**
 
-### 0.3.3 No Package Manifest Created
-
-This plan does NOT create `package.json`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `requirements.txt`, `Pipfile`, `Pipfile.lock`, `pyproject.toml`, `poetry.lock`, `Cargo.toml`, `Cargo.lock`, `go.mod`, `go.sum`, `pom.xml`, `build.gradle`, `Gemfile`, `Gemfile.lock`, `composer.json`, or `composer.lock`. The absence of a manifest is consistent with the backlog-only scope of this plan and with Section 3.4.1 of the Technical Specification.
-
-### 0.3.4 Dependency Updates (Import Updates and External Reference Updates)
-
-Because no source files exist in the repository and this plan creates no source files, there are **no import statements to update**. Import-update concerns from the reference prompt (`src/**/*.py`, `tests/**/*.py`, `scripts/**/*.py`) are not applicable.
-
-External reference updates are similarly confined to the documentary artifacts produced by this plan:
-
-| Reference Target | File(s) | Update Content |
+| Package | Version | Purpose |
 |---|---|---|
-| Epic → Story frontmatter linkage | `/tickets/epics/EP-*.md` | `stories: [ST-00N, ...]` arrays populated with the exact story IDs authored in this plan |
-| Story → Epic frontmatter linkage | `/tickets/stories/ST-*.md` | `epic: EP-00N` field set to the owning epic |
-| Cross-layer `depends-on` linkage | `/tickets/stories/ST-*.md` (stories with cross-layer dependencies) | `depends-on: [ST-00N, ...]` arrays listing prerequisite or consumed stories |
-| CDN version pins | `/docs/executive-summary.html` | `<link>`/`<script>` `src`/`href` attributes carry the exact versions `5.1.0`, `11.4.0`, `0.460.0` |
-| Decision log cross-reference | `/docs/decisions/README.md` | Rows reference ticket IDs (EP-00N, ST-00N) where a decision materially shaped a scope split or estimate |
-| Observability doc cross-reference | `/docs/observability/README.md` | Cross-references EP-011 and its child stories as the authoritative backlog representation of observability work |
+| `jest` | ^29.x | Unit + integration test runner |
+| `ts-jest` | ^29.x | Jest TypeScript transformer |
+| `@types/jest` | ^29.x | Jest type definitions |
+| `supertest` | ^6.x | HTTP-level integration testing |
+| `eslint` | ^8.x | Static analysis for lint gate (ST-036) |
+| `@typescript-eslint/parser` | ^6.x | ESLint parser |
+| `@typescript-eslint/eslint-plugin` | ^6.x | TypeScript ESLint rules |
+| `prettier` | ^3.x | Formatter |
 
-### 0.3.5 Build System and Tooling
+**Forbidden packages (Rule R3):** `jsonwebtoken`, `jose`, `jwt-decode` — verification: these strings MUST NOT appear in `backend/package.json`.
 
-No build system is introduced. No compilation step, bundler configuration, transpiler, linter, formatter, pre-commit hook, or task runner is added. The executive presentation HTML file is self-contained per the user rule: "Single self-contained HTML file, no build steps, no local file dependencies."
+**Forbidden packages (Rule R9):** `stripe`, `braintree`, `paypal`, `payment_intent`, `charge` — verification: `grep -ri "stripe\|braintree\|paypal\|payment_intent\|charge" backend/src` returns zero matches.
 
-The backlog Markdown files and documentation are rendered by any standard Markdown renderer (GitHub, GitLab, VS Code preview, static site generators) without preprocessing.
+### 0.4.2 Frontend Dependencies (`frontend/package.json`)
 
-## 0.4 Integration Analysis
+| Package | Version | Registry | Purpose |
+|---|---|---|---|
+| `typescript` | 5.x (strict) | npm | Language |
+| `react` | ^18.x | npm | UI framework (user prompt §3 "Frontend") |
+| `react-dom` | ^18.x | npm | React DOM renderer |
+| `vite` | ^5.x | npm | Build tool + dev server (user prompt §3 "Frontend") |
+| `@vitejs/plugin-react` | ^4.x | npm | React plugin for Vite |
+| `@react-three/fiber` | ^8.x | npm | R3F React binding to Three.js (user prompt §3 "3D rendering") |
+| `@react-three/drei` | ^9.x | npm | R3F helpers (OrbitControls, PerspectiveCamera) |
+| `three` | ^0.160.x | npm | Three.js core (pinned via drei/fiber compatibility) |
+| `@types/three` | ^0.160.x | npm | Three.js type definitions |
+| `fabric` | ^6.x | npm | Fabric.js canvas library for texture layer (user prompt §3 "Canvas texture") |
+| `firebase` | ^10.x | npm | Firebase client SDK (for obtaining `idToken` on the browser) |
+| `zustand` | ^4.x | npm | Lightweight state store for configurator selections |
 
-### 0.4.1 Existing Code Touchpoints
+**DevDependencies (frontend):**
 
-The repository contains no source modules, no API handlers, no database models, no service classes, no dependency injection containers, no configuration modules, and no migration scripts. Consequently, **no existing code touchpoint modifications are required**.
-
-| Touchpoint Category (from Reference Prompt) | Action Required | Rationale |
+| Package | Version | Purpose |
 |---|---|---|
-| Direct source modifications (e.g., `src/main.py`) | None | No `src/` tree exists |
-| Route registration (e.g., `src/api/routes.py`) | None | No API routing exists |
-| Model exports (e.g., `src/models/__init__.py`) | None | No model tree exists |
-| Dependency injection wiring (e.g., `src/services/container.py`) | None | No service container exists |
-| Configuration dependency wiring | None | No configuration module exists |
-| Database schema additions (e.g., `src/db/schema.sql`) | None | No database schema exists |
-| New migration scripts | None | No migration tree exists |
-| `README.md` (root) | None — preserved verbatim | Rule: no mutation of existing files |
+| `@playwright/test` | ^1.44.x | E2E + visual regression runner (user prompt §3 "E2E / visual") |
+| `@types/react` | ^18.x | React type definitions |
+| `@types/react-dom` | ^18.x | React DOM type definitions |
+| `eslint` | ^8.x | Shared with backend via root `.eslintrc.json` |
+| `eslint-plugin-react` | ^7.x | React lint rules |
+| `eslint-plugin-react-hooks` | ^4.x | React-hooks lint rules |
 
-### 0.4.2 Documentary Integration Points Created by This Plan
+### 0.4.3 Root Monorepo Dependencies (`package.json`)
 
-All integration points introduced by this plan are between Markdown artifacts and are enforced by frontmatter schema rules rather than by runtime code. The following diagram depicts the integration topology of the backlog scaffold.
-
-```mermaid
-graph LR
-    subgraph Epics
-        EP001[EP-001<br/>3D Preview]
-        EP002[EP-002<br/>Panel Color]
-        EP003[EP-003<br/>Stitching & Finish]
-        EP004[EP-004<br/>Branding & Logo]
-        EP005[EP-005<br/>Design Management]
-        EP006[EP-006<br/>Authentication]
-        EP007[EP-007<br/>Persistence API]
-        EP008[EP-008<br/>Cart & Order]
-        EP009[EP-009<br/>CI/CD Pipeline]
-        EP010[EP-010<br/>Test Coverage]
-        EP011[EP-011<br/>Observability]
-    end
-
-    subgraph Stories
-        STF[Frontend Stories<br/>22 total]
-        STB[Backend Stories<br/>10 total]
-        STD[Database Stories<br/>3 total]
-        STC[CI/CD Stories<br/>7 total]
-        STT[Testing Stories<br/>4 total]
-        STO[Observability Stories<br/>3 total]
-    end
-
-    subgraph Docs
-        DOC_OBS[/docs/observability/README.md/]
-        DOC_DEC[/docs/decisions/README.md/]
-        DOC_EXE[/docs/executive-summary.html/]
-    end
-
-    EP001 --> STF
-    EP002 --> STF
-    EP003 --> STF
-    EP004 --> STF
-    EP005 --> STF
-    EP005 -.depends-on.-> STB
-    EP006 --> STB
-    EP007 --> STB
-    EP007 --> STD
-    EP008 --> STB
-    EP008 --> STD
-    EP009 --> STC
-    EP010 --> STT
-    EP011 --> STO
-
-    STF -.cross-layer depends-on.-> STB
-    STB -.cross-layer depends-on.-> STD
-    STC -.consumes.-> STT
-    STT -.consumes.-> STO
-
-    EP011 ==> DOC_OBS
-    EP001 & EP002 & EP003 & EP004 & EP005 & EP006 & EP007 & EP008 & EP009 & EP010 & EP011 ==> DOC_EXE
-    DOC_DEC -.references.-> EP001 & EP005 & EP008 & EP009 & EP010
-```
-
-### 0.4.3 Frontmatter-Enforced Integration Contracts
-
-The frontmatter schemas supplied by the user in Rules 4, 6, and 7 define the wire contract between artifacts. These contracts are enforced as follows:
-
-| Contract | Enforcement Rule | Verification Command |
+| Package | Version | Purpose |
 |---|---|---|
-| Every story frontmatter includes `epic:` | Rule 6 | `grep -c "^epic: EP-" /tickets/stories/*.md` equals story file count |
-| Every story lists exactly one `layer:` value | Rule 4 | `grep "^layer:" /tickets/stories/*.md` — each line's value is one of the six enumerated tokens |
-| Cross-layer dependencies declared via `depends-on:` | Gate 9 | Any story whose acceptance criteria reference behavior owned by another layer's story MUST list the prerequisite story ID in `depends-on:` |
-| Epic lists ≥1 child story ID | Gate 1 | `stories:` array in epic frontmatter is non-empty for every epic |
-| Story IDs unique and sequential 001..049 | Rule 5 | `grep -h "^id: ST-" /tickets/stories/*.md \| sort -u \| wc -l` equals 49; no gaps |
-| Story `points:` uses Fibonacci only | Rule 7 | `grep "^points:" /tickets/stories/*.md` values ∈ {1, 2, 3, 5, 8, 13} |
-| EP-010 stories declare `test-type:` | Rule 9 | `grep "^test-type:" /tickets/stories/ST-*.md` yields values covering all four of {unit, integration, e2e, visual-regression} among EP-010 children |
+| `typescript` | 5.x | Hoisted for workspace sharing |
+| `eslint` | ^8.x | Hoisted for lint gate |
+| `prettier` | ^3.x | Hoisted for formatting |
+| `npm-run-all` | ^4.x | Orchestrates `backend` + `frontend` scripts |
 
-### 0.4.4 Cross-Layer Dependency Mapping
+### 0.4.4 Container and Infrastructure Dependencies
 
-The following examples illustrate where cross-layer `depends-on` links are required to satisfy Gate 9 (Integration Wiring) and Gate 13 (Registration-Invocation Pairing). Exact ST-IDs are assigned during story authoring; placeholders `ST-NNN` shown here denote the slots.
-
-| Consuming Story (layer) | Depends-On Target (layer) | Reason |
+| Image / Binary | Version | Purpose |
 |---|---|---|
-| EP-005 "Save Design from UI" (frontend) | EP-007 "Persist Design Record" (backend) | The UI Save action invokes the persistence service registered by the backend story |
-| EP-005 "Save Design from UI" (frontend) | EP-006 "Issue Session Token" (backend) | Authenticated save requires an established session |
-| EP-007 "Persist Design Record" (backend) | EP-007 "Design Schema Migration" (database) | The persistence endpoint writes to a schema introduced by the database story |
-| EP-008 "Create Order" (backend) | EP-008 "Order Schema Migration" (database) | Order creation writes to a schema introduced by the database story |
-| EP-008 "Add to Cart from UI" (frontend) | EP-008 "Create Order" (backend) | UI cart submission invokes the order-creation endpoint |
-| EP-009 "Deploy Stage" (ci-cd) | EP-009 "Build Stage" (ci-cd) | Deploy consumes the container image produced by Build |
-| EP-009 "Environment Promotion" (ci-cd) | EP-009 "Deploy Stage" (ci-cd) | Promotion advances an artifact already deployed to a prior environment |
-| EP-010 "E2E Test Suite" (testing) | EP-009 "Integration Test Gate" (ci-cd) | The CI gate invokes the E2E suite defined by the testing story |
-| EP-011 "Emit Structured Logs" (observability) | EP-006 "Issue Session Token" (backend) | Session issuance emits correlation-ID-tagged logs consumed by the observability pipeline |
+| `postgres` Docker image | `15-alpine` | Local PostgreSQL in `docker-compose.yml` (user prompt §3 "Database") |
+| `node` Docker image | `20-alpine` | Base for `backend/Dockerfile` multi-stage (user prompt §3 "Backend runtime") |
+| `nginx` Docker image | `1.27-alpine` | Base for `frontend/Dockerfile` production stage serving Vite `dist/` |
+| Firebase Auth Emulator | Latest from `firebase-tools` container | Local auth emulator (Gate T1-C) |
+| `fsouza/fake-gcs-server` | `latest` | Local GCS emulator (LocalGCP Rule) |
+| `gcloud` CLI | Latest stable | Cloud Deploy + Cloud Run describe commands (Gate MG2-G) |
+| Cloud Build | SaaS | CI runner for seven-step pipeline (EP-009) |
+| Cloud Deploy | SaaS | Promotion orchestrator (ST-042) |
+| Cloud Run | SaaS | Target runtime for backend service |
+| Cloud SQL for PostgreSQL | Version 15 | Production database |
+| Google Cloud Storage | SaaS | Production logo storage bucket |
 
-These pairings also satisfy Gate 13: every "register/produce" story (e.g., a new API endpoint, a new pipeline stage, a new service) has a corresponding "invoke/consume" story linked by `depends-on:`.
+### 0.4.5 Executive Presentation CDN Dependencies (`docs/executive-summary.html`)
 
-### 0.4.5 Configuration Propagation (Gate 12)
+Per the user-provided Executive Presentation Rule, the reveal.js deck pins CDN versions exactly:
 
-CI/CD stories in EP-009 MUST specify the environment variables and stage outputs consumed by downstream stages. The configuration flow is:
-
-| Producing Stage | Emits | Consumed By |
+| Asset | Version | CDN |
 |---|---|---|
-| Lint Gate | Pass/fail verdict, lint report artifact path | Type-Check Gate (as prerequisite), final merge policy |
-| Type-Check Gate | Pass/fail verdict, type report artifact path | Unit Test Gate |
-| Unit Test Gate | Pass/fail verdict, coverage report artifact path | Integration Test Gate |
-| Integration Test Gate | Pass/fail verdict, integration report artifact path | Build Stage |
-| Build Stage | Container image digest, build metadata (commit SHA, build timestamp) | Deploy Stage |
-| Deploy Stage (dev) | Deployment URL, deployment ID | Environment Promotion (staging target) |
-| Environment Promotion | Promotion approval, next-environment deployment ID | Deploy Stage (prod) |
+| reveal.js | 5.1.0 | CDN (script + CSS) |
+| Mermaid | 11.4.0 | CDN |
+| Lucide | 0.460.0 | CDN |
+| Google Fonts | N/A | `<link>` for Inter, Space Grotesk, Fira Code |
 
-Each EP-009 story's acceptance criteria name the environment variables (e.g., `COMMIT_SHA`, `IMAGE_DIGEST`, `TARGET_ENV`, `PROMOTION_APPROVAL_ID`) and artifact paths its stage consumes or emits. No proper-noun tool names appear — only the variable names and the abstract role of each stage.
+### 0.4.6 Import Update Rules
 
-### 0.4.6 Test Execution Triggers (Gate 10)
+Because this is greenfield implementation, there are no pre-existing imports to transform. All imports are new. Import conventions across the backend and frontend workspaces:
 
-Every EP-010 story's acceptance criteria name a concrete test execution trigger. Illustrative trigger vocabulary (abstract, no tool names):
+- **Absolute paths within a workspace.** `backend/src/routes/designs.ts` imports repositories as `from './../repositories/design.repository'` — consistent relative notation.
+- **No barrel files in hot paths.** The frontend `frontend/src/configurator/**` modules MUST NOT use aggregated `index.ts` barrel exports for Three.js / Fabric.js modules because those interfere with Vite tree-shaking and produce measurable bundle-size regressions.
+- **OTel tracing import MUST be first.** Every backend entry point (`backend/src/index.ts` and any Jest integration test bootstrap) MUST place `import './tracing'` as the first line of the file per Rule R6.
 
-- "triggered on pull request open against the default branch"
-- "triggered on push to any branch"
-- "triggered on merge to the default branch"
-- "triggered on tag creation matching a release pattern"
-- "triggered on scheduled nightly run"
+### 0.4.7 External Reference Updates
 
-Stories that cannot point to at least one such trigger fail Gate 10 and are re-authored during generation.
+| File | Update Category | Purpose |
+|---|---|---|
+| `README.md` | Documentation | Add local-dev quick-start, link to `docs/executive-summary.html`, link to `docs/decisions/README.md`, link to `docs/observability/README.md` |
+| `.env.example` | Configuration | Enumerate all six required environment variables with documentation-only comments |
+| `docker-compose.yml` | Infrastructure | Declare `backend`, `postgres`, `firebase-auth-emulator`, `gcs-emulator` services |
+| `cloudbuild.yaml` | CI/CD | Seven-step pipeline with explicit `waitFor` directives per ST-036–ST-041 |
+| `skaffold.yaml` | CI/CD | Skaffold profile referenced by Cloud Deploy |
+| `delivery-pipeline/clouddeploy.yaml` | CI/CD | Development → Staging → Production targets with approval gating per ST-042 |
+| `docs/observability/dashboard-template.md` | Documentation | All 8 panels with thresholds and alert policies per ST-049-AC5 |
+| `docs/decisions/README.md` | Documentation | Decision log additions per user-provided Explainability Rule |
+| `docs/observability/README.md` | Documentation | Note what was reused vs added during implementation |
+| `docs/executive-summary.html` | Documentation | Replace with 16-slide implementation-summary deck per user-provided Executive Presentation Rule |
 
-## 0.5 Design System Compliance
 
-### 0.5.1 System Identification
+## 0.5 Integration Analysis
 
-A design system applies to exactly one deliverable in this plan: `/docs/executive-summary.html`. The user-provided Executive Presentation rule supplies a complete, canonical design system — hereafter referred to as the **Blitzy Reveal Theme** — including color tokens, typography, slide-type classes, component classes, and pinned library versions.
+This sub-section documents every integration touchpoint, dependency injection site, and schema change that the feature addition introduces into the greenfield baseline. Because the repository starts with only documentation and backlog artifacts, most "integration points" are new wiring between newly authored modules rather than modifications of pre-existing code — but the wiring must be described with the same precision as any code-touch plan to eliminate ambiguity for downstream agents.
 
-| Attribute | Value |
+### 0.5.1 Existing Code Touchpoints
+
+Although no runtime code exists in the baseline, the feature addition updates the following existing documentation files in-place so that the shipped implementation's narrative stays synchronized with the backlog's narrative:
+
+| File | Modification Intent |
 |---|---|
-| Library | Blitzy Reveal Theme (proprietary, user-supplied inline) |
-| Version | As-specified in the user rule (no external version number) |
-| Status | To-be-embedded inline in `/docs/executive-summary.html` |
-| Package | Not published; token set supplied inline as CSS custom properties |
-| Source of truth | User-provided rule; canonical theme file referenced at `blitzy-deck/references/blitzy-reveal-theme.css` (external to this repository; not required for self-contained delivery) |
-| Dependent libraries | `reveal.js` 5.1.0, `mermaid` 11.4.0, `lucide` 0.460.0 — all CDN-pinned |
+| `README.md` | Expand from identity marker to a local-dev quick-start: `nvm use`, `npm install`, `docker compose up -d`, `npx node-pg-migrate up`, links to `docs/`. |
+| `docs/observability/dashboard-template.md` | Add the complete 8-panel catalog (request rate, error rate, P95 latency, error breakout, correlation throughput, active sessions, order creation rate, deploy markers) with thresholds, alert policies, and SLO tie-ins per ST-049-AC5. |
+| `docs/observability/README.md` | Populate "What Was Reused" and "What Was Added" sections with the live implementation's observability posture. |
+| `docs/decisions/README.md` | Append a decision row per non-trivial implementation choice (state library, migration tool, logging lib, etc.) per the user-provided Explainability Rule. |
+| `docs/executive-summary.html` | Replace current backlog deck with a 16-slide implementation-summary deck per the user-provided Executive Presentation Rule. |
 
-Design system scope: **only** the executive presentation HTML. Backlog Markdown files do NOT reference any design system — they remain technology-neutral per user Rule 1.
+No existing epic or story Markdown file is **rewritten**; only the acceptance-criteria checkboxes in each `tickets/stories/ST-NNN-*.md` are marked complete (per Rule R1) once the corresponding gate passes.
 
-### 0.5.2 Component Inventory (Blitzy Reveal Theme)
+### 0.5.2 Dependency Injections — Newly Introduced Wiring
 
-The user rule enumerates four slide types and a set of component and visual classes. These are cataloged below by name and used verbatim in `/docs/executive-summary.html`.
+Because all source code is new, "dependency injections" refer to the wiring of newly authored modules through a lightweight composition-root pattern. No heavy DI container (e.g., InversifyJS) is used; instead, the Express app's composition root assembles services explicitly.
 
-#### 0.5.2.1 Slide Types
-
-| Slide Type | CSS Class | Usage Context | Composition |
-|---|---|---|---|
-| Title | `slide-title` | Slide 1 — project name, scope, audience framing | Hero gradient background, eyebrow in Fira Code teal, large display heading in white |
-| Section Divider | `slide-divider` | Between major topics (slides 4, 7, 10, 13 in the target layout) | Dark purple `#2D1C77` or gradient background, large centered heading, thematic Lucide icon |
-| Content | (default — no type class) | Majority of body slides | Max 4 bullets, max 40 words body text, min 1 non-text visual element |
-| Closing | `slide-closing` | Final slide | Navy `#1A105F` background, 3–6 word takeaway heading, max 3 bullets, brand lockup, gradient accent bar |
-
-#### 0.5.2.2 Visual Component Classes
-
-| Component | CSS Class | Purpose | Notes |
-|---|---|---|---|
-| KPI Card | `kpi-card` | Numeric highlight on content slides | Typically grouped in `kpi-grid`; each card holds a `kpi-value`, `kpi-label`, `kpi-icon` |
-| KPI Grid | `kpi-grid` | Grid container for KPI cards | Layout primitive for multi-KPI slides |
-| KPI Value | `kpi-value` | Large numeric display | Typography in Space Grotesk |
-| KPI Label | `kpi-label` | Description under a KPI value | Typography in Inter |
-| KPI Icon | `kpi-icon` | Lucide icon adornment on KPI card | Uses `<i data-lucide="...">` |
-| Eyebrow | `eyebrow` | Fira Code pre-title label | Used on title slide and section dividers |
-| Accent Bar | `accent-bar` | Horizontal gradient decoration | Background: `--gradient-accent-bar` |
-| Brand Lockup | `brand-lockup` | Blitzy wordmark placement | Used on closing slide |
-| Hero Icon | `hero-icon` | Large centered icon | Used on dividers and title |
-| Icon Row | `icon-row` | Horizontal row of Lucide icons | Used on content slides with multiple concept icons |
-| Mermaid Container | `mermaid` (element class) | Wrapper for embedded Mermaid diagram | `<pre class="mermaid">` with raw Mermaid syntax |
-
-#### 0.5.2.3 Typography Tokens
-
-| Token | Role | Family | Weights Loaded |
-|---|---|---|---|
-| `--ff-body` | Body copy | `Inter`, system-ui, sans-serif | 400, 500, 600, 700 |
-| `--ff-display` | Display headings | `Space Grotesk`, `Inter`, sans-serif | 500, 600, 700 |
-| `--ff-mono` | Mono / eyebrows | `Fira Code`, `Courier New`, monospace | 400, 500 |
-
-All three families are loaded via a single Google Fonts CSS2 `<link>` in the HTML `<head>`.
-
-### 0.5.3 Design Token Catalog
-
-The Blitzy Reveal Theme tokens are cataloged below exactly as defined in the user rule. All are embedded inline as CSS custom properties on `:root` in `/docs/executive-summary.html`.
-
-#### 0.5.3.1 Color Tokens
-
-| Token | Value | Semantic Role |
-|---|---|---|
-| `--blitzy-primary` | `#5B39F3` | Primary brand color |
-| `--blitzy-primary-dark` | `#2D1C77` | Dark primary — section dividers |
-| `--blitzy-primary-navy` | `#1A105F` | Navy — closing slide background |
-| `--blitzy-primary-light` | `#7A6DEC` | Light primary — gradient start |
-| `--blitzy-primary-deep` | `#4101DB` | Deep primary — gradient end |
-| `--blitzy-accent-teal` | `#94FAD5` | Teal accent — eyebrow, gradient accent bar terminus |
-| `--blitzy-surface-0` | `#FFFFFF` | Surface 0 — white |
-| `--blitzy-surface-1` | `#F4EFF6` | Surface 1 — soft lavender |
-| `--blitzy-surface-2` | `#F2F0FE` | Surface 2 — Mermaid primary fill |
-| `--blitzy-surface-3` | `#F5F5F5` | Surface 3 — neutral gray |
-| `--blitzy-border` | `#D9D9D9` | Border — default |
-| `--blitzy-border-soft` | `rgba(91, 57, 243, 0.18)` | Border — soft primary tint |
-| `--blitzy-text` | `#333333` | Body text |
-| `--blitzy-text-muted` | `#999999` | Muted text |
-| `--blitzy-text-invert` | `#FFFFFF` | Inverted text (on dark backgrounds) |
-
-#### 0.5.3.2 Gradient Tokens
-
-| Token | Value | Usage |
-|---|---|---|
-| `--gradient-hero` | `linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%)` | Title slide background |
-| `--gradient-divider` | `linear-gradient(135deg, #2D1C77 0%, #5B39F3 100%)` | Section divider background |
-| `--gradient-accent-bar` | `linear-gradient(90deg, #5B39F3 0%, #94FAD5 100%)` | Closing slide accent bar |
-
-#### 0.5.3.3 Mermaid Theme Variables
-
-| Variable | Value |
+| Location | Wiring Intent |
 |---|---|
-| `primaryColor` | `#F2F0FE` |
-| `primaryTextColor` | `#333333` |
-| `primaryBorderColor` | `#5B39F3` |
-| `lineColor` | `#999999` |
-| `secondaryColor` | `#F4EFF6` |
+| `backend/src/index.ts` | First line imports `./tracing` (C4/R6); then reads env via `config/env.ts`; then initializes `db/pool.ts`, `auth/firebase-admin.ts`, `logging/pino.ts`; then mounts middleware `correlation.ts` → `session.ts` → routes. |
+| `backend/src/routes/*.ts` | Each route file exports a factory that receives its required services (e.g., `createDesignRoutes(designService)`); the factory returns an `express.Router`. |
+| `backend/src/middleware/session.ts` | Depends on `auth/firebase-admin.ts` (`verifyIdToken`) and `repositories/session.repository.ts` (revocation lookup). Applied globally to every path under `/api/*` EXCEPT `/api/auth/register` and `/api/auth/login` (explicit exclusion list per ST-026 and user prompt §4 Track 1 T1-C). |
+| `backend/src/middleware/correlation.ts` | First middleware in the chain. Reads `x-correlation-id` header, generates UUID v4 if absent, stores in `AsyncLocalStorage`, attaches to pino log context, and registers outbound `http` client interceptor for header propagation. |
+| `frontend/src/App.tsx` | Composes `BallCanvas` + control sidebars + summary sidebar; mounts `firebase-client.ts` once at startup; provides `configuratorStore` via Zustand. |
+| `frontend/src/api/client.ts` | Every outbound API call attaches `Authorization: Bearer ${await getIdToken()}` and `x-correlation-id: ${uuid()}`. |
 
-Mermaid is initialized with `startOnLoad: false`; `mermaid.run()` is invoked after reveal.js `ready` and on every `slidechanged` event, as required by the user rule.
-
-### 0.5.4 Compliance Principles (Applied to Executive Deck)
-
-The executive deck authoring is governed by the following precedence (highest to lowest):
-
-- Design system compliance — every CSS value resolves to a Blitzy token; the only exceptions are the literal keywords `0`, `none`, `auto`, `inherit`, `currentColor`, `transparent`.
-- Visual fidelity to the user rule specification — match the described look exactly.
-- Accessibility — semantic HTML elements (`<h1>`, `<h2>`, `<ul>`, `<li>`), ARIA labels on icon-only visuals, keyboard navigability from reveal.js defaults.
-- Responsive behavior — reveal.js built-in 1920×1080 canvas with auto-scaling.
-- Code quality — inline style block scoped to the single file; no external dependencies beyond the three pinned CDNs.
-
-Non-negotiable rules for the deck:
-
-- **Zero emoji.** Visual iconography uses Lucide SVG icons via `<i data-lucide="icon-name"></i>` exclusively.
-- **No fenced code blocks inside slides.** Inline Fira Code is used for short technical expressions only.
-- **Every slide carries at least one non-text visual element** — Mermaid diagram, KPI card, styled table, or Lucide SVG icon.
-- **Content slides cap at 4 bullets and 40 words of body text.**
-
-### 0.5.5 Component Mapping
-
-The following mapping resolves each slide's visual role to a specific class from the Blitzy Reveal Theme. Slides are numbered per the user rule's ordering convention.
-
-| Slide # | Slide Role | Slide Type Class | Primary Visual Element | Notes |
-|---|---|---|---|---|
-| 1 | Title — project name, scope, audience | `slide-title` | `hero-icon` Lucide icon + eyebrow | Hero gradient background |
-| 2 | Headline findings / KPI summary | (content) | `kpi-grid` of `kpi-card` | KPI values quantify scope (epics, stories) |
-| 3 | Architecture overview | (content) | Mermaid diagram (`<pre class="mermaid">`) | Depicts layer decomposition |
-| 4 | Section Divider — Scope | `slide-divider` | `hero-icon` Lucide icon | Divider gradient background |
-| 5 | Scope details | (content) | Styled table | Layer-by-layer story coverage |
-| 6 | Scope boundaries | (content) | `icon-row` Lucide icons | In-scope vs. out-of-scope |
-| 7 | Section Divider — Business Value | `slide-divider` | `hero-icon` | Divider gradient |
-| 8 | Business value narrative | (content) | `kpi-grid` | Quantified outcomes |
-| 9 | Section Divider — Risk & Mitigation | `slide-divider` | `hero-icon` | Divider gradient |
-| 10 | Risks and mitigations | (content) | Styled table | One row per risk |
-| 11 | Section Divider — Operational Readiness | `slide-divider` | `hero-icon` | Divider gradient |
-| 12 | Observability posture | (content) | Mermaid diagram | Telemetry pipeline depiction |
-| 13 | Team onboarding and continuation | (content) | `icon-row` + bullets | Path forward |
-| 14 | Section Divider — Validation | `slide-divider` | `hero-icon` | Divider gradient |
-| 15 | Gate compliance summary | (content) | Styled table | All gates pass/fail |
-| 16 | Closing — key takeaway | `slide-closing` | `accent-bar` + `brand-lockup` | Navy background, 3–6 word heading |
-
-All 16 slides carry at least one non-text visual element, satisfying the user rule.
-
-### 0.5.6 Token Mapping
-
-No Figma source file is supplied, so Figma-to-system resolution is N/A. All token usage maps directly from the user-supplied Blitzy Reveal Theme tokens.
-
-| Category | Value Used | System Token | Resolution |
-|---|---|---|---|
-| Color | `#5B39F3` | `--blitzy-primary` | Exact match |
-| Color | `#2D1C77` | `--blitzy-primary-dark` | Exact match |
-| Color | `#1A105F` | `--blitzy-primary-navy` | Exact match |
-| Color | `#94FAD5` | `--blitzy-accent-teal` | Exact match |
-| Color | `#F2F0FE` | `--blitzy-surface-2` | Exact match (Mermaid primary) |
-| Color | `#333333` | `--blitzy-text` | Exact match |
-| Gradient | `linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%)` | `--gradient-hero` | Exact match |
-| Gradient | `linear-gradient(135deg, #2D1C77 0%, #5B39F3 100%)` | `--gradient-divider` | Exact match |
-| Gradient | `linear-gradient(90deg, #5B39F3 0%, #94FAD5 100%)` | `--gradient-accent-bar` | Exact match |
-| Typography | `Inter` | `--ff-body` | Exact match |
-| Typography | `Space Grotesk` | `--ff-display` | Exact match |
-| Typography | `Fira Code` | `--ff-mono` | Exact match |
-
-### 0.5.7 Gaps Inventory
-
-No gaps exist. Every visual requirement mandated by the user's Executive Presentation rule maps to a supplied Blitzy Reveal Theme token or class. The theme is self-sufficient for the 16-slide deck scope.
-
-### 0.5.8 Compliance Summary
-
-The Blitzy Reveal Theme, as supplied inline by the user rule, covers 100% of the executive deck's visual requirements. Three CDN dependencies (reveal.js 5.1.0, Mermaid 11.4.0, Lucide 0.460.0) and three Google Fonts families (Inter, Space Grotesk, Fira Code) are added as runtime dependencies loaded by the HTML file itself; no package manifest is introduced. Zero gaps are flagged. The deck is authored as a single self-contained HTML file with inline `<style>` tag containing the complete token set.
-
-## 0.6 Technical Implementation
-
-### 0.6.1 File-by-File Execution Plan
-
-Every file listed in this sub-section MUST be created. Paths follow the exact conventions supplied by the user prompt. Counts reflect the distribution plan established in Section 0.2.2.
-
-#### 0.6.1.1 Group A — Ticket Templates (3 files)
-
-| Action | Path | Content Summary |
-|---|---|---|
-| CREATE | `/tickets/templates/epic-template.md` | YAML frontmatter skeleton matching the epic schema (`id`, `title`, `layer`, `stories`) with `<placeholder>` tokens; Markdown heading scaffold (`## Overview`, `## Goals`, `## Success Criteria`) with placeholder body lines; no pre-filled content |
-| CREATE | `/tickets/templates/story-template.md` | YAML frontmatter skeleton matching the story schema (`id`, `title`, `epic`, `layer`, `points`, `priority`, commented-out `test-type` and `depends-on`); Markdown heading scaffold (`## Narrative`, `## Acceptance Criteria`) with placeholder persona line and empty checklist; no pre-filled content |
-| CREATE | `/tickets/templates/README.md` | Brief instructions: copy a template, rename to the next sequential ID, fill placeholders, move into `/tickets/epics/` or `/tickets/stories/` |
-
-#### 0.6.1.2 Group B — Frontend Epics and Stories (22 frontend stories across EP-001 → EP-005)
-
-| Action | Path Pattern | Content Summary |
-|---|---|---|
-| CREATE | `/tickets/epics/EP-001-3d-ball-preview-interaction.md` | Epic frontmatter with `layer: frontend` and `stories: [ST-001 … ST-005]`; body describes the 3D preview capability in technology-neutral terms |
-| CREATE | `/tickets/stories/ST-001-*.md` through `/tickets/stories/ST-005-*.md` | Five frontend stories: render sphere preview, click-drag rotation, idle auto-rotate, material swatch application, performance budget; each with persona narrative and ≥3 acceptance criteria |
-| CREATE | `/tickets/epics/EP-002-panel-color-customization.md` | Epic frontmatter `layer: frontend`, `stories: [ST-006 … ST-009]` |
-| CREATE | `/tickets/stories/ST-006-*.md` through `/tickets/stories/ST-009-*.md` | Four frontend stories: primary color swatch picker, secondary color swatch picker, accent color swatch picker, real-time preview sync |
-| CREATE | `/tickets/epics/EP-003-stitching-pattern-finish-selection.md` | Epic frontmatter `layer: frontend`, `stories: [ST-010 … ST-013]` |
-| CREATE | `/tickets/stories/ST-010-*.md` through `/tickets/stories/ST-013-*.md` | Four frontend stories: stitching pattern selector (Classic, Hexagonal, Diamond, Spiral, Star, Grid), material finish selector (Matte, Glossy, Metallic), preview transition feedback, disabled-state handling |
-| CREATE | `/tickets/epics/EP-004-branding-logo-customization.md` | Epic frontmatter `layer: frontend`, `stories: [ST-014 … ST-017]` |
-| CREATE | `/tickets/stories/ST-014-*.md` through `/tickets/stories/ST-017-*.md` | Four frontend stories: logo upload UI, logo positioning on panel, logo scaling control, invalid file rejection with user feedback |
-| CREATE | `/tickets/epics/EP-005-design-management.md` | Epic frontmatter `layer: frontend`, `stories: [ST-018 … ST-022]` — contains frontend-only story files; backend peers live under EP-007 linked via `depends-on:` |
-| CREATE | `/tickets/stories/ST-018-*.md` through `/tickets/stories/ST-022-*.md` | Five frontend stories: Save Design CTA, Load Design list, New Design reset, Share action with copy-to-clipboard, Design Summary sidebar |
-
-#### 0.6.1.3 Group C — Backend Epics and Stories (10 backend stories across EP-006 → EP-008)
-
-| Action | Path | Content Summary |
-|---|---|---|
-| CREATE | `/tickets/epics/EP-006-user-authentication-sessions.md` | Epic frontmatter `layer: backend`, `stories: [ST-023 … ST-026]` |
-| CREATE | `/tickets/stories/ST-023-*.md` through `/tickets/stories/ST-026-*.md` | Four backend stories: user registration endpoint, login endpoint with session token issuance, logout endpoint with session revocation, session validation middleware contract |
-| CREATE | `/tickets/epics/EP-007-design-persistence-api-data-model.md` | Epic frontmatter `layer: backend`, `stories: [ST-027 … ST-031]` — backend stories (ST-027..ST-029) and database stories (ST-030..ST-031) are grouped under one epic but each story carries exactly one `layer:` value per Rule 4 |
-| CREATE | `/tickets/stories/ST-027-*.md` | Backend story: Create Design endpoint |
-| CREATE | `/tickets/stories/ST-028-*.md` | Backend story: Retrieve Designs by user endpoint |
-| CREATE | `/tickets/stories/ST-029-*.md` | Backend story: Share link issuance endpoint |
-| CREATE | `/tickets/epics/EP-008-cart-order-flow.md` | Epic frontmatter `layer: backend`, `stories: [ST-032 … ST-035]`; epic body includes explicit "Out of Scope: Payment processor integration" annotation per user directive |
-| CREATE | `/tickets/stories/ST-032-*.md` through `/tickets/stories/ST-034-*.md` | Three backend stories under EP-008 (Create Order, Retrieve Cart, Finalize Order with non-payment post-processing); ST-035 is a database story |
-
-#### 0.6.1.4 Group D — Database Stories (3 database stories across EP-007 and EP-008)
-
-| Action | Path | Content Summary |
-|---|---|---|
-| CREATE | `/tickets/stories/ST-030-*.md` | Database story under EP-007: Designs schema migration with indexes |
-| CREATE | `/tickets/stories/ST-031-*.md` | Database story under EP-007: Users and sessions schema migration |
-| CREATE | `/tickets/stories/ST-035-*.md` | Database story under EP-008: Orders and order-items schema migration |
-
-#### 0.6.1.5 Group E — CI/CD Epic and Stories (7 stories under EP-009)
-
-| Action | Path | Content Summary |
-|---|---|---|
-| CREATE | `/tickets/epics/EP-009-ci-cd-pipeline-environment-promotion.md` | Epic frontmatter `layer: ci-cd`, `stories: [ST-036 … ST-042]` |
-| CREATE | `/tickets/stories/ST-036-*.md` | CI/CD story — Lint Gate: triggered on PR open; emits lint report; pass required to advance |
-| CREATE | `/tickets/stories/ST-037-*.md` | CI/CD story — Type-Check Gate: consumes lint pass; emits type report |
-| CREATE | `/tickets/stories/ST-038-*.md` | CI/CD story — Unit Test Gate: consumes type-check pass; emits coverage report |
-| CREATE | `/tickets/stories/ST-039-*.md` | CI/CD story — Integration Test Gate: consumes unit test pass; emits integration report |
-| CREATE | `/tickets/stories/ST-040-*.md` | CI/CD story — Build Stage: consumes integration pass; emits container image digest and build metadata |
-| CREATE | `/tickets/stories/ST-041-*.md` | CI/CD story — Deploy Stage: consumes build digest; emits deployment URL and ID |
-| CREATE | `/tickets/stories/ST-042-*.md` | CI/CD story — Environment Promotion: consumes deploy ID and approval; advances artifact dev → staging → prod |
-
-All seven stories collectively satisfy Rule 8 (≥7 stories covering the seven named gates and stages) and Gate 12 (each names the env vars and stage outputs consumed and produced).
-
-#### 0.6.1.6 Group F — Testing Epic and Stories (4 stories under EP-010)
-
-| Action | Path | Content Summary |
-|---|---|---|
-| CREATE | `/tickets/epics/EP-010-test-coverage-quality-gates.md` | Epic frontmatter `layer: testing`, `stories: [ST-043 … ST-046]` |
-| CREATE | `/tickets/stories/ST-043-*.md` | Testing story — `test-type: unit`; triggered on PR open; acceptance criteria name the coverage threshold and report artifact |
-| CREATE | `/tickets/stories/ST-044-*.md` | Testing story — `test-type: integration`; triggered on PR open |
-| CREATE | `/tickets/stories/ST-045-*.md` | Testing story — `test-type: e2e`; triggered on merge to default branch |
-| CREATE | `/tickets/stories/ST-046-*.md` | Testing story — `test-type: visual-regression`; triggered on PR open |
-
-Four distinct `test-type` values span the required vocabulary, satisfying Rule 9.
-
-#### 0.6.1.7 Group G — Observability Epic and Stories (3 stories under EP-011)
-
-| Action | Path | Content Summary |
-|---|---|---|
-| CREATE | `/tickets/epics/EP-011-observability-error-tracking.md` | Epic frontmatter `layer: observability`, `stories: [ST-047 … ST-049]` |
-| CREATE | `/tickets/stories/ST-047-*.md` | Observability story — structured logging with correlation ID propagation across service boundaries |
-| CREATE | `/tickets/stories/ST-048-*.md` | Observability story — metrics endpoint contract plus health and readiness probe contracts |
-| CREATE | `/tickets/stories/ST-049-*.md` | Observability story — distributed tracing with span propagation and dashboard template stub |
-
-These three stories collectively satisfy the user's Observability implementation rule (structured logging with correlation IDs, distributed tracing across service boundaries, metrics endpoint, health/readiness checks, dashboard template).
-
-#### 0.6.1.8 Group H — Supporting Documentation (4 files)
-
-| Action | Path | Content Summary |
-|---|---|---|
-| CREATE | `/docs/observability/README.md` | Catalog of observability deliverables; mirrors EP-011 scope at the ops-doc level |
-| CREATE | `/docs/observability/dashboard-template.md` | Dashboard panel specification stub — panel names, query descriptions (technology-neutral), thresholds, alert policies |
-| CREATE | `/docs/decisions/README.md` | Decision log as a Markdown table (columns: Decision, Alternatives, Rationale, Risks); seeded with rows for every non-trivial scoping, splitting, and estimation choice |
-| CREATE | `/docs/executive-summary.html` | Self-contained reveal.js deck — 16 `<section>` elements — Blitzy Reveal Theme embedded inline — pinned CDN loads — Mermaid and Lucide hooks on `ready` and `slidechanged` |
-
-#### 0.6.1.9 No Files Modified
-
-| Action | Path | Rationale |
-|---|---|---|
-| PRESERVE | `README.md` (root) | Existing artifact; not mutated by this plan |
-
-### 0.6.2 Implementation Approach per File Group
-
-- **Establish the ticket scaffold first.** Create `/tickets/epics/`, `/tickets/stories/`, `/tickets/templates/` directories. Author the three template files first so the frontmatter schema is materialized as a reference artifact before any concrete ticket is written.
-- **Author epics before stories within each domain.** For each of EP-001 through EP-011, write the epic file with a placeholder `stories: []` array, then write all child story files, then backfill the epic's `stories:` array with the actual ST-IDs. This ordering prevents forward-reference errors and makes Gate 1 verification deterministic.
-- **Enforce one layer per story.** Before writing any story, identify its single `layer:` value. If the underlying work spans two layers, split into separate stories and add explicit `depends-on:` frontmatter linking them. Never author a mixed-layer story.
-- **Allocate Fibonacci story points per complexity.** Use `1` for trivial copy or config-only stories, `2` for small UI additions, `3` for standard CRUD endpoints, `5` for stories with schema migrations or multi-surface changes, `8` for stories with significant third-party surface or cross-cutting concerns, `13` only for exceptional scope that still satisfies single-layer discipline (most stories avoid 13 by splitting).
-- **Derive `depends-on:` from narrative necessity, not from convenience.** A dependency is recorded only when the consuming story cannot be verified independently of the produced artifact.
-- **Name test execution triggers concretely in EP-010.** Every acceptance criterion names at least one trigger — for example "triggered on pull request open", "triggered on merge to default branch", "triggered on nightly schedule" — so Gate 10 passes on first pass.
-- **Author the observability documentation as a bridge between EP-011 and operations.** The `/docs/observability/README.md` catalog lists what capabilities exist, how correlation IDs flow, how the metrics endpoint is accessed, and how health and readiness probes are invoked locally — satisfying the user rule "Verify all observability works in the local development environment."
-- **Maintain the decision log as the source of truth for rationale.** Every non-trivial authoring decision (e.g., choosing 49 stories vs. the 45 floor, splitting EP-005 between frontend and backend, allocating 7 stories to EP-009) receives a row with explicit rationale and risk. Per the user rule, rationale is NOT embedded in ticket bodies; the decision log is the single source.
-- **Produce the executive deck last.** The deck summarizes the completed backlog. It references ticket counts, coverage gates, and the operational-readiness narrative using only the approved Blitzy Reveal Theme tokens and components.
-- **Figma URL placement (if any).** No Figma URLs are supplied by the user. If any are added in a later revision, they will be catalogued exclusively in Section 0.9 References and, where referenced operationally, inside `/docs/executive-summary.html` architecture slides. No Figma URLs are embedded in ticket bodies.
-
-### 0.6.3 User Interface Design Implications
-
-The user prompt describes the StrikeForge UI surface at a high level — left control sidebar, center 3D preview canvas with click-drag rotation, right design summary panel with Add to Cart and Save Design CTAs, and a top navbar with New Design and Share actions. These UI descriptions belong to the backlog, not to the backlog authoring task itself. Key insights:
-
-- The layout is three-column with a top navbar. Story ST-IDs in Group B (EP-001 through EP-005) collectively describe every interactive region: the sidebar controls (color pickers, pattern selector, finish selector, logo upload), the center canvas (rotation, auto-rotate, material swatch application), the right panel (design summary, Add to Cart CTA, Save Design CTA), and the navbar (New Design, Share).
-- No Figma frames are supplied; the UI narrative is drawn entirely from the user prompt text. Story acceptance criteria describe visible, observable behavior rather than visual style, keeping bodies free of design system jargon.
-- The executive deck's architecture slides depict the three-column layout abstractly (as boxes in a Mermaid diagram) to communicate scope to non-technical leadership without exposing implementation detail.
-
-### 0.6.4 Authoring Sequence
+The composition sequence is diagrammed below.
 
 ```mermaid
 flowchart TD
-    A[Create /tickets/ directories] --> B[Author 3 templates]
-    B --> C[Author 11 epic files with empty stories arrays]
-    C --> D[Author 49 story files with frontmatter and ≥3 AC each]
-    D --> E[Backfill epic stories arrays with real ST-IDs]
-    E --> F[Add depends-on cross-layer links]
-    F --> G[Run validation gates 1,2,8,9,10,12,13]
-    G --> H[Author /docs/observability/*.md]
-    H --> I[Author /docs/decisions/README.md]
-    I --> J[Author /docs/executive-summary.html with Blitzy theme]
-    J --> K[Open deck in browser — verify Mermaid and Lucide render]
-    K --> L[Commit backlog]
+    A[backend/src/index.ts<br/>FIRST: import ./tracing] --> B[config/env.ts<br/>validates 6 env vars]
+    B --> C[db/pool.ts<br/>reads DATABASE_URL]
+    B --> D[auth/firebase-admin.ts<br/>reads FIREBASE_PROJECT_ID]
+    B --> E[gcs.service.ts<br/>reads GCS_BUCKET_NAME]
+    C --> F[repositories/*]
+    D --> G[middleware/session.ts]
+    F --> H[services/*]
+    H --> I[routes/*]
+    G --> I
+    I --> J[Express app.listen]
+    K[middleware/correlation.ts<br/>AsyncLocalStorage] -.-> I
+    L[logging/pino.ts<br/>serializer allow-list] -.-> J
 ```
+
+### 0.5.3 Database and Schema Updates
+
+Three forward-and-reverse migrations introduce the complete PostgreSQL schema. Migrations MUST be applied in the following dependency order per user prompt §4 Track 1 T1-B: ST-031 → ST-030 → ST-035. Every filename embeds its story ID per Rule R10.
+
+| Migration File | Tables Introduced | Key Columns and Constraints | Indexes | Consumed By |
+|---|---|---|---|---|
+| `backend/migrations/{ts}_ST-031_users_sessions.js` | `users`, `sessions` | `users` (id PK, login identifier UNIQUE, credential digest sized to prevent cleartext storage per ST-031-AC4, created timestamp); `sessions` (token ref, user FK, issued timestamp, expires timestamp, revocation marker) | `users` UNIQUE on login identifier; `sessions` UNIQUE on token ref; `sessions` secondary index on user FK | ST-023–ST-026 (auth endpoints), ST-027 (ownership FK) |
+| `backend/migrations/{ts}_ST-030_designs.js` | `designs` | server-assigned id PK, user FK → `users`, title, JSON payload (colors + pattern + finish + logo reference + placement), created timestamp, last-modified timestamp | Index on `(user_id, last_modified_at DESC)` for list-by-owner queries; index on `id` (PK implicit) | ST-027 (create), ST-028 (list), ST-029 (share link) |
+| `backend/migrations/{ts}_ST-035_orders_order_items.js` | `orders`, `order_items` | `orders` (id PK, user FK → `users`, state enum, subtotal, created/last-modified timestamps); `order_items` (order FK → `orders`, design FK → `designs`, quantity, per-item metadata) | `orders` index on `(user_id, state)`; `order_items` index on `order_id` | ST-032 (create order), ST-033 (retrieve cart), ST-034 (finalize) |
+
+Every reverse migration drops tables in correct foreign-key dependency order: `order_items` before `orders`; `sessions` before `users`. Both directions are idempotent against repeat application on a clean state per ST-030-AC3, ST-031-AC3, and ST-035-AC4.
+
+### 0.5.4 External Service Integrations
+
+| External Service | Local Emulation | Production Target | Integration Contract |
+|---|---|---|---|
+| Firebase Authentication | `firebase-auth-emulator` Docker service at `localhost:9099` | Firebase Auth project identified by `FIREBASE_PROJECT_ID` | Outbound: backend calls `admin.auth().verifyIdToken(rawBearerToken)` only (C2/R3); frontend calls `firebase/auth` `signInWithEmailAndPassword` and `getIdToken()` |
+| Cloud SQL for PostgreSQL 15 | `postgres:15-alpine` Docker service on `127.0.0.1:5432` | Cloud SQL instance reached via `/cloudsql/<PROJECT>:<REGION>:<INSTANCE>` Unix socket (C3) | Connection config constructed entirely from `DATABASE_URL` — no hard-coded paths |
+| Google Cloud Storage | `fsouza/fake-gcs-server` Docker service addressed by `GCS_EMULATOR_HOST` | GCS bucket identified by `GCS_BUCKET_NAME` | `bucket.file(name).getSignedUrl({ version: 'v4', action: 'read', expires: Date.now() + 15 * 60 * 1000 })` for every call (C1/R5) |
+| Cloud Build | Not emulated | Triggered by Git pull requests | Reads `cloudbuild.yaml`; executes seven steps with explicit `waitFor`; emits artifacts to `gs://$_ARTIFACTS_BUCKET/$BUILD_ID/reports/` |
+| Cloud Deploy | Not emulated | Reached via `gcloud deploy` CLI | Reads `delivery-pipeline/clouddeploy.yaml`; promotes dev → staging → production with recorded human-approval IDs |
+| Cloud Run | Not emulated | Deployed by Cloud Deploy; described via `gcloud run services describe` in Gate MG2-G | Accepts containerized `backend` image tagged `gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA` |
+
+### 0.5.5 Telemetry Propagation Points
+
+| Signal | Entry Point | Propagation Path |
+|---|---|---|
+| `x-correlation-id` | `middleware/correlation.ts` (C5) | Stored in AsyncLocalStorage → attached to every pino log record (via pino hook) → attached to every outbound HTTP header (via http interceptor) |
+| W3C `traceparent` | `src/tracing.ts` OTel auto-instrumentation | Reads inbound `traceparent`; creates span with parent-child relationship; outbound HTTP calls receive `traceparent` automatically via auto-instrumentation of `http` |
+| Authenticated `uid` | `middleware/session.ts` after `verifyIdToken` | Attached to request context; included in pino log records via request-scoped logger binding; NEVER includes credential material (R2) |
+| Prometheus metrics | `routes/metrics.ts` using `prom-client` | Scraped by Cloud Run + any connected scraper; labels `service`, `environment`, `version` baked into every metric (ST-048-AC2) |
+| Liveness `/healthz` | `routes/health.ts` | Returns 200 `{"status":"ok"}` when the process is running (ST-048-AC3) |
+| Readiness `/readyz` | `routes/health.ts` | Returns 200 `{"status":"ready"}` when DB is reachable; 503 otherwise (ST-048-AC4) |
+
+### 0.5.6 Cross-Cutting Middleware Order
+
+The Express middleware chain MUST be composed in this exact order in `backend/src/index.ts`; reordering produces defects such as unredacted log records, missing correlation IDs on errors, or duplicate OTel spans.
+
+```plaintext
+1. import './tracing'  (C4/R6 — MUST be first import)
+2. express.json()      (body parsing)
+3. correlation.ts      (C5 — sets AsyncLocalStorage before any log fires)
+4. pino-http           (attaches request-scoped logger using correlation context)
+5. metrics.middleware  (counter increment per request)
+6. session.ts          (mounted only on /api/*, excluding /api/auth/register and /api/auth/login)
+7. routes/*            (business logic)
+8. error handler       (last; logs via pino with allow-list serializer)
+```
+
+
+## 0.6 Technical Implementation
+
+This sub-section provides the file-by-file execution plan that the Blitzy platform will follow to satisfy every one of the 49 story acceptance criteria. Files are grouped by parallel delivery track per the user's prompt §4 "Parallel Delivery Structure"; within each track the order is the dependency order the user prompts explicitly ("Implement in dependency order"). Every file listed below MUST be created or modified — no optional entries.
+
+### 0.6.1 Parallel Delivery Structure
+
+```mermaid
+flowchart TD
+    PhaseA[Phase A: Scaffolding<br/>Gate A: docker compose ps = running]
+    PhaseA --> T1[Track 1: Backend<br/>T1-B -> T1-C -> T1-D -> T1-I]
+    PhaseA --> T2[Track 2: Frontend Core<br/>ST-001..017, 020, 022]
+    PhaseA --> T3[Track 3: CI/CD Configs<br/>eslintrc, tsconfig, jest configs]
+    T1 --> MG1[Merge Gate 1<br/>T1-C AND T2 pass]
+    T2 --> MG1
+    T3 --> MG1
+    MG1 --> MG1F[MG1-F: Design Mgmt Integration<br/>ST-018, 019, 021]
+    MG1 --> MG1E[MG1-E: CI Gates 1-4<br/>ST-036..039]
+    MG1F --> MG2[Merge Gate 2]
+    MG1E --> MG2
+    MG2 --> MG2G[MG2-G: Build/Deploy/Promote<br/>ST-040..042]
+    MG2 --> MG2H[MG2-H: Hardened Test Suites<br/>ST-043..046]
+```
+
+### 0.6.2 Phase A — Scaffolding
+
+Phase A is the prerequisite for every track. Gate A is `docker compose up -d` followed by `docker compose ps --format json | jq -r '.[].State' | sort | uniq` returning exactly `running`.
+
+| Action | File | Intent |
+|---|---|---|
+| CREATE | `package.json` | Monorepo root with `workspaces: ["backend", "frontend"]` |
+| CREATE | `tsconfig.json` | Root TS config with `strict: true` |
+| CREATE | `.eslintrc.json` | Shared lint config |
+| CREATE | `.prettierrc` | Formatter config |
+| CREATE | `.nvmrc` | Contents: `20` |
+| CREATE | `.gitignore` | Standard excludes |
+| CREATE | `.env.example` | All six required env vars, placeholder comments only |
+| CREATE | `docker-compose.yml` | `backend`, `postgres:15-alpine`, `firebase-auth-emulator`, `fsouza/fake-gcs-server` services |
+| CREATE | `backend/package.json` | Backend dependencies per §0.4.1 |
+| CREATE | `backend/Dockerfile` | Multi-stage builder → production on `node:20-alpine` |
+| CREATE | `backend/tsconfig.json` | Extends root; `target: ES2022`, `module: commonjs` |
+| CREATE | `frontend/package.json` | Frontend dependencies per §0.4.2 |
+| CREATE | `frontend/Dockerfile` | Multi-stage Vite build → nginx static serving |
+| CREATE | `frontend/tsconfig.json` | Extends root; `jsx: react-jsx`, `strict: true` |
+| CREATE | `frontend/vite.config.ts` | Vite dev server config |
+| CREATE | `frontend/index.html` | Vite HTML entry |
+
+### 0.6.3 Group 1 — Track 1 Backend: Database Layer (T1-B)
+
+Per user prompt §4 T1-B: implement migrations in dependency order ST-031 → ST-030 → ST-035.
+
+| Action | File | Intent |
+|---|---|---|
+| CREATE | `backend/migrations/{ts}_ST-031_users_sessions.js` | Forward + reverse introducing `users` (id PK, login identifier UNIQUE, credential-digest sized to prevent cleartext per ST-031-AC4, created timestamp) and `sessions` (token ref UNIQUE, user FK, issued timestamp, expires timestamp, revocation marker) |
+| CREATE | `backend/migrations/{ts}_ST-030_designs.js` | Forward + reverse introducing `designs` (server id PK, user FK, title, JSON payload, created + last-modified timestamps); indexes on `(user_id, last_modified_at DESC)` per ST-030-AC2 |
+| CREATE | `backend/migrations/{ts}_ST-035_orders_order_items.js` | Forward + reverse introducing `orders` (id PK, user FK, state, subtotal, timestamps) and `order_items` (order FK, design FK, quantity, metadata); indexes on `(user_id, state)` and `(order_id)` per ST-035-AC3 |
+
+**Gate T1-B verification (per user prompt):**
+
+```bash
+docker compose exec backend npx node-pg-migrate up
+docker compose exec postgres psql -U postgres -d strikeforge -c "\dt" | grep -cE "users|sessions|designs|orders|order_items"
+# expected: 5
+
+```
+
+### 0.6.4 Group 2 — Track 1 Backend: API (T1-C)
+
+Per user prompt §4 T1-C: implement in dependency order: auth middleware contract (ST-026) → registration (ST-023) → login (ST-024) → logout (ST-025) → create design (ST-027) → retrieve designs (ST-028, paginated, max 100) → share link (ST-029) → retrieve cart (ST-033) → create order (ST-032) → finalize order (ST-034).
+
+| Action | File | Intent |
+|---|---|---|
+| CREATE | `backend/src/config/env.ts` | `requireEnv()` helper throwing on absent var per Rule R4 |
+| CREATE | `backend/src/db/pool.ts` | `pg.Pool` using `DATABASE_URL` only (C3) |
+| CREATE | `backend/src/db/client.ts` | Query helpers |
+| CREATE | `backend/src/auth/firebase-admin.ts` | Firebase Admin SDK init; `verifyIdToken` wrapper (C2/R3) |
+| CREATE | `backend/src/middleware/session.ts` | ST-026 session validation contract; applies to all `/api/*` except `/api/auth/register` and `/api/auth/login` |
+| CREATE | `backend/src/repositories/user.repository.ts` | User CRUD |
+| CREATE | `backend/src/repositories/session.repository.ts` | Session row CRUD with revocation |
+| CREATE | `backend/src/repositories/design.repository.ts` | Design CRUD with pagination (max 100 per ST-028-AC5) |
+| CREATE | `backend/src/repositories/share-link.repository.ts` | Share-link token persistence |
+| CREATE | `backend/src/repositories/order.repository.ts` | Order + order items CRUD |
+| CREATE | `backend/src/services/session.service.ts` | Login creates row, logout marks revoked |
+| CREATE | `backend/src/services/design.service.ts` | Create/list/share orchestration |
+| CREATE | `backend/src/services/share-link.service.ts` | Time-limited token generation + validation per ST-029 |
+| CREATE | `backend/src/services/order.service.ts` | Cart retrieval, order creation, finalization per ST-032–ST-034 |
+| CREATE | `backend/src/services/gcs.service.ts` | `@google-cloud/storage` v7; all `getSignedUrl` calls pass `version: 'v4'` per C1/R5 |
+| CREATE | `backend/src/routes/auth.ts` | `/api/auth/register` (ST-023), `/api/auth/login` (ST-024), `/api/auth/logout` (ST-025) |
+| CREATE | `backend/src/routes/designs.ts` | POST `/api/designs` (ST-027), GET `/api/designs` (ST-028), POST `/api/designs/:id/share-link` (ST-029) |
+| CREATE | `backend/src/routes/share.ts` | GET `/api/share/:token` unauthenticated read-only design |
+| CREATE | `backend/src/routes/cart.ts` | GET `/api/cart` (ST-033) |
+| CREATE | `backend/src/routes/orders.ts` | POST `/api/orders` (ST-032), POST `/api/orders/:id/finalize` (ST-034) |
+| CREATE | `backend/src/index.ts` | Express bootstrap; FIRST line is `import './tracing'` per C4/R6 |
+
+**Gate T1-C verification (user prompt verbatim):** Create test user in Firebase Auth emulator; obtain `idToken`; POST `/api/designs` with Bearer token expects non-null UUID; GET `/api/designs` expects ≥1 result; unauthenticated GET `/api/designs` expects 401.
+
+### 0.6.5 Group 3 — Track 1 Backend: Observability Foundation (T1-D)
+
+| Action | File | Intent |
+|---|---|---|
+| CREATE | `backend/src/tracing.ts` | Register `@opentelemetry/auto-instrumentations-node` BEFORE any application import per C4/R6 |
+| CREATE | `backend/src/logging/pino.ts` | Pino logger with serializer allow-list dropping `password`, `Authorization`, `credential`, bearer-pattern fields per Rule R2 |
+| CREATE | `backend/src/middleware/correlation.ts` | Generate UUID v4 when `x-correlation-id` absent; preserve when present; AsyncLocalStorage; pino hook; outbound header propagation per C5 |
+| CREATE | `backend/src/routes/metrics.ts` | Prometheus text format `/metrics` with counters (`http_requests_total`, `http_errors_total`), histogram (`http_request_duration_seconds`), gauge (`process_up`); labels `service`, `environment`, `version` per ST-048-AC2 |
+| CREATE | `backend/src/routes/health.ts` | GET `/healthz` liveness (ST-048-AC3); GET `/readyz` readiness 200 when DB reachable, 503 otherwise (ST-048-AC4) |
+
+**Gate T1-D verification (user prompt verbatim):** `/metrics` contains `http_requests_total`; `/healthz` returns `{"status":"ok"}`; `/readyz` returns `{"status":"ready"}`; after `docker compose stop postgres` the `/readyz` endpoint returns 503.
+
+### 0.6.6 Group 4 — Track 1 Backend: Distributed Tracing + Dashboard (T1-I)
+
+| Action | File | Intent |
+|---|---|---|
+| MODIFY | `backend/src/tracing.ts` | Ensure W3C `traceparent` propagation across all service boundaries via OTel auto-instrumentation of `http` and `express` (C4 — no manual instrumentation) |
+| MODIFY | `docs/observability/dashboard-template.md` | Populate with all 8 panels (request rate, error rate, P95 latency, error breakout by service/route, correlation throughput, active sessions, order creation rate, deploy markers); each panel includes query intent, threshold, placement, alert policy; ≥5 alert policy entries per Gate T1-I; SLO tie-ins per ST-049-AC5 |
+
+**Gate T1-I verification (user prompt verbatim):** curl request with `traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01` produces ≥1 backend log entry containing the trace ID; `grep -c "alert policy" docs/observability/dashboard-template.md` returns ≥5.
+
+### 0.6.7 Track 2 — Frontend Core
+
+Concurrent with Track 1 after Gate A. Implements all frontend stories with ZERO backend dependencies per user prompt §4 T2; ST-020 (new-design reset) and ST-022 (design summary sidebar) use stub/mock API layers that are replaced at MG1-F.
+
+| Action | File | Intent |
+|---|---|---|
+| CREATE | `frontend/src/main.tsx` | React 18 `createRoot` bootstrap |
+| CREATE | `frontend/src/App.tsx` | Top-level layout assembling preview, controls, sidebar |
+| CREATE | `frontend/src/state/configuratorStore.ts` | Zustand store for design selections |
+| CREATE | `frontend/src/configurator/preview/BallCanvas.tsx` | R3F `<Canvas>` root (ST-001) |
+| CREATE | `frontend/src/configurator/preview/Sphere.tsx` | Sphere geometry + material with texture slot |
+| CREATE | `frontend/src/configurator/preview/useDragRotation.ts` | Click-and-drag rotation; no snap-back; free rotation around all axes (ST-002) |
+| CREATE | `frontend/src/configurator/preview/useIdleAutoRotate.ts` | Idle timer triggers auto-rotation (ST-003) |
+| CREATE | `frontend/src/configurator/preview/useMaterialSwatch.ts` | Apply material swatches to preview (ST-004) |
+| CREATE | `frontend/src/configurator/preview/performance.ts` | FPS meter + initial-load timer for ST-005 budgets (≥30 FPS, ≤2000 ms) |
+| CREATE | `frontend/src/configurator/texture/fabricCanvas.ts` | Fabric.js canvas singleton (offscreen) |
+| CREATE | `frontend/src/configurator/texture/threeTexture.ts` | Three.js texture wrapping the Fabric canvas |
+| CREATE | `frontend/src/configurator/texture/texturePipeline.ts` | C6/R7 coordinator: `fabricCanvas.renderAll()` → awaited — THEN `threeTexture.needsUpdate = true` |
+| CREATE | `frontend/src/configurator/controls/colors/PrimaryColorPicker.tsx` | ST-006 swatches with keyboard/assistive-tech support |
+| CREATE | `frontend/src/configurator/controls/colors/SecondaryColorPicker.tsx` | ST-007 |
+| CREATE | `frontend/src/configurator/controls/colors/AccentColorPicker.tsx` | ST-008 |
+| CREATE | `frontend/src/configurator/controls/colors/useColorSync.ts` | ST-009 real-time sync calls texture pipeline |
+| CREATE | `frontend/src/configurator/controls/pattern/StitchingPatternSelector.tsx` | ST-010 six patterns |
+| CREATE | `frontend/src/configurator/controls/pattern/FinishSelector.tsx` | ST-011 three finishes (matte, glossy, metallic) |
+| CREATE | `frontend/src/configurator/controls/pattern/TransitionFeedback.tsx` | ST-012 transition indicator |
+| CREATE | `frontend/src/configurator/controls/pattern/DisabledCombinationTooltip.tsx` | ST-013 tooltip for unsupported combinations |
+| CREATE | `frontend/src/configurator/controls/logo/LogoUploader.tsx` | ST-014 file-picker with MIME allow-list |
+| CREATE | `frontend/src/configurator/controls/logo/LogoPositioner.tsx` | ST-015 + ST-016 Fabric.js drag + scale handles |
+| CREATE | `frontend/src/configurator/controls/logo/InvalidFileFeedback.tsx` | ST-017 rejection messaging |
+| CREATE | `frontend/src/features/design-management/NewDesignDialog.tsx` | ST-020 new-design reset with confirmation |
+| CREATE | `frontend/src/features/design-management/DesignSummarySidebar.tsx` | ST-022 live summary with CTA anchors |
+| CREATE | `frontend/src/api/stub.ts` | Stub/mock API layer used by ST-020 and ST-022 until MG1-F |
+| CREATE | `frontend/playwright.config.ts` | Playwright `chromium` project config |
+| CREATE | `frontend/tests/configurator/*.spec.ts` | Configurator smoke + color-swatch + pattern + logo tests (Gate T2) |
+| CREATE | `frontend/tests/performance/*.spec.ts` | FPS ≥30 and initial-load ≤2000 ms assertions (Gate T2) |
+
+**Gate T2 verification (user prompt verbatim):** `cd frontend && npx playwright test --project=chromium tests/configurator/` — all pass; `cd frontend && npx playwright test --project=chromium tests/performance/` — FPS ≥30 and initial-load ≤2000 ms asserted.
+
+### 0.6.8 Track 3 — CI/CD Configuration Authoring
+
+Concurrent with Tracks 1 and 2 after Gate A. Authored immediately; no gate (delivery verified when MG1-E passes).
+
+| Action | File | Intent |
+|---|---|---|
+| CREATE | `.eslintrc.json` | Shared ESLint config consumed by MG1-E lint step (ST-036) |
+| CREATE | `tsconfig.json` | Root TypeScript config consumed by MG1-E type-check step (ST-037) |
+| CREATE | `backend/jest.config.unit.ts` | Unit test config; coverage threshold from `$COVERAGE_THRESHOLD` (ST-038, ST-043) |
+| CREATE | `backend/jest.config.integration.ts` | Integration config; fails closed (ST-039, ST-044) |
+
+### 0.6.9 Merge Gate 1 — MG1-F: Design Management Integration
+
+Replaces the stub API from Track 2 with real backend calls. Depends on T1-C (backend live) and T2 (frontend core passing).
+
+| Action | File | Intent |
+|---|---|---|
+| CREATE | `frontend/src/auth/firebase-client.ts` | Firebase JS SDK; `signInWithEmailAndPassword`, `getIdToken()` |
+| CREATE | `frontend/src/api/client.ts` | Fetch wrapper attaching `Authorization: Bearer ${idToken}` + `x-correlation-id: ${uuid()}` |
+| CREATE | `frontend/src/api/designs.ts` | Real calls to `POST /api/designs`, `GET /api/designs`, `POST /api/designs/:id/share-link` |
+| CREATE | `frontend/src/api/orders.ts` | Real calls to `GET /api/cart`, `POST /api/orders`, `POST /api/orders/:id/finalize` |
+| CREATE | `frontend/src/features/design-management/SaveDesignCta.tsx` | ST-018 calls live `POST /api/designs`; success/failure states |
+| CREATE | `frontend/src/features/design-management/LoadDesignList.tsx` | ST-019 calls live `GET /api/designs`; paginated |
+| CREATE | `frontend/src/features/design-management/ShareDesignAction.tsx` | ST-021 copies share link to clipboard |
+| MODIFY | `frontend/src/api/stub.ts` | Remove ST-018/ST-019/ST-021 stubs; retain ST-020/ST-022 deliverables if any remain |
+| MODIFY | `frontend/src/features/design-management/NewDesignDialog.tsx` | Wire to live endpoints where applicable |
+| MODIFY | `frontend/src/features/design-management/DesignSummarySidebar.tsx` | Host Save/Add-to-Cart CTA anchors (ST-022-AC5) |
+
+### 0.6.10 Merge Gate 1 — MG1-E: CI Gates 1–4
+
+Per user prompt §4 MG1-E: four `cloudbuild.yaml` steps with explicit `waitFor` enforcing lint → type-check → unit → integration; each step emits a named report artifact to `gs://$_ARTIFACTS_BUCKET/$BUILD_ID/reports/`.
+
+| Action | File | Intent |
+|---|---|---|
+| MODIFY | `cloudbuild.yaml` | Add 4 steps with `waitFor`: `lint` (ST-036), `typecheck` (ST-037), `test:unit` (ST-038 consumes `$_COVERAGE_THRESHOLD`), `test:integration` (ST-039 fails closed per Rule R8) |
+| MODIFY | `.eslintrc.json` | Finalize rules; `--max-warnings 0` enforced in step |
+
+**Gate MG1-E verification (user prompt verbatim):**
+
+```bash
+cd backend && npx eslint src/ --max-warnings 0; echo "lint: $?"
+cd backend && npx tsc --noEmit; echo "typecheck: $?"
+cd backend && npx jest --config jest.config.unit.ts --coverage --coverageThreshold "{\"global\":{\"lines\":$COVERAGE_THRESHOLD}}"; echo "unit: $?"
+cd backend && npx jest --config jest.config.integration.ts --forceExit; echo "integration: $?"
+# all expected: 0
+
+```
+
+### 0.6.11 Merge Gate 2 — MG2-G: Build, Deploy, Promotion
+
+Per user prompt §4 MG2-G: three additional `cloudbuild.yaml` steps — build (ST-040), deploy (ST-041), promotion (ST-042).
+
+| Action | File | Intent |
+|---|---|---|
+| MODIFY | `cloudbuild.yaml` | Add `build` step (`waitFor: ['test:integration']`, image `gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA`, emits `build-metadata.json` with `commitSha` + `imageDigest`); add `deploy` step (Cloud Deploy release to `development` target, emits `deploy-metadata.json` with `deploymentId` + `serviceUrl`); add `promotion` step (dev → staging → production with recorded human-approval in `promotion-log.json`). Artifacts block captures `reports/**` and `deployments/**` to `gs://$_ARTIFACTS_BUCKET/$BUILD_ID/` |
+| CREATE | `delivery-pipeline/clouddeploy.yaml` | Cloud Deploy pipeline: targets `development`, `staging`, `production`; approval gates; per Rule R10 uses same artifact digest across all environments |
+| CREATE | `skaffold.yaml` | Skaffold reference for Cloud Deploy |
+
+### 0.6.12 Merge Gate 2 — MG2-H: Hardened Test Suites
+
+Per user prompt §4 MG2-H: hardened suites with report artifacts — unit (ST-043), integration (ST-044), e2e (ST-045 Chromium + WebKit), visual regression (ST-046 baselines committed).
+
+| Action | File | Intent |
+|---|---|---|
+| MODIFY | `backend/jest.config.unit.ts` | Coverage threshold ≥ `COVERAGE_THRESHOLD`; emit coverage report artifact |
+| MODIFY | `backend/jest.config.integration.ts` | Emit integration report artifact; distinguish assertion vs. environment failures per ST-044-AC3 |
+| CREATE | `backend/src/**/*.test.ts` | Full unit coverage above threshold (ST-043) |
+| CREATE | `backend/tests/integration/**/*.test.ts` | Service-boundary integration tests using deterministic fixtures (ST-044) |
+| CREATE | `frontend/tests/e2e/*.spec.ts` | Critical flow: register → login → create design → save → share → add to cart → create order (ST-045); Chromium + WebKit projects |
+| CREATE | `frontend/tests/visual/*.spec.ts` | `toHaveScreenshot()` baselines for configurator, design list, cart, order confirmation at fixed viewport (ST-046); ≥4 surfaces |
+| CREATE | `frontend/visual-baselines/**/*.png` | Versioned baseline PNGs committed to repo per ST-046-AC4 |
+| MODIFY | `frontend/playwright.config.ts` | Add `webkit` project and `tests/e2e/`, `tests/visual/` test directories |
+
+### 0.6.13 Implementation Approach per File
+
+- **Establish the backend foundation first.** `src/config/env.ts`, `src/tracing.ts`, `src/db/pool.ts`, `src/auth/firebase-admin.ts`, `src/logging/pino.ts` — these five files together constitute the composition root. They are authored before any route handler so that every route receives its dependencies already fully initialized.
+- **Implement the middleware chain in composition order.** `src/index.ts` wires middleware in the exact order: `express.json()` → `correlation.ts` (C5) → `pino-http` → `metrics.middleware` → `session.ts` (mounted only on `/api/*` with auth exclusions) → routes → error handler. Reordering produces silent defects.
+- **Implement migrations in dependency order and verify both directions.** For each migration: write forward, write reverse, exercise `npx node-pg-migrate up`, then `npx node-pg-migrate down`, then `up` again to confirm idempotency.
+- **Implement routes in dependency order.** auth middleware contract (ST-026) → auth endpoints → design endpoints → share endpoint → cart → order endpoints. Each endpoint passes its own unit tests before the next endpoint is implemented.
+- **Integrate with existing documentation by updating** `docs/observability/dashboard-template.md`, `docs/observability/README.md`, `docs/decisions/README.md`, and `docs/executive-summary.html` only after the shipped implementation is stable — these documents describe reality, not plans.
+- **Ensure quality through explicit tests.** Every backend service has a co-located `*.test.ts`; every route has an integration test in `backend/tests/integration/`; every critical UI flow has a Playwright E2E test; every key viewport has a visual baseline PNG.
+- **Document usage and configuration.** `README.md` adds a local-dev quick-start; `.env.example` enumerates all six env vars with documentation-only comments; `docs/decisions/README.md` adds a row for every non-trivial implementation choice per the user-provided Explainability Rule.
+- **No Figma URLs were provided by the user.** Therefore no file in this plan references Figma assets, and no Figma frame names are embedded in any source or documentation file.
+
+### 0.6.14 User Interface Design
+
+The user interface implements a three-region layout centered on the live 3D preview:
+
+- **Left region** — control sidebar grouping color pickers (primary, secondary, accent), stitching pattern selector (six patterns), material finish selector (three finishes), and logo upload/position/scale controls.
+- **Center region** — interactive 3D ball preview rendered via R3F `<Canvas>`; supports click-and-drag rotation, idle auto-rotation after documented idle interval, and real-time updates reflecting control-sidebar selections within the ST-005/ST-009 latency budgets.
+- **Right region** — live Design Summary Sidebar displaying current primary/secondary/accent colors (with color-swatch previews), stitching pattern, material finish, and logo state; hosts the Save Design and Add to Cart CTA anchors per ST-022-AC5.
+
+Top-navigation area hosts the New Design action (ST-020). Every control is reachable by keyboard and labeled for assistive technology; the preview auto-centers and re-fits on viewport resize (ST-001-AC3). Performance budgets (ST-005): ≥30 FPS sustained during drag rotation, ≤2000 ms initial sphere render. No visual design system library (e.g., Ant Design, MUI, Shadcn) was specified by the user — styling is implemented directly via CSS modules or a lightweight utility layer colocated with each component.
+
 
 ## 0.7 Scope Boundaries
 
+This sub-section declares every path that is in scope for this feature addition as well as every area that is explicitly out of scope. Paths use trailing wildcards where a pattern applies to an entire subtree; specific files are named where their individual presence is required.
+
 ### 0.7.1 Exhaustively In Scope
 
-The following paths and patterns are in scope for this plan. Wildcards denote pattern-matched sets.
+**Repository root (scaffolding and monorepo wiring):**
 
-#### 0.7.1.1 Ticket Artifacts
+- `package.json`, `tsconfig.json` (root), `.eslintrc.json`, `.prettierrc`, `.nvmrc`, `.gitignore`, `.env.example`
+- `docker-compose.yml`, `cloudbuild.yaml`, `skaffold.yaml`
+- `delivery-pipeline/**/*.yaml` (Cloud Deploy pipeline and targets)
+- `README.md` (modification only — adds local-dev quick-start)
+- `CODE_REVIEW.md` (generated per the user-provided Segmented PR Review Rule when triggered)
 
-- `/tickets/` — new directory
-- `/tickets/epics/` — new directory
-- `/tickets/stories/` — new directory
-- `/tickets/templates/` — new directory
-- `/tickets/epics/EP-001-*.md` through `/tickets/epics/EP-011-*.md` — 11 epic Markdown files, one per epic domain
-- `/tickets/stories/ST-001-*.md` through `/tickets/stories/ST-049-*.md` — 49 story Markdown files, globally unique sequential IDs
-- `/tickets/templates/epic-template.md` — empty epic scaffold
-- `/tickets/templates/story-template.md` — empty story scaffold
-- `/tickets/templates/README.md` — template usage instructions
+**Backend package (`backend/`):**
 
-#### 0.7.1.2 Supporting Documentation
+- `backend/package.json`, `backend/tsconfig.json`, `backend/Dockerfile`, `backend/jest.config.unit.ts`, `backend/jest.config.integration.ts`
+- `backend/src/index.ts`
+- `backend/src/tracing.ts` (MUST be imported before any application module per C4/R6)
+- `backend/src/config/env.ts`
+- `backend/src/db/pool.ts`, `backend/src/db/client.ts`
+- `backend/src/auth/firebase-admin.ts`
+- `backend/src/middleware/correlation.ts`, `backend/src/middleware/session.ts`
+- `backend/src/logging/pino.ts`
+- `backend/src/routes/auth.ts`, `backend/src/routes/designs.ts`, `backend/src/routes/share.ts`, `backend/src/routes/cart.ts`, `backend/src/routes/orders.ts`, `backend/src/routes/metrics.ts`, `backend/src/routes/health.ts`
+- `backend/src/services/session.service.ts`, `backend/src/services/design.service.ts`, `backend/src/services/share-link.service.ts`, `backend/src/services/order.service.ts`, `backend/src/services/gcs.service.ts`
+- `backend/src/repositories/user.repository.ts`, `backend/src/repositories/session.repository.ts`, `backend/src/repositories/design.repository.ts`, `backend/src/repositories/share-link.repository.ts`, `backend/src/repositories/order.repository.ts`
+- `backend/src/**/*.ts` (any additional backend sources authored during implementation are in scope)
+- `backend/src/**/*.test.ts` (co-located unit tests per ST-043)
+- `backend/tests/integration/**/*.test.ts` (integration tests per ST-044)
+- `backend/migrations/{timestamp}_ST-0NN_*.js` (three migration files — every filename MUST embed its story ID per Rule R10)
 
-- `/docs/` — new directory
-- `/docs/observability/` — new directory
-- `/docs/observability/README.md` — observability catalog
-- `/docs/observability/dashboard-template.md` — dashboard panel specification
-- `/docs/decisions/` — new directory
-- `/docs/decisions/README.md` — decision log as Markdown table
-- `/docs/executive-summary.html` — single self-contained reveal.js presentation
+**Frontend package (`frontend/`):**
 
-#### 0.7.1.3 Frontmatter Content Scope
+- `frontend/package.json`, `frontend/tsconfig.json`, `frontend/vite.config.ts`, `frontend/index.html`, `frontend/Dockerfile`, `frontend/playwright.config.ts`
+- `frontend/src/main.tsx`, `frontend/src/App.tsx`
+- `frontend/src/state/**/*.ts`
+- `frontend/src/auth/**/*.ts` (Firebase client SDK wiring, introduced at MG1-F)
+- `frontend/src/api/**/*.ts` (stub client during Track 2; real client during MG1-F)
+- `frontend/src/configurator/preview/**/*.ts` and `**/*.tsx` (ST-001 through ST-005)
+- `frontend/src/configurator/controls/**/*.ts` and `**/*.tsx` (ST-006 through ST-017)
+- `frontend/src/configurator/texture/**/*.ts` (C6/R7 texture pipeline)
+- `frontend/src/features/design-management/**/*.ts` and `**/*.tsx` (ST-018 through ST-022)
+- `frontend/tests/configurator/*.spec.ts` (Gate T2)
+- `frontend/tests/performance/*.spec.ts` (Gate T2)
+- `frontend/tests/e2e/*.spec.ts` (ST-045)
+- `frontend/tests/visual/*.spec.ts` (ST-046)
+- `frontend/visual-baselines/**/*.png` (versioned baselines committed to repo per ST-046-AC4)
 
-The following fields are authoritatively scoped to each file type:
+**Configuration and environment:**
 
-| File Pattern | Required Frontmatter Fields | Optional Fields |
-|---|---|---|
-| `/tickets/epics/EP-*.md` | `id`, `title`, `layer`, `stories` | — |
-| `/tickets/stories/ST-*.md` | `id`, `title`, `epic`, `layer`, `points`, `priority` | `test-type` (EP-010 children only), `depends-on` (omit when empty) |
-| `/tickets/templates/*.md` | Frontmatter skeleton with `<placeholder>` tokens | — |
+- `.env.example` (new environment variables — all six per Rule R4)
+- `cloudbuild.yaml` (seven steps with `waitFor` per ST-036–ST-042)
+- `delivery-pipeline/clouddeploy.yaml` (environment targets and promotion per ST-042)
+- `skaffold.yaml` (Cloud Deploy reference)
+- `docker-compose.yml` (`backend`, `postgres`, `firebase-auth-emulator`, `gcs-emulator` services)
 
-#### 0.7.1.4 Body Content Scope
+**Documentation (existing — modified in-place):**
 
-- Every story body contains a single-line persona narrative in the exact user format: "As a [persona], I want [capability], so that [value]."
-- Every story body contains ≥3 observable acceptance criteria rendered as Markdown checklist items.
-- Every epic body contains an overview paragraph, goals list, and success criteria section in technology-neutral language.
-- `/tickets/templates/epic-template.md` and `/tickets/templates/story-template.md` contain placeholder tokens only — no pre-filled narrative.
-- `/tickets/templates/README.md` contains template usage instructions only.
+- `README.md`
+- `docs/observability/README.md`
+- `docs/observability/dashboard-template.md` (populated with all 8 panels per ST-049-AC5)
+- `docs/decisions/README.md` (appended with implementation decisions per the user-provided Explainability Rule)
+- `docs/executive-summary.html` (replaced with 16-slide implementation-summary deck per the user-provided Executive Presentation Rule)
+
+**Documentation (existing — checkbox updates only):**
+
+- `tickets/stories/ST-0NN-*.md` — acceptance-criteria checkboxes marked complete as their gates pass per Rule R1; narrative and acceptance-criteria wording MUST NOT be rewritten.
 
 ### 0.7.2 Explicitly Out of Scope
 
-The following items are explicitly out of scope and are NOT authored, created, or modified by this plan.
+- **Payment processing, charge authorization, tokenization, or refund logic of any kind.** Rule R9 forbids payment processor integration in `backend/src`. Verification: `grep -ri "stripe\|braintree\|paypal\|payment_intent\|charge" backend/src` returns zero matches. Order finalization (ST-034) transitions state only; no financial settlement.
+- **Custom JWT parsing, signature verification, or expiry logic.** Rule R3 limits token validation to `admin.auth().verifyIdToken()` only. Libraries `jsonwebtoken`, `jose`, `jwt-decode` must NOT appear in `backend/package.json`.
+- **Manual OTel instrumentation of `pg`, `http`, or `express`.** C4 forbids it — auto-instrumentation covers these transports; manual instrumentation produces duplicate spans.
+- **Environment defaults in source code.** Rule R4 forbids any fallback or default value for the six required env vars in source files.
+- **Environment-specific secrets or real GCP credentials anywhere in the repository.** The LocalGCP Rule mandates emulator-first testing; no real credentials may appear in dev workflows or CI.
+- **Rewriting epic or story Markdown narrative and acceptance-criteria text.** Story files are the source of truth per Rule R1 — only checkboxes are marked complete, never the requirement wording.
+- **Modification of `blitzy/documentation/Project Guide.md` or `blitzy/documentation/Technical Specifications.md`.** These are the backlog-package authoritative narrative and governance documents; they remain read-only context for implementation.
+- **Addition of unrelated features, products, or integrations** beyond the 49 stories listed in `tickets/stories/`.
+- **Performance optimization beyond the documented budgets.** ST-005 specifies ≥30 FPS during drag and ≤2000 ms initial load — optimizations beyond these targets are deferred.
+- **Refactoring of existing code unrelated to the integration.** Since this is greenfield, the constraint chiefly applies to existing documentation files: any edits to `docs/**` and `tickets/**` are limited to what this Agent Action Plan authorizes.
+- **Additional design system components or a third-party UI library** (Ant Design, MUI, Shadcn/ui, etc.) — the user's prompt specifies React 18 + Vite + R3F + Fabric.js only; no design-system dependency is introduced.
+- **`/app/**` and any Blitzy platform internals.** The `/app/` directory is the Blitzy platform's own source and is NEVER viewed, edited, or referenced in any source or documentation file produced by this feature addition.
 
-#### 0.7.2.1 Implementation Code (All Layers)
-
-- StrikeForge runtime source code for frontend, backend, database, or infrastructure.
-- No `src/`, `app/`, `lib/`, `server/`, `api/`, `components/`, `pages/`, or equivalent source tree.
-- No test harness source code under `test/`, `tests/`, `spec/`, `e2e/`, or equivalent.
-- No configuration files (`vite.config.*`, `tsconfig.json`, `jest.config.*`, `.eslintrc`, `.prettierrc`, `next.config.*`, `webpack.config.*`, `rollup.config.*`, etc.).
-- No database migration SQL files or ORM migration scripts.
-- No CI/CD pipeline definition files (`.github/workflows/*.yml`, `cloudbuild.yaml`, `azure-pipelines.yml`, `.gitlab-ci.yml`, `Jenkinsfile`, etc.).
-- No container definitions (`Dockerfile`, `docker-compose*.yml`, Helm charts, Kustomize manifests).
-- No infrastructure-as-code (Terraform, Pulumi, CloudFormation, etc.).
-- No observability configuration files (dashboard JSON, alert rules, log pipeline configs).
-
-#### 0.7.2.2 Technology-Specific References in Ticket Bodies
-
-- Proper nouns identifying cloud providers, programming languages, frameworks, libraries, database engines, identity providers, or container platforms MUST NOT appear anywhere inside `/tickets/**/*.md` file bodies or acceptance criteria. The tech stack table in the user prompt is reference only.
-
-#### 0.7.2.3 Payment Integration
-
-- Payment processor integration, tokenization, charge authorization, refund flow, and payment method capture are explicitly out of scope for EP-008. EP-008's epic file carries an explicit "Out of Scope" annotation referencing payment processor integration.
-
-#### 0.7.2.4 Existing File Mutation
-
-- `README.md` at the repository root is preserved verbatim. This plan does NOT edit, append to, rewrite, or delete it.
-- No changes to `.git/`, `.github/`, or any other pre-existing infrastructure files (there are none in this repository).
-
-#### 0.7.2.5 Package and Dependency Manifests
-
-- No `package.json`, `requirements.txt`, `pyproject.toml`, `go.mod`, `Gemfile`, `Cargo.toml`, `pom.xml`, `composer.json`, or equivalent is created.
-- No lockfiles are created.
-- No private or public package is registered or published.
-
-#### 0.7.2.6 Build and Test Execution
-
-- No build step is executed (the executive deck is a zero-build single HTML file).
-- No test runner is invoked on the backlog (verification uses grep, directory listing, and frontmatter parsing only).
-- The executive deck is verified by opening in a browser and confirming Mermaid diagrams and Lucide icons render — no headless browser harness.
-
-#### 0.7.2.7 Figma or Design Asset Import
-
-- No Figma URLs were supplied; no Figma frames are inspected or imported.
-- No design tokens are read from external Figma files. The Blitzy Reveal Theme tokens are taken verbatim from the user's Executive Presentation rule.
-- No image assets are added to the repository.
-
-#### 0.7.2.8 Backlog Scope Expansions
-
-- No additional epics beyond EP-001 through EP-011 are introduced, even if adjacent domains (e.g., SEO, analytics, marketing telemetry) could plausibly be authored.
-- No stories outside the 49-story plan distribution are added.
-- No refactoring of other specification sections (1.x, 2.x, 3.x, etc.) is performed.
-
-### 0.7.3 Scope Boundary Summary
-
-| Boundary | In Scope | Out of Scope |
-|---|---|---|
-| Content type | Markdown tickets, Markdown docs, single HTML deck | Source code, config, IaC, lockfiles |
-| Tickets covered | EP-001 through EP-011 (11 epics), ST-001 through ST-049 (49 stories) | Any additional epic or story |
-| Layer coverage | frontend, backend, database, ci-cd, testing, observability | None (all six in scope) |
-| Payment | Cart creation, order creation, non-payment finalization | Payment processor integration |
-| File mutations | None | `README.md` (preserved) and any existing file |
-| External dependencies added | CDN-loaded libraries in the deck HTML only | Package manifests, lockfiles, vendored libs |
-| Technology names in ticket bodies | Not present (technology-neutral vocabulary) | All tech stack proper nouns |
 
 ## 0.8 Rules for Feature Addition
 
-### 0.8.1 User-Provided Authoring Rules (Verbatim)
+This sub-section captures every rule the user explicitly emphasized. Each rule is numbered exactly as in the user's prompt (R1–R10) followed by the five user-provided implementation rules (Observability, Explainability, Executive Presentation, LocalGCP Verification, Segmented PR Review). A rule's statement is authoritative as written; the verification notes below each rule show how a downstream agent confirms compliance.
 
-The following rules are captured exactly as stated by the user. Each is enforced during authoring and verified by the named command or gate.
+### 0.8.1 User-Prompt Rules R1 Through R10
 
-- **Rule 1 — Story bodies MUST NOT contain library names, framework names, or code patterns.** Scope: all `/tickets/stories/` files. Verification: search story files for library/framework names — zero matches required.
-- **Rule 2 — Each story MUST have ≥3 acceptance criteria as observable, verifiable behaviors.** Scope: all story files. Verification: count checklist items per file — minimum 3 per story.
-- **Rule 3 — Every layer MUST have ≥1 epic and ≥3 stories.** Layers: frontend, backend, database, CI/CD, testing, observability. Verification: conform to frontmatter schemas; tally stories by `layer:` field — no layer below 3 stories.
-- **Rule 4 — Each story MUST be scoped to exactly one layer.** Cross-layer dependencies MUST use `depends-on:` frontmatter. Verification: `layer:` field contains exactly one value per story.
-- **Rule 5 — Story IDs MUST be globally unique and sequentially numbered (ST-001, ST-002, …).** Verification: no duplicate `id:` values, no sequence gaps across all story files.
-- **Rule 6 — Every story MUST include `epic:` in frontmatter.** Verification: grep `epic: EP-` across all story files — 100% match rate required.
-- **Rule 7 — Story point estimates MUST use Fibonacci values only (1, 2, 3, 5, 8, 13).** Verification: grep `points:` field values — non-Fibonacci values return zero matches.
-- **Rule 8 — EP-009 MUST contain ≥7 stories covering: lint gate, type-check gate, unit test gate, integration test gate, build stage, deploy stage, environment promotion.** Verification: count child story IDs in EP-009 frontmatter — minimum 7.
-- **Rule 9 — EP-010 MUST contain stories for unit, integration, E2E, and visual regression test layers.** Verification: count distinct `test-type:` values across EP-010 child stories — minimum 4.
-- **Rule 10 — `/tickets/templates/` MUST contain exactly `epic-template.md`, `story-template.md`, `README.md`.** Verification: file count in templates directory equals 3.
+- **R1 — Story files are the AC source of truth.** The Blitzy platform MUST NOT implement a story based solely on epic overviews or this prompt's phase descriptions. Every checkbox in `tickets/stories/ST-NNN-*.md` MUST be satisfied. Verification: all AC checkboxes checked before the gate for that story's track position is declared passing.
 
-### 0.8.2 User-Provided Boundaries and Preservation (Verbatim)
+- **R2 — No credential material in logs.** Log records MUST NOT contain passwords, bearer tokens, session tokens, or API keys. MUST enforce via pino serializer allow-list, not per-call discipline. Verification (user-supplied): (1) after Gate T1-C, `docker compose logs backend | jq -c 'select((.password != null) or (.Authorization != null) or (.credential != null) or ((.message // "") | test("Bearer [A-Za-z0-9._-]{20,}")))' | wc -l` expected 0; (2) send a login request with `"password":"SENTINEL_CRED_99"` and verify `grep "SENTINEL_CRED_99" <(docker compose logs backend)` returns 0 lines.
 
-- MUST NOT write implementation code, library API calls, or code snippets in any file.
-- MUST NOT reference library or framework names inside story bodies or acceptance criteria.
-- MUST NOT include payment processor integration (annotate as out of scope in EP-008).
-- Each story MUST be scoped to exactly one layer — cross-layer work MUST be split into separate stories with explicit `depends-on:` links.
-- Templates MUST be empty scaffolds with placeholder syntax only — no pre-filled content.
-- Tech stack context is agent reference only — MUST NOT appear in any output file, including story bodies, acceptance criteria, epic descriptions, or templates.
+- **R3 — Firebase Admin SDK only.** The Blitzy platform MUST NOT implement custom JWT parsing, signature verification, or expiry logic. Token validation MUST call `admin.auth().verifyIdToken()` exclusively. Verification: no `jsonwebtoken`, `jose`, or `jwt-decode` packages in `backend/package.json`.
 
-### 0.8.3 User-Provided Validation Gates (Verbatim)
+- **R4 — No environment defaults in source.** All six required environment variables MUST throw at startup when unset — no fallback values in source code. Verification: starting the backend without `DATABASE_URL` set exits non-zero with a descriptive error within 2 seconds.
 
-These gates MUST be executed as self-verification steps before the deliverable is declared complete. Each gate is reported as pass/fail; no failing gate may be released.
+- **R5 — GCS v7 signed URL syntax.** Every call MUST use `bucket.file(name).getSignedUrl({ version: 'v4', ... })`. MUST NOT call `.getSignedUrl()` without explicit `version`. Verification: `grep "getSignedUrl" backend/src` shows every call site includes `version: 'v4'`.
 
-- **Gate 1 — End-to-End Boundary:** Every epic must list ≥1 child story ID in its frontmatter. Orphaned stories (no parent epic reference) fail this gate.
-- **Gate 2 — Zero-Warning Build:** All Markdown files must be valid CommonMark with well-formed YAML frontmatter. No broken fences, no malformed frontmatter keys.
-- **Gate 8 — Integration Sign-Off Checklist:** Confirm layer coverage: frontend, backend, database, CI/CD, testing, observability. All six must be checked independently of story count. Execute this checklist explicitly. List each layer with PASS or FAIL before proceeding.
-- **Gate 9 — Integration Wiring:** Every cross-layer story dependency MUST be explicitly linked via `depends-on:` — no implicit ordering assumptions permitted.
-- **Gate 10 — Test Execution Binding:** Every story in EP-010 MUST name a concrete test execution trigger in its acceptance criteria (e.g., "triggered on PR open", "triggered on merge to main"). Stories without an execution trigger fail this gate.
-- **Gate 12 — Config Propagation:** CI/CD stories (EP-009) MUST specify which environment variables and stage outputs are consumed by downstream pipeline stages in their acceptance criteria.
-- **Gate 13 — Registration-Invocation Pairing:** Every story introducing a new service, API endpoint, or pipeline stage MUST have a corresponding story that invokes or consumes it, traceable via `depends-on:` linking.
+- **R6 — OTel registration order.** `@opentelemetry/auto-instrumentations-node` MUST be registered before any application imports. Verification: the OTel SDK initialization file is the first `import` in the backend entry point.
 
-### 0.8.4 User-Provided Implementation Rules (Verbatim)
+- **R7 — Fabric.js render before texture update.** `fabricCanvas.renderAll()` MUST resolve before `threeTexture.needsUpdate = true` is set. Verification: visual-regression Playwright test passes with zero flicker snapshots.
 
-The user has also provided three project-wide implementation rules that shape deliverables beyond the ticket scaffold. These apply to this backlog authoring task as follows.
+- **R8 — Gates fail closed.** Any infrastructure or tooling error in a CI gate (lint, type-check, unit, integration, build, deploy) MUST produce a failed verdict — never a silent pass. Verification: kill the database mid-integration-test-run and confirm the gate exits non-zero.
 
-#### 0.8.4.1 Observability Rule
+- **R9 — Payment processing excluded.** No payment processor integration, charge authorization, tokenization, or refund logic of any kind. Verification: `grep -ri "stripe\|braintree\|paypal\|payment_intent\|charge" backend/src` returns zero matches.
 
-- The application is not complete until it is observable. Ship observability with the initial implementation, not as a follow-up.
-- Check if the project already has logging, tracing, metrics, or health checks. Use what exists. Fill gaps with tooling appropriate to the language and framework. Document what was reused and what was added.
-- Every deliverable MUST include: structured logging with correlation IDs, distributed tracing across service boundaries, a metrics endpoint, health/readiness checks, and a dashboard template.
-- Verify all observability works in the local development environment. If it cannot be exercised locally, it is not delivered.
+- **R10 — Migrations embed story ID.** Every migration filename MUST include its story ID (e.g., `{timestamp}_ST-031_users_sessions.js`). Verification: `ls backend/migrations/` — every file matches pattern `*_ST-0*.js`.
 
-**Application to this plan:** Because the repository has no existing observability posture to reuse, the observability deliverable is represented in this backlog by EP-011 (three observability stories covering logging, tracing, metrics, and health checks) and by the supporting documentation at `/docs/observability/README.md` and `/docs/observability/dashboard-template.md`. These artifacts describe intent and contract in technology-neutral language.
+### 0.8.2 User-Specified Implementation Rules
 
-#### 0.8.4.2 Explainability Rule
+The following five rules were supplied in the "User specified implementation rules for this project" input. Every implementation artifact MUST comply.
 
-- Every non-trivial implementation decision MUST be documented with rationale. A decision is non-trivial if a competent engineer could reasonably have chosen differently.
-- Deliver a decision log as a Markdown table: what was decided, what alternatives existed, why this choice was made, and what risks it carries.
-- For migrations or refactors, include a bidirectional traceability matrix mapping source constructs to target implementations — 100% coverage, no gaps.
-- Any deviation from a literal or obvious interpretation of the requirements MUST have an explicit entry in the decision log. Unexplained deviations are treated as defects.
-- Do not embed rationale in code comments. The decision log is the single source of truth for "why" decisions.
+- **Observability Rule.** The application is not complete until it is observable. Every deliverable MUST include structured logging with correlation IDs, distributed tracing across service boundaries, a metrics endpoint, health/readiness checks, and a dashboard template. The Blitzy platform MUST check for existing observability tooling, reuse what exists, fill gaps, and document both what was reused and what was added. All observability capabilities MUST be verifiable in the local development environment — if it cannot be exercised locally, it is not delivered. This is satisfied concretely by ST-047 (`pino` structured logs + correlation IDs), ST-048 (`/metrics`, `/healthz`, `/readyz`), and ST-049 (OTel distributed tracing + `docs/observability/dashboard-template.md` with 8 panels).
 
-**Application to this plan:** The decision log is authored at `/docs/decisions/README.md`. Because this is a greenfield authoring task and not a migration or refactor, no bidirectional traceability matrix is emitted; the absence of a migration source is itself recorded as a decision-log entry. Rationale for the 49-story count, the EP-005 frontend/backend split, the EP-009 seven-gate distribution, and the EP-010 four-test-type coverage are each recorded as rows in the log.
+- **Explainability Rule.** Every non-trivial implementation decision MUST be documented with rationale in the Markdown decision log at `docs/decisions/README.md` using the columns "Decision | Alternatives | Rationale | Risks". A decision is non-trivial if a competent engineer could reasonably have chosen differently. For migrations or refactors, a bidirectional traceability matrix (source construct → target implementation) MUST be included — 100% coverage, no gaps. Any deviation from a literal or obvious interpretation of the requirements MUST have an explicit entry in the decision log; unexplained deviations are treated as defects. Rationale MUST NOT be embedded in code comments — the decision log is the single source of truth for "why".
 
-#### 0.8.4.3 Executive Presentation Rule
+- **Executive Presentation Rule.** Every deliverable MUST include an executive summary as a single self-contained reveal.js HTML file at `docs/executive-summary.html`. The audience is non-technical leadership. The presentation MUST cover: what was done; why it was done (business value unlocked); what changed architecturally (with component/data-flow diagrams); what risks exist and how they are mitigated; and how the team onboards and continues development. Slide constraints: 12–18 slides (target 16); slide types Title (`slide-title`), Section Divider (`slide-divider`), Content (default), Closing (`slide-closing`); every slide includes at least one non-text visual element (Mermaid diagram, KPI card, styled table, or Lucide SVG icon via `<i data-lucide="icon-name"></i>`); zero emoji; no fenced code blocks inside slides — use inline Fira Code for short expressions only. Visual identity: colors `#5B39F3` (primary), `#2D1C77` (dark), `#94FAD5` (teal), `#1A105F` (navy), `#7A6DEC`/`#4101DB` (gradient stops), neutrals `#333333`, `#999999`, `#D9D9D9`, `#F4EFF6`, `#F5F5F5`, `#FFFFFF`. Typography: Inter body (400/500/600/700), Space Grotesk display (500/600/700), Fira Code mono (400/500). Hero gradient: `linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%)`. Mermaid diagrams embedded as `<pre class="mermaid">` with raw syntax; `startOnLoad: false`; call `mermaid.run()` after reveal.js `ready` and on every `slidechanged` event; theme `primaryColor: '#F2F0FE'`, `primaryTextColor: '#333333'`, `primaryBorderColor: '#5B39F3'`, `lineColor: '#999999'`, `secondaryColor: '#F4EFF6'`. CDN versions pinned: reveal.js 5.1.0, Mermaid 11.4.0, Lucide 0.460.0. reveal.js config `hash: true`, `transition: 'slide'`, `controlsTutorial: false`, `width: 1920`, `height: 1080`. Lucide `lucide.createIcons()` after `ready` and on every `slidechanged`. Embed the full Blitzy reveal.js theme inline (as defined in `blitzy-deck/references/blitzy-reveal-theme.css`), including all required CSS custom properties (`--blitzy-primary`, `--blitzy-primary-dark`, `--blitzy-primary-navy`, `--blitzy-primary-light`, `--blitzy-primary-deep`, `--blitzy-accent-teal`, `--blitzy-surface-0..3`, `--blitzy-border`, `--blitzy-border-soft`, `--blitzy-text`, `--blitzy-text-muted`, `--blitzy-text-invert`, `--ff-body`, `--ff-display`, `--ff-mono`, `--gradient-hero`, `--gradient-divider`, `--gradient-accent-bar`) and the component classes (`slide-title`, `slide-divider`, `slide-closing`, `kpi-card`, `kpi-grid`, `kpi-value`, `kpi-label`, `kpi-icon`, `eyebrow`, `accent-bar`, `brand-lockup`, `hero-icon`, `icon-row`, mermaid container). Slide ordering convention: (1) Title, (2) headline findings or KPI summary, (3) architecture overview (Mermaid), (4..N) alternating Section Dividers + Content, (N+1) Closing. Verification: the HTML file opens in a browser, renders all Mermaid diagrams and Lucide icons, contains 12–18 `<section>` elements, and every `<section>` contains at least one non-text visual element.
 
-- Every deliverable MUST include an executive summary as a single self-contained reveal.js HTML file. Audience is non-technical leadership — communicate business value, risk, and operational readiness without requiring code literacy.
-- The presentation MUST cover: what was done, why it was done, what changed architecturally, what risks exist and how they are mitigated, and how the team onboards and continues development.
-- Slide constraints: 12–18 slides total (target: 16); four slide types (Title `slide-title`, Section Divider `slide-divider`, Content default, Closing `slide-closing`); every slide includes ≥1 non-text visual element; content slides ≤4 bullets and ≤40 words body; zero emoji (Lucide SVG icons only via `<i data-lucide="icon-name"></i>`); no fenced code blocks inside slides.
-- Visual identity: Blitzy brand palette (`#5B39F3`, `#2D1C77`, `#94FAD5`, `#1A105F`, `#7A6DEC`, `#4101DB`, plus neutrals); typography Inter / Space Grotesk / Fira Code loaded via Google Fonts; title slide hero gradient; dark divider; navy closing slide.
-- Mermaid diagrams embedded as `<pre class="mermaid">` with raw syntax; initialized `startOnLoad: false`; `mermaid.run()` invoked after reveal.js `ready` and on every `slidechanged` event; theme variables as specified.
-- Technical delivery: single self-contained HTML file; no build steps; CDN versions pinned reveal.js 5.1.0, Mermaid 11.4.0, Lucide 0.460.0; reveal.js config `hash: true, transition: 'slide', controlsTutorial: false, width: 1920, height: 1080`; Lucide `createIcons()` on `ready` and `slidechanged`.
-- Inline CSS: embed the full Blitzy reveal.js theme in a `<style>` tag with the listed CSS custom properties (see Section 0.5.3 of this Action Plan) and the full set of slide-type and component classes.
-- Slide ordering: Title → Content (findings/KPI) → Content (architecture) → alternating Section Divider + Content for each major topic → Closing (takeaway, next steps, brand lockup).
-- Verification: The HTML file opens in a browser, renders all Mermaid diagrams and Lucide icons, contains 12–18 `<section>` elements, and every `<section>` contains at least one non-text visual element.
+- **LocalGCP Verification Rule.** Every GCP service interaction MUST be verifiable against LocalGCP with zero live GCP dependencies. No test, local dev workflow, or CI step may require real GCP credentials. The Blitzy platform MUST check for an existing LocalGCP or Docker Compose setup and reuse it; if missing, LocalGCP MUST be added to the project's container orchestration. Integration tests that exercise GCP services MUST run against LocalGCP and MUST create their own resources during setup and clean up after teardown — no dependence on pre-existing LocalGCP state.
 
-**Application to this plan:** The executive deck is authored at `/docs/executive-summary.html` with 16 `<section>` elements, following the slide-ordering convention. Section 0.5 of this Action Plan enumerates every component, token, and slide-to-class mapping used.
+- **Segmented PR Review Rule.** Code changes MUST pass a sequential, multi-phase pre-approval review before a Pull Request can be opened. When triggered, generate `CODE_REVIEW.md` at the repository root. YAML frontmatter tracks only three fields per phase: phase name (mapped to its review domain), status (OPEN, IN_REVIEW, BLOCKED, or APPROVED), and file count within that review group. Immediately after the YAML block, include an Executive Summary containing the review domain description, the assigned Expert Agent Persona name, and any review context not suited for machine-parseable frontmatter. Every changed file is assigned to exactly one review domain: Infrastructure/DevOps, Security, Backend Architecture, QA/Test Integrity, Business/Domain, Frontend, or Other SME. Each Expert Agent analyzes the changes, fixes all addressable issues, tests the fixes, and marks the phase APPROVED or BLOCKED. On APPROVED, the handoff to the next Expert Agent MUST be documented in `CODE_REVIEW.md` before the next phase begins. On BLOCKED, the Agent MUST state why and provide remediation steps; a phase MUST NOT be marked BLOCKED until all addressable issues have been fixed and verified. After all domain phases reach a terminal status, a Principal Reviewer Agent executes a final phase to consolidate findings, verify alignment between the implemented code and the Agent Action Plan, and render a final verdict; the gap analysis and verdict are recorded in `CODE_REVIEW.md`. Blitzy agents MUST NOT surface until all domain phases have been reviewed and the Principal Reviewer has rendered a final verdict — surfacing occurs only when no phase remains BLOCKED with actionable remediation.
 
-### 0.8.5 Consolidated Enforcement Checklist
+### 0.8.3 Validation Framework (Exit Criteria)
 
-| # | Rule / Gate | Enforcement Action at Authoring Time | Verification Command / Step |
-|---|---|---|---|
-| 1 | Rule 1 | Use technology-neutral vocabulary; avoid proper nouns for libs/frameworks | `grep -i` library names across story files — expect zero |
-| 2 | Rule 2 | Author ≥3 checklist items per story body | `awk`/`grep` count of `- [ ]` items per file |
-| 3 | Rule 3 | Distribute stories so every layer has ≥3 | `grep "^layer: "` + sort/uniq -c |
-| 4 | Rule 4 | One `layer:` value per story | `grep -c "^layer: "` equals 1 per file |
-| 5 | Rule 5 | Assign sequential ST-IDs | Sorted unique `id:` list contains ST-001..ST-049 with no gaps |
-| 6 | Rule 6 | Set `epic:` in every story frontmatter | `grep -L "^epic: EP-"` returns empty |
-| 7 | Rule 7 | Restrict `points:` to {1,2,3,5,8,13} | `grep "^points: "` values all in set |
-| 8 | Rule 8 | EP-009 lists ≥7 child stories | Count items in `stories:` array of EP-009 |
-| 9 | Rule 9 | EP-010 children span 4 `test-type` values | Sorted unique `test-type:` in EP-010 stories has 4 values |
-| 10 | Rule 10 | Templates directory contains exactly 3 files | `ls /tickets/templates \| wc -l` equals 3 |
-| 11 | Gate 1 | Every epic has ≥1 story in `stories:` array | Parse each epic frontmatter; assert array non-empty |
-| 12 | Gate 2 | All Markdown is valid CommonMark with YAML | Frontmatter parser + Markdown linter (no warnings) |
-| 13 | Gate 8 | Six-layer coverage checklist | Print PASS/FAIL per layer before declaring complete |
-| 14 | Gate 9 | Cross-layer links via `depends-on:` | For every cross-layer AC reference, assert `depends-on:` includes target ST-ID |
-| 15 | Gate 10 | EP-010 stories name triggers | `grep` for trigger vocabulary in each EP-010 story AC section |
-| 16 | Gate 12 | EP-009 stories name env vars and stage outputs | `grep` for env-var-like tokens and artifact names in each EP-009 story AC section |
-| 17 | Gate 13 | Register/produce → invoke/consume pairing | Build a dependency graph; assert every producing story has a consuming neighbor |
+The Blitzy platform declares the feature addition complete only when every check below is true. These are copied verbatim from the user's prompt §6 "Validation Framework":
+
+| Check | Command | Expected |
+|---|---|---|
+| All services running | `docker compose ps --format json \| jq -r '.[].State' \| sort \| uniq` | `running` |
+| All migrations up | Gate T1-B | 5 tables present |
+| API endpoints authenticated | Gate T1-C | 401 on unauthenticated request |
+| Metrics scraped | `curl -sf localhost:3000/metrics \| grep http_requests_total` | match found |
+| Readiness probe | `curl -sf localhost:3000/readyz \| jq -r '.status'` | `ready` |
+| Frontend core passes | Gate T2 | all Playwright tests pass |
+| Design management wired | Gate MG1 (F-integration) | non-null UUID returned |
+| Lint passes | Gate MG1-E | exit 0 |
+| Type-check passes | Gate MG1-E | exit 0 |
+| Unit tests pass | Gate MG1-E | exit 0, coverage ≥ threshold |
+| Integration tests pass | Gate MG1-E | exit 0 |
+| Deployed + reachable | Gate MG2-G | `ready` from Cloud Run URL |
+| Playwright e2e | Gate MG2-H | all pass |
+| Visual regression | Gate MG2-H | 0 failures |
+| Trace propagation | Gate T1-I | trace ID in logs |
+| Dashboard template | Gate T1-I | ≥5 alert policy entries |
+| All 49 ACs checked | Manual review of `tickets/stories/ST-*.md` | all checkboxes ✓ |
+
+Universal gates applied (per user prompt §6):
+
+- Gate 1 (Role scoping): specialist role with explicit authority boundaries ✓
+- Gate 2 (Success criteria measurability): every track and merge gate is machine-executable with expected output ✓
+- Gate 8 (Integration sign-off decoupled from unit): MG1-E integration gate is a separate step with its own `waitFor` and report artifact ✓
+- Gate 9 (Integration wiring verification): every endpoint verified reachable via curl in Gate T1-C; OTel wiring verified via trace propagation in Gate T1-I ✓
+- Gate 10 (Test execution binding): all test commands are explicit with expected exit codes ✓
+- Gate 12 (Config propagation tracing): all six env vars declared with no defaults; startup fail behavior specified in R4 ✓
+- Gate 13 (Registration-invocation pairing): OTel registration order specified in C4 and R6; Firebase Admin init tied to `FIREBASE_PROJECT_ID` env var ✓
+
 
 ## 0.9 References
 
-### 0.9.1 Repository Files Searched and Inspected
+This sub-section documents every file, folder, attachment, URL, and source consulted during production of this Agent Action Plan. The Blitzy platform performed comprehensive repository-wide inspection to produce an evidence-backed scope; every path below was read or had its summary retrieved directly.
 
-The following searches and inspections were performed against the `blitzy-configurator` repository to derive the conclusions in this Action Plan.
+### 0.9.1 Files and Folders Searched in the Codebase
 
-| Tool / Command | Target | Finding |
+**Root-level search:**
+
+- `/` (root folder contents and summary)
+- `README.md` (identity marker with only the text `# blitzy-configurator`)
+
+**Backlog and specification documentation (`blitzy/`):**
+
+- `blitzy/` (folder contents)
+- `blitzy/documentation/` (folder contents)
+- `blitzy/documentation/Project Guide.md` (summary retrieved — handoff narrative for the backlog package)
+- `blitzy/documentation/Technical Specifications.md` (summary retrieved — controlling design and constraint document for the documentation workstream)
+
+**Supporting documentation (`docs/`):**
+
+- `docs/` (folder contents)
+- `docs/executive-summary.html` (summary retrieved — existing Reveal.js executive deck)
+- `docs/decisions/` (folder contents)
+- `docs/decisions/README.md` (summary retrieved — decision log with columns Decision, Alternatives, Rationale, Risks)
+- `docs/observability/` (folder contents)
+- `docs/observability/README.md` (summary retrieved — observability contract catalog for EP-011)
+- `docs/observability/dashboard-template.md` (summary retrieved — vendor-neutral dashboard blueprint referenced by ST-049)
+
+**Backlog tickets (`tickets/`):**
+
+- `tickets/` (folder contents)
+- `tickets/epics/` (folder contents — all 12 epic specifications)
+- `tickets/stories/` (folder contents — all 49 story specifications)
+- `tickets/templates/` (summary only — not relevant to implementation)
+
+**Epic files read in full:**
+
+- `tickets/epics/EP-001-3d-ball-preview-interaction.md`
+- `tickets/epics/EP-009-ci-cd-pipeline-environment-promotion.md`
+- `tickets/epics/EP-011-observability-error-tracking.md`
+- `tickets/epics/EP-012-database-schemas-migrations.md`
+
+**Story files read in full (representative across every epic layer):**
+
+- `tickets/stories/ST-001-render-sphere-preview.md` (frontend preview)
+- `tickets/stories/ST-002-click-drag-rotation.md` (frontend interaction)
+- `tickets/stories/ST-014-logo-upload-ui.md` (frontend branding)
+- `tickets/stories/ST-018-save-design-cta.md` (frontend design mgmt)
+- `tickets/stories/ST-020-new-design-reset.md` (frontend design mgmt)
+- `tickets/stories/ST-022-design-summary-sidebar.md` (frontend design mgmt)
+- `tickets/stories/ST-023-user-registration-endpoint.md` (backend auth)
+- `tickets/stories/ST-025-logout-endpoint-session-revocation.md` (backend auth)
+- `tickets/stories/ST-026-session-validation-middleware-contract.md` (backend auth)
+- `tickets/stories/ST-027-create-design-endpoint.md` (backend persistence)
+- `tickets/stories/ST-028-retrieve-designs-by-user-endpoint.md` (backend persistence)
+- `tickets/stories/ST-029-share-link-issuance-endpoint.md` (backend persistence)
+- `tickets/stories/ST-030-designs-schema-migration-with-indexes.md` (database)
+- `tickets/stories/ST-031-users-sessions-schema-migration.md` (database)
+- `tickets/stories/ST-032-create-order-endpoint.md` (backend cart/order)
+- `tickets/stories/ST-033-retrieve-cart-endpoint.md` (backend cart/order)
+- `tickets/stories/ST-034-finalize-order-post-processing.md` (backend cart/order)
+- `tickets/stories/ST-035-orders-order-items-schema-migration.md` (database)
+- `tickets/stories/ST-036-lint-gate.md` (CI/CD)
+- `tickets/stories/ST-040-build-stage.md` (CI/CD)
+- `tickets/stories/ST-041-deploy-stage.md` (CI/CD)
+- `tickets/stories/ST-042-environment-promotion.md` (CI/CD)
+- `tickets/stories/ST-043-unit-test-suite.md` (testing)
+- `tickets/stories/ST-044-integration-test-suite.md` (testing)
+- `tickets/stories/ST-045-e2e-test-suite.md` (testing)
+- `tickets/stories/ST-046-visual-regression-test-suite.md` (testing)
+- `tickets/stories/ST-047-structured-logs-correlation-id.md` (observability)
+- `tickets/stories/ST-048-metrics-endpoint-health-readiness-probes.md` (observability)
+- `tickets/stories/ST-049-distributed-tracing-dashboard-template-stub.md` (observability)
+
+**Remaining story files (summaries retrieved via folder listing):** ST-003 through ST-017, ST-019, ST-021, ST-024, ST-037 through ST-039 — their acceptance criteria content is summarized in the `tickets/stories` folder summary and each is mapped to a specific deliverable in §0.3.3, §0.3.4, and §0.6.
+
+### 0.9.2 `.blitzyignore` Files Inspected
+
+A repository-wide search using `find . -name ".blitzyignore" -type f` returned **zero results**. No `.blitzyignore` patterns constrain the search or modification scope of this Agent Action Plan.
+
+### 0.9.3 Technical Specification Sections Referenced
+
+- §1.1 Executive Summary — confirms the project is a greenfield configurator-class product with no pre-existing implementation
+- §1.2 System Overview — confirms no declared integration points and no technology stack previously committed
+- §1.3 Scope — declares greenfield scoping framework
+- §2.2 Feature Catalog — catalogs F-001 through F-004 (abstract capability areas)
+- §3.2 Programming Languages — technical specification baseline
+- §3.4 Open Source Dependencies — technical specification baseline
+- §3.5 Third-Party Services — technical specification baseline
+- §3.11 Version Summary Table — technical specification baseline
+
+Note on spec versus prompt alignment: The user's prompt (§3 "Technology Specifications") pins the stack explicitly to Node.js 20 LTS + Express 4.x + PostgreSQL 15 + Firebase + GCP + React 18 + Vite + R3F + Fabric.js 6.x. These explicit pins are the authoritative technology selections for this feature addition, per Rule R1 of the user's prompt and the "User prompt takes precedence for specific implementations" convention implicit in §1.4 authoring posture.
+
+### 0.9.4 User Attachments
+
+No attachments of any kind were supplied with the user's prompt. The "User attached 0 environments to this project" declaration was explicit in the input. The "Setup Instructions provided by the user" were explicitly "None provided". The `/tmp/environments_files/` directory was inspected and found to be empty. Therefore there are no files, screenshots, design exports, or reference documents to enumerate beyond the repository contents and user's prompt itself.
+
+### 0.9.5 Figma Frames and URLs
+
+No Figma URLs, frame names, or design system identifiers were provided by the user. No Figma inspection was performed. No implementation file in this Agent Action Plan references Figma assets.
+
+### 0.9.6 External Web Search Performed
+
+No external web searches were performed during production of this Agent Action Plan. The user's prompt pins every technology version, names every critical package API verbatim, and supplies the full set of gate verification commands — no research is needed to produce the implementation mapping.
+
+### 0.9.7 Summary of Consulted Material
+
+| Source Class | Count | Outcome |
 |---|---|---|
-| `get_source_folder_contents` | Repository root (`""`) | Single child: `README.md`. Folder summary confirmed greenfield state with no source, config, or build artifacts |
-| `read_file` | `README.md` | 21 bytes; sole content: `# blitzy-configurator` |
-| `bash` `find / -name ".blitzyignore"` | Entire filesystem | No `.blitzyignore` files exist anywhere accessible |
-| `bash` `ls -la` at repo root | Working directory `/tmp/blitzy/blitzy-configurator/v1_3bfc26/` | Only `.git/` and `README.md`; no other top-level files or directories |
-| `bash` `find /tmp/blitzy/blitzy-configurator/v1_3bfc26/ -type f` | Entire repo tree | Only `.git/**` and `README.md`; zero source, config, docs, or tickets present |
-| `bash` `ls /tmp/environments_files/` | User-attached environment files folder | Empty — no files attached by the user |
-| `bash` `find / -path '*/blitzy-deck/references/*'` | Global filesystem | No external Blitzy theme reference file present; theme is supplied inline by the user rule |
-| `bash` `find / -name "*reveal-theme*"` | Global filesystem | No reveal theme file present in this environment |
+| Repository folders inspected | 8 | Complete structure mapped |
+| Repository files summarized | 80+ | Every relevant summary consumed |
+| Repository files read in full | 30+ | All critical story specs and epic overviews |
+| `.blitzyignore` files found | 0 | No path exclusions apply |
+| Tech spec sections retrieved | 8 | Sufficient for baseline alignment |
+| User attachments | 0 | None provided |
+| Figma references | 0 | None provided |
+| External web searches | 0 | Not required |
+| User-provided implementation rules | 5 | All captured in §0.8.2 |
 
-### 0.9.2 Technical Specification Sections Consulted
-
-| Section Heading | Reason Consulted | Relevant Finding |
-|---|---|---|
-| 1.1 Executive Summary | Confirm repository state and project identity | "greenfield software initiative currently in its earliest conception and scaffolding stage"; sole artifact is `README.md` |
-| 1.3 Scope | Confirm no pre-existing in-scope features or boundaries | All in-scope and out-of-scope elements "To Be Defined"; differential exclusion is deferred |
-| 2.1 FEATURE CATALOG | Confirm no pre-existing feature IDs or dependencies | "No features have been defined, designed, scoped, or implemented"; `F-XXX` IDs reserved for future issuance |
-| 3.3 FRAMEWORKS & LIBRARIES | Confirm no framework commitments exist | All framework tiers "Not selected / To Be Selected" |
-| 3.4 OPEN SOURCE DEPENDENCIES | Confirm no manifest or lockfile exists | All manifest categories (npm, PyPI, Maven, etc.) "verified absent" |
-
-### 0.9.3 User Attachments
-
-- **Attachments supplied:** None. The user task prompt explicitly states "No attachments found for this project" and "User attached 0 environments to this project."
-- **Environment variables supplied by user:** Empty list `[]`.
-- **Secrets supplied by user:** Empty list `[]`.
-- **Setup instructions supplied by user:** None provided.
-- **Figma frames / URLs supplied by user:** None. No Figma reference is named in the user prompt.
-
-### 0.9.4 User-Provided Implementation Rules
-
-The following three rules were supplied by the user under `User specified implementation rules for this project`. Each is captured here as a reference anchor; their verbatim content is reproduced in Section 0.8.4.
-
-| Rule Name | Concise Summary | Primary Artifact Produced |
-|---|---|---|
-| Observability | Ship observability with the initial implementation; structured logging with correlation IDs, distributed tracing, metrics endpoint, health/readiness checks, dashboard template; verify locally | `/docs/observability/README.md`, `/docs/observability/dashboard-template.md`, EP-011 stories |
-| Explainability | Maintain a Markdown decision log with what/alternatives/rationale/risks; traceability matrix for migrations; no rationale in code comments | `/docs/decisions/README.md` |
-| Executive Presentation | Single self-contained reveal.js HTML — 12–18 slides — Blitzy brand tokens — CDN-pinned reveal.js 5.1.0, Mermaid 11.4.0, Lucide 0.460.0 — Inter/Space Grotesk/Fira Code fonts | `/docs/executive-summary.html` |
-
-### 0.9.5 Tech Stack Context Supplied by User (Reference Only)
-
-The user's prompt includes a tech stack table under `## 3. Technical Specifications`. Per the user directive, this table is **agent reference only** and MUST NOT appear in any output file body. It is recorded here solely as the provenance of this Action Plan's understanding of the target architecture that the backlog describes — without using any of its proper nouns in ticket text.
-
-| Concept | Scope | In-Scope Representation in Backlog |
-|---|---|---|
-| Deployment platform and three-environment isolation | Infrastructure | EP-009 environment promotion; three promotion targets named abstractly as dev → staging → prod |
-| Frontend framework, 3D rendering, canvas and state libraries | Frontend | EP-001 through EP-005 stories describe observable UI behaviors without naming libraries |
-| Backend API, runtime, authentication approach | Backend | EP-006 through EP-008 stories describe endpoints and session semantics without naming runtimes |
-| Relational database for persistence, object storage for assets | Database | EP-007 and EP-008 database stories describe schemas and storage semantics without naming engines |
-| CI/CD — pipeline, image registry, promotion tooling | CI/CD | EP-009 stories describe gates and stages without naming tools |
-| Identity platform | Authentication | EP-006 stories describe session lifecycle without naming identity provider |
-| Observability — logging, monitoring, tracing | Observability | EP-011 stories and `/docs/observability/` describe telemetry contracts without naming platforms |
-| Test layers — unit, integration, E2E, visual regression | Testing | EP-010 stories map exactly to the four `test-type` values |
-
-### 0.9.6 User-Provided Persona Vocabulary (Reference Only)
-
-The user-supplied persona list constrains the "As a …" narrative opener in every story body. Personas used in the backlog are exactly: `end user`, `authenticated user`, `developer`, `QA engineer`, `DevOps engineer`. No additional personas are invented.
-
-### 0.9.7 User-Provided Epic Domain Table (Reference Only)
-
-The following domain table is reproduced verbatim from the user prompt and used as the sole authority for epic IDs, domain names, and primary-layer bindings:
-
-| ID | Domain | Primary Layer |
-|---|---|---|
-| EP-001 | 3D Ball Preview & Interaction | frontend |
-| EP-002 | Panel Color Customization | frontend |
-| EP-003 | Stitching Pattern & Finish Selection | frontend |
-| EP-004 | Branding & Logo Customization | frontend |
-| EP-005 | Design Management (save, load, share, new) | frontend + backend |
-| EP-006 | User Authentication & Sessions | backend |
-| EP-007 | Design Persistence API & Data Model | backend + database |
-| EP-008 | Cart & Order Flow | backend + database |
-| EP-009 | CI/CD Pipeline & Environment Promotion | infrastructure |
-| EP-010 | Test Coverage & Quality Gates | testing |
-| EP-011 | Observability & Error Tracking | infrastructure |
-
-Note on layer vocabulary: EP-009 and EP-011 are marked "infrastructure" in the user's domain table; the permitted story `layer:` values per the frontmatter schema are `frontend | backend | database | ci-cd | testing | observability`. EP-009 child stories therefore carry `layer: ci-cd` and EP-011 child stories carry `layer: observability`, as these are the closest admissible layer tokens — the epic-level "infrastructure" wording is a domain grouping, not a `layer:` frontmatter value.
 

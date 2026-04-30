@@ -1,0 +1,1 @@
+# Placeholder so git tracks this otherwise-empty directory. Visual regression baseline PNGs are written here by Playwright on `npm run test:visual:update`. See README.md in this folder for the full workflow.

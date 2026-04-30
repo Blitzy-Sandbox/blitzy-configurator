@@ -1,0 +1,49 @@
+{
+  "name": "@strikeforge/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "StrikeForge 3D Sports Ball Configurator — React 18 + Vite + R3F + Fabric.js frontend",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0 <21.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/ --max-warnings 0",
+    "lint:fix": "eslint src/ --fix",
+    "test": "playwright test",
+    "test:configurator": "playwright test --project=chromium tests/configurator/",
+    "test:performance": "playwright test --project=chromium tests/performance/",
+    "test:e2e": "playwright test tests/e2e/",
+    "test:visual": "playwright test tests/visual/",
+    "test:visual:update": "playwright test tests/visual/ --update-snapshots"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.114.3",
+    "@react-three/fiber": "^8.17.10",
+    "fabric": "^6.4.3",
+    "firebase": "^10.14.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.160.1",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.2",
+    "@types/node": "^20.16.11",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/three": "^0.160.0",
+    "@vitejs/plugin-react": "^4.3.3",
+    "eslint": "^8.57.0",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "eslint-plugin-react": "^7.37.2",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "typescript": "^5.4.0",
+    "vite": "^5.4.10"
+  }
+}

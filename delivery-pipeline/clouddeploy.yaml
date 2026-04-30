@@ -1,0 +1,93 @@
+# StrikeForge Cloud Deploy Pipeline
+# Promotes a single Cloud Run image digest through development → staging → production.
+# Per Rule R10, the same IMAGE_DIGEST flows through every target.
+# Targets: development (auto-deploy), staging (requireApproval: true), production (requireApproval: true).
+# Per ST-042: only development-to-staging and staging-to-production promotions are permitted;
+# production promotion requires a valid, non-expired PROMOTION_APPROVAL_ID.
+#
+# Apply via:
+#   gcloud deploy apply --file=delivery-pipeline/clouddeploy.yaml \
+#     --region=$GCP_REGION --project=$PROJECT_ID
+#
+# Verify via:
+#   gcloud deploy delivery-pipelines describe strikeforge-delivery-pipeline
+#   gcloud deploy targets describe development
+#   gcloud deploy targets describe staging
+#   gcloud deploy targets describe production
+
+apiVersion: deploy.cloud.google.com/v1
+kind: DeliveryPipeline
+metadata:
+  name: strikeforge-delivery-pipeline
+  annotations:
+    description: 'StrikeForge backend Cloud Run delivery pipeline (development → staging → production).'
+description: |
+  Promotes a single Cloud Run image digest through three environments:
+  development (auto-deploy), staging (requires approval), production (requires approval).
+  Per Rule R10, the same IMAGE_DIGEST flows through all targets.
+serialPipeline:
+  stages:
+    - targetId: development
+      profiles:
+        - development
+    - targetId: staging
+      profiles:
+        - staging
+    - targetId: production
+      profiles:
+        - production
+---
+apiVersion: deploy.cloud.google.com/v1
+kind: Target
+metadata:
+  name: development
+  annotations:
+    description: 'Development environment (auto-deploy on release creation; no approval).'
+description: |
+  Development Cloud Run target. Auto-deploys when a release is created in the pipeline.
+  Used as the seed environment for the promotion chain to staging and production.
+requireApproval: false
+run:
+  location: projects/${PROJECT_ID}/locations/${GCP_REGION}
+executionConfigs:
+  - usages:
+      - RENDER
+      - DEPLOY
+    defaultPool: {}
+---
+apiVersion: deploy.cloud.google.com/v1
+kind: Target
+metadata:
+  name: staging
+  annotations:
+    description: 'Staging environment (requires recorded approval).'
+description: |
+  Staging Cloud Run target. Receives the same IMAGE_DIGEST as development per Rule R10.
+  Promotion from development to staging requires recorded human approval per ST-042.
+requireApproval: true
+run:
+  location: projects/${PROJECT_ID}/locations/${GCP_REGION}
+executionConfigs:
+  - usages:
+      - RENDER
+      - DEPLOY
+    defaultPool: {}
+---
+apiVersion: deploy.cloud.google.com/v1
+kind: Target
+metadata:
+  name: production
+  annotations:
+    description: 'Production environment (requires recorded approval).'
+description: |
+  Production Cloud Run target. Receives the same IMAGE_DIGEST as staging per Rule R10.
+  Promotion from staging to production requires a valid, non-expired PROMOTION_APPROVAL_ID
+  recorded against the staging DEPLOYMENT_ID per ST-042.
+requireApproval: true
+run:
+  location: projects/${PROJECT_ID}/locations/${GCP_REGION}
+executionConfigs:
+  - usages:
+      - RENDER
+      - DEPLOY
+    defaultPool: {}

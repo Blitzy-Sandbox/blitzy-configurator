@@ -13,7 +13,7 @@ As an end user, I want to pick from six named stitching patterns, so that I can 
 
 ## Acceptance Criteria
 
-- [ ] The control sidebar offers exactly six stitching pattern options named Classic, Hexagonal, Diamond, Spiral, Star, and Grid.
-- [ ] Selecting a pattern applies it to the preview ball within the documented latency budget.
-- [ ] The currently selected pattern remains visually marked as active in the sidebar after selection.
-- [ ] All six patterns render accurately on the preview with no visual degradation at any rotation angle.
+- [x] The control sidebar offers exactly six stitching pattern options named Classic, Hexagonal, Diamond, Spiral, Star, and Grid.
+- [x] Selecting a pattern applies it to the preview ball within the documented latency budget.
+- [x] The currently selected pattern remains visually marked as active in the sidebar after selection.
+- [x] All six patterns render accurately on the preview with no visual degradation at any rotation angle.

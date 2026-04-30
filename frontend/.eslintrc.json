@@ -1,0 +1,67 @@
+{
+  "extends": [
+    "../.eslintrc.json",
+    "plugin:react/recommended",
+    "plugin:react-hooks/recommended",
+    "plugin:react/jsx-runtime",
+    "plugin:jsx-a11y/recommended"
+  ],
+  "plugins": ["react", "react-hooks", "jsx-a11y"],
+  "settings": {
+    "react": {
+      "version": "detect"
+    }
+  },
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "module",
+    "ecmaFeatures": {
+      "jsx": true
+    },
+    "project": ["./tsconfig.json"],
+    "tsconfigRootDir": "./"
+  },
+  "rules": {
+    "react/prop-types": "off",
+    "react/react-in-jsx-scope": "off",
+    "react-hooks/rules-of-hooks": "error",
+    "react-hooks/exhaustive-deps": "error",
+    "react/jsx-uses-react": "off",
+    "react/jsx-uses-vars": "error",
+    "react/jsx-key": "error",
+    "react/no-unstable-nested-components": "error",
+    "react/self-closing-comp": "error",
+    "jsx-a11y/no-noninteractive-tabindex": [
+      "error",
+      {
+        "tags": [],
+        "roles": ["tabpanel", "application"],
+        "allowExpressionValues": true
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": [
+        "tests/**/*.spec.ts",
+        "tests/**/*.spec.tsx",
+        "src/**/*.test.ts",
+        "src/**/*.test.tsx"
+      ],
+      "rules": {
+        "react/no-unescaped-entities": "off",
+        "@typescript-eslint/no-non-null-assertion": "off",
+        "react-hooks/rules-of-hooks": "off"
+      }
+    },
+    {
+      "files": [
+        "src/configurator/preview/**/*.tsx",
+        "src/configurator/preview/**/*.ts"
+      ],
+      "rules": {
+        "react/no-unknown-property": "off"
+      }
+    }
+  ]
+}

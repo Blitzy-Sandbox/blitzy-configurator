@@ -1,0 +1,130 @@
+# =====================================================================
+# .gitignore for the StrikeForge / blitzy-configurator monorepo
+# Authored per AAP §0.3.2 — Node / Docker / Playwright / coverage / build output
+# =====================================================================
+
+# ---------------------------------------------------------------------
+# Node
+# ---------------------------------------------------------------------
+node_modules/
+*/node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+.npm/
+
+# ---------------------------------------------------------------------
+# Environment files (NEVER commit real values; .env.example is the
+# only template that is committed per Rule R4)
+# ---------------------------------------------------------------------
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ---------------------------------------------------------------------
+# TypeScript build output
+# ---------------------------------------------------------------------
+dist/
+*/dist/
+**/dist/
+build/
+*/build/
+**/build/
+*.tsbuildinfo
+
+# ---------------------------------------------------------------------
+# Vite output (frontend)
+# ---------------------------------------------------------------------
+frontend/dist/
+frontend/.vite/
+
+# ---------------------------------------------------------------------
+# Jest / coverage
+# ---------------------------------------------------------------------
+coverage/
+*/coverage/
+**/coverage/
+
+# ---------------------------------------------------------------------
+# Jest test report artifacts (jest-junit). These are uploaded to GCS by
+# Cloud Build per `cloudbuild.yaml`; they are NOT versioned source.
+# ---------------------------------------------------------------------
+backend/reports/
+*/reports/
+**/reports/
+*.junit.xml
+*.lcov
+.nyc_output/
+
+# ---------------------------------------------------------------------
+# Playwright
+# ---------------------------------------------------------------------
+playwright-report/
+**/playwright-report/
+test-results/
+**/test-results/
+blob-report/
+**/blob-report/
+playwright/.cache/
+
+# ---------------------------------------------------------------------
+# Visual regression diff artifacts
+# (baselines under frontend/visual-baselines/ ARE committed per ST-046-AC4)
+# ---------------------------------------------------------------------
+**/test-results/**/*-diff.png
+**/test-results/**/*-actual.png
+
+# ---------------------------------------------------------------------
+# OS / editor
+# ---------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ---------------------------------------------------------------------
+# Docker / local dev
+# ---------------------------------------------------------------------
+.docker/
+*.pid
+
+# ---------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------
+logs/
+*.log
+
+# ---------------------------------------------------------------------
+# Firebase / GCP credentials (LocalGCP uses emulators; never commit
+# real credentials)
+# ---------------------------------------------------------------------
+*-service-account.json
+firebase-debug.log
+firebase-debug.*.log
+.firebase/
+gcp-keyfile*.json
+credentials.json
+
+# LocalGCP — explicitly committed synthetic service-account JSON.
+# `backend/local-dev-sa.json` carries a synthetic RSA key used only by
+# `@google-cloud/storage` v4 signing against fake-gcs-server. It does
+# NOT grant access to any real GCP project. Production deployments
+# rely on Cloud Run ADC injection and never read this file. The
+# negation below is intentional — see docs in `backend/local-dev-sa.json`.
+!backend/local-dev-sa.json
+
+# Per-workspace lockfiles — npm sometimes generates these as a
+# side-effect of running `npm install` from a workspace directory,
+# but the canonical lockfile for this monorepo is the root
+# `/package-lock.json`. Committing per-workspace lockfiles produces
+# silent dependency drift between the root resolution and the
+# workspace resolution. Exclude them defensively; `npm install`
+# from the repository root continues to work without these.
+backend/package-lock.json
+frontend/package-lock.json

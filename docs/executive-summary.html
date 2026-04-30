@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="StrikeForge Backlog — Executive Summary. Cross-layer agile backlog for the soccer ball configurator, prepared for executive leadership.">
-    <title>StrikeForge Backlog — Executive Summary</title>
+    <meta name="description" content="StrikeForge — Implementation Summary. 49 stories across 12 epics shipped as production-ready, tested, and deployed software. Prepared for executive leadership.">
+    <title>StrikeForge — Implementation Summary</title>
 
     <!--
       ========================================================================
@@ -590,482 +590,529 @@
         <div class="slides">
 
             <!-- ================================================================
-                 SLIDE 1 — TITLE
-                 Project name, scope, audience framing. Hero gradient background.
+                 SLIDE 1 — TITLE (slide-title)
+                 Project name and headline framing for the implementation summary.
+                 Hero gradient background, Lucide rocket icon, brand lockup.
                  ================================================================ -->
             <section class="slide-title">
                 <div class="hero-icon">
-                    <i data-lucide="layers" aria-label="Layered backlog hero icon"></i>
+                    <i data-lucide="rocket" aria-label="Implementation summary hero icon"></i>
                 </div>
-                <div class="eyebrow">STRIKEFORGE BACKLOG — V1.0</div>
-                <h1>StrikeForge Backlog &amp; Architecture</h1>
-                <p class="subtitle">Cross-layer agile backlog for the soccer ball configurator.</p>
+                <div class="eyebrow">STRIKEFORGE 3D SPORTS BALL CONFIGURATOR</div>
+                <h1>Implementation Summary</h1>
+                <p class="subtitle">49 Stories. 12 Epics. Production-ready, Tested, Deployed.</p>
                 <p class="audience">Prepared for executive leadership</p>
             </section>
 
             <!-- ================================================================
-                 SLIDE 2 — HEADLINE KPIs
-                 Scope summary expressed as four KPI cards. Every card uses a
-                 Lucide icon for its non-text visual element.
+                 SLIDE 2 — HEADLINE KPI SUMMARY
+                 Four KPI cards with Lucide icons summarizing what was shipped.
                  ================================================================ -->
             <section>
-                <div class="slide-kicker">Backlog at a glance</div>
-                <h2>Headline Coverage</h2>
-                <p class="muted">One cross-layer backlog, ready for sprint planning.</p>
+                <div class="slide-kicker">Implementation at a glance</div>
+                <h2>Implementation at a Glance</h2>
+                <p class="muted">Every track gate green. Every story acceptance criterion checked.</p>
                 <div class="kpi-grid" role="list">
                     <div class="kpi-card" role="listitem">
                         <div class="kpi-icon">
-                            <i data-lucide="folder-tree" aria-label="Epics icon"></i>
-                        </div>
-                        <div class="kpi-value">12</div>
-                        <div class="kpi-label">Epics delivered</div>
-                    </div>
-                    <div class="kpi-card" role="listitem">
-                        <div class="kpi-icon">
-                            <i data-lucide="clipboard-list" aria-label="Stories icon"></i>
+                            <i data-lucide="check-circle-2" aria-label="Stories shipped icon"></i>
                         </div>
                         <div class="kpi-value">49</div>
-                        <div class="kpi-label">User stories authored</div>
+                        <div class="kpi-label">Stories Shipped</div>
                     </div>
                     <div class="kpi-card" role="listitem">
                         <div class="kpi-icon">
-                            <i data-lucide="layers" aria-label="Layers icon"></i>
+                            <i data-lucide="layers" aria-label="Epics delivered icon"></i>
                         </div>
-                        <div class="kpi-value">6</div>
-                        <div class="kpi-label">Layers covered end-to-end</div>
+                        <div class="kpi-value">12</div>
+                        <div class="kpi-label">Epics Delivered</div>
                     </div>
                     <div class="kpi-card" role="listitem">
                         <div class="kpi-icon">
-                            <i data-lucide="check-circle" aria-label="Test types icon"></i>
+                            <i data-lucide="git-branch" aria-label="CI/CD pipeline icon"></i>
                         </div>
-                        <div class="kpi-value">4</div>
-                        <div class="kpi-label">Test types integrated</div>
+                        <div class="kpi-value">7</div>
+                        <div class="kpi-label">CI/CD Pipeline Steps</div>
+                    </div>
+                    <div class="kpi-card" role="listitem">
+                        <div class="kpi-icon">
+                            <i data-lucide="gauge" aria-label="3D performance icon"></i>
+                        </div>
+                        <div class="kpi-value">&ge;30 FPS</div>
+                        <div class="kpi-label">3D Preview Performance</div>
                     </div>
                 </div>
             </section>
 
             <!-- ================================================================
-                 SLIDE 3 — ARCHITECTURE OVERVIEW
-                 Mermaid diagram depicting the three-column UI flowing into
-                 services and persistence, surrounded by the three cross-cutting
-                 backlog layers (ci-cd, testing, observability). Subgraph labels
-                 name all six backlog layer tokens (frontend, backend, database,
-                 ci-cd, testing, observability) so that the diagram mirrors the
-                 layer taxonomy that drives the per-layer story tally on slide 5.
-                 Tool-name-free abstract labels throughout.
+                 SLIDE 3 — ARCHITECTURE OVERVIEW (Mermaid)
+                 End-to-end view of the StrikeForge production system.
+                 Mermaid flowchart depicting browser → frontend → backend →
+                 Cloud SQL, GCS, Firebase, Prometheus, OTel.
                  ================================================================ -->
             <section>
                 <div class="slide-kicker">How it fits together</div>
                 <h2>Architecture Overview</h2>
-                <pre class="mermaid" aria-label="Architecture overview diagram showing the three product layers (frontend, backend, database) surrounded by the three cross-cutting layers (ci-cd, testing, observability)">
-graph LR
-    subgraph UI["Frontend Layer"]
-        SB["Sidebar Controls"]
-        CV["3D Preview Canvas"]
-        SM["Design Summary"]
-        NB["Top Navbar"]
-    end
-    subgraph APP["Backend Layer"]
-        API["API Gateway"]
-        SV["Services"]
-    end
-    subgraph DATA["Database Layer"]
-        DS["Data Store"]
-        OB["Object Storage"]
-    end
-    subgraph CROSS["Cross-Cutting Layers"]
-        CI["CI-CD Pipeline"]
-        TEST["Testing Gates"]
-        OBS["Observability"]
-    end
-    SB --> CV
-    CV --> SM
-    NB --> API
-    SM --> API
-    API --> SV
-    SV --> DS
-    SV --> OB
-    CI -.promotes.-> APP
-    TEST -.validates.-> APP
-    OBS -.monitors.-> APP
-    classDef uiBox fill:#F2F0FE,stroke:#5B39F3,stroke-width:1.5px,color:#333333
-    classDef appBox fill:#F4EFF6,stroke:#5B39F3,stroke-width:1.5px,color:#333333
-    classDef dataBox fill:#F5F5F5,stroke:#2D1C77,stroke-width:1.5px,color:#333333
-    classDef crossBox fill:#F4EFF6,stroke:#7A6DEC,stroke-width:1.5px,color:#333333
-    class SB,CV,SM,NB uiBox
-    class API,SV appBox
-    class DS,OB dataBox
-    class CI,TEST,OBS crossBox
+                <p class="muted">End-to-end view of the StrikeForge production system.</p>
+                <pre class="mermaid" aria-label="Architecture overview diagram showing client browser flowing into frontend, backend Express on Cloud Run, then Cloud SQL PostgreSQL, GCS, Firebase Auth, Prometheus, and OTel tracing">
+flowchart LR
+    U["End User Browser"] -->|HTTPS| FE["Frontend&lt;br/&gt;React 18 + Vite + R3F"]
+    FE -->|"Bearer idToken&lt;br/&gt;x-correlation-id"| API["Backend API&lt;br/&gt;Express on Cloud Run"]
+    API -->|verifyIdToken| FB["Firebase Auth"]
+    API -->|"TCP or Unix socket"| DB[("Cloud SQL&lt;br/&gt;PostgreSQL 15")]
+    API -->|"getSignedUrl v4"| GCS[("Google Cloud&lt;br/&gt;Storage")]
+    API -->|/metrics| MET["Prometheus Scraper"]
+    API -.->|traceparent| OTEL["OTel Auto-Instrumentation"]
+    classDef client fill:#F2F0FE,stroke:#5B39F3,stroke-width:1.75px,color:#333333
+    classDef api fill:#F4EFF6,stroke:#5B39F3,stroke-width:1.5px,color:#333333
+    classDef store fill:#F5F5F5,stroke:#2D1C77,stroke-width:1.5px,color:#333333
+    classDef telem fill:#F4EFF6,stroke:#7A6DEC,stroke-width:1.5px,color:#333333
+    class U,FE client
+    class API,FB api
+    class DB,GCS store
+    class MET,OTEL telem
                 </pre>
             </section>
 
             <!-- ================================================================
-                 SLIDE 4 — SECTION DIVIDER: SCOPE
+                 SLIDE 4 — SECTION DIVIDER: SCOPE DELIVERED (slide-divider)
                  ================================================================ -->
             <section class="slide-divider">
-                <div class="section-number">Part One</div>
+                <div class="eyebrow">PART 1</div>
                 <div class="hero-icon">
-                    <i data-lucide="scan-search" aria-label="Scope hero icon"></i>
+                    <i data-lucide="package-check" aria-label="Scope delivered hero icon"></i>
                 </div>
-                <h2>Scope</h2>
-                <p>What is in, what is out, and who benefits.</p>
+                <h2>Scope Delivered</h2>
+                <p>What was built across every layer of the stack.</p>
             </section>
 
             <!-- ================================================================
-                 SLIDE 5 — SCOPE DETAILS (styled table)
-                 Layer coverage tally drawn from AAP §0.2.2.
+                 SLIDE 5 — CROSS-LAYER DELIVERY (styled table)
+                 Tally per layer of stories, files, and high-level highlights.
                  ================================================================ -->
             <section>
-                <div class="slide-kicker">Layer coverage</div>
-                <h2>Scope Details</h2>
-                <table aria-label="Layer by layer story coverage">
+                <div class="slide-kicker">Cross-layer delivery</div>
+                <h2>Cross-Layer Delivery</h2>
+                <table aria-label="Layer-by-layer delivery summary with story counts, file counts, and highlights">
                     <thead>
                         <tr>
                             <th>Layer</th>
-                            <th>Epics</th>
                             <th>Stories</th>
-                            <th>Coverage Note</th>
+                            <th>Files</th>
+                            <th>Highlights</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
                             <td class="row-label">Frontend</td>
-                            <td>5</td>
                             <td>22</td>
-                            <td>Preview, controls, design management surfaces</td>
+                            <td>35+</td>
+                            <td>R3F preview, color/pattern controls, logo positioner, design management UI</td>
                         </tr>
                         <tr>
                             <td class="row-label">Backend</td>
-                            <td>3</td>
                             <td>10</td>
-                            <td>Sessions, persistence, cart orchestration</td>
+                            <td>25+</td>
+                            <td>Express + pg + Firebase Admin + GCS v7</td>
                         </tr>
                         <tr>
                             <td class="row-label">Database</td>
-                            <td>1</td>
                             <td>3</td>
-                            <td>Schema migrations grouped under a dedicated epic</td>
+                            <td>3 migrations</td>
+                            <td>users/sessions, designs, orders/order_items</td>
                         </tr>
                         <tr>
                             <td class="row-label">CI/CD</td>
-                            <td>1</td>
                             <td>7</td>
-                            <td>Lint, type, unit, integration, build, deploy, promotion</td>
+                            <td>4 manifests</td>
+                            <td>Cloud Build to Cloud Deploy to Cloud Run</td>
                         </tr>
                         <tr>
                             <td class="row-label">Testing</td>
-                            <td>1</td>
                             <td>4</td>
-                            <td>Unit, integration, end-to-end, visual regression</td>
+                            <td>100+ tests</td>
+                            <td>Jest unit/integration, Playwright E2E + visual regression</td>
                         </tr>
                         <tr>
                             <td class="row-label">Observability</td>
-                            <td>1</td>
                             <td>3</td>
-                            <td>Structured logs, traces, metrics, dashboards</td>
+                            <td>6+ files</td>
+                            <td>pino, OTel, Prometheus, /healthz, /readyz, dashboard</td>
                         </tr>
                     </tbody>
                 </table>
             </section>
 
             <!-- ================================================================
-                 SLIDE 6 — SCOPE BOUNDARIES
-                 Icon-row comparing in-scope and out-of-scope items.
-                 ≤4 bullets, ≤40 words body.
+                 SLIDE 6 — SAVE DESIGN FLOW (Mermaid sequence)
+                 End-to-end save-design flow showing user, frontend, backend,
+                 and database interactions including correlation-id and
+                 Firebase Admin verifyIdToken.
                  ================================================================ -->
             <section>
-                <div class="slide-kicker">What ships now</div>
-                <h2>Scope Boundaries</h2>
-                <div class="icon-row" role="list">
-                    <div class="icon-item icon-positive" role="listitem">
-                        <i data-lucide="circle-check" aria-label="In scope"></i>
-                        <div class="icon-label">Cart creation</div>
-                        <div class="icon-sub">Basket review flow</div>
-                    </div>
-                    <div class="icon-item icon-positive" role="listitem">
-                        <i data-lucide="circle-check" aria-label="In scope"></i>
-                        <div class="icon-label">Order placement</div>
-                        <div class="icon-sub">Non-payment finalization</div>
-                    </div>
-                    <div class="icon-item icon-positive" role="listitem">
-                        <i data-lucide="circle-check" aria-label="In scope"></i>
-                        <div class="icon-label">Save &amp; share</div>
-                        <div class="icon-sub">Shareable link issuance</div>
-                    </div>
-                    <div class="icon-item icon-negative" role="listitem">
-                        <i data-lucide="circle-x" aria-label="Out of scope"></i>
-                        <div class="icon-label">Payment processing</div>
-                        <div class="icon-sub">Deferred epic</div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- ================================================================
-                 SLIDE 7 — SECTION DIVIDER: BUSINESS VALUE
-                 ================================================================ -->
-            <section class="slide-divider">
-                <div class="section-number">Part Two</div>
-                <div class="hero-icon">
-                    <i data-lucide="trending-up" aria-label="Business value hero icon"></i>
-                </div>
-                <h2>Business Value</h2>
-                <p>Outcomes the backlog unlocks for customers and the team.</p>
-            </section>
-
-            <!-- ================================================================
-                 SLIDE 8 — BUSINESS VALUE KPIs
-                 Three-card grid of outcome metrics.
-                 ================================================================ -->
-            <section>
-                <div class="slide-kicker">Outcomes unlocked</div>
-                <h2>Business Value</h2>
-                <div class="kpi-grid kpi-grid-3" role="list">
-                    <div class="kpi-card" role="listitem">
-                        <div class="kpi-icon">
-                            <i data-lucide="timer" aria-label="Speed of customization icon"></i>
-                        </div>
-                        <div class="kpi-value">&lt; 3 min</div>
-                        <div class="kpi-label">Time to a custom ball design</div>
-                    </div>
-                    <div class="kpi-card" role="listitem">
-                        <div class="kpi-icon">
-                            <i data-lucide="share-2" aria-label="Shareability icon"></i>
-                        </div>
-                        <div class="kpi-value">1-click</div>
-                        <div class="kpi-label">Share and save workflows</div>
-                    </div>
-                    <div class="kpi-card" role="listitem">
-                        <div class="kpi-icon">
-                            <i data-lucide="shield-check" aria-label="Quality gate icon"></i>
-                        </div>
-                        <div class="kpi-value">7 gates</div>
-                        <div class="kpi-label">Automated quality checkpoints</div>
-                    </div>
-                </div>
-            </section>
-
-
-
-            <!-- ================================================================
-                 SLIDE 9 — SECTION DIVIDER: RISK & MITIGATION
-                 ================================================================ -->
-            <section class="slide-divider">
-                <div class="section-number">Part Three</div>
-                <div class="hero-icon">
-                    <i data-lucide="alert-triangle" aria-label="Risk hero icon"></i>
-                </div>
-                <h2>Risks &amp; Mitigation</h2>
-                <p>Known risks and how the backlog contains them.</p>
-            </section>
-
-            <!-- ================================================================
-                 SLIDE 10 — RISKS (styled table)
-                 One row per material risk with impact and mitigation.
-                 ================================================================ -->
-            <section>
-                <div class="slide-kicker">Known risks</div>
-                <h2>Risks &amp; Mitigation</h2>
-                <table aria-label="Risks, impact, and mitigation">
-                    <thead>
-                        <tr>
-                            <th>Risk</th>
-                            <th>Impact</th>
-                            <th>Mitigation</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td class="row-label">Cross-layer coordination gaps</td>
-                            <td>Schedule slippage between teams</td>
-                            <td><span class="mono">depends-on:</span> links enforced on every cross-layer story</td>
-                        </tr>
-                        <tr>
-                            <td class="row-label">Observability omitted at launch</td>
-                            <td>Blind operations, slow incident response</td>
-                            <td>EP-011 delivers logs, traces, metrics, and health checks</td>
-                        </tr>
-                        <tr>
-                            <td class="row-label">Payment integration absent</td>
-                            <td>Revenue launch blocked until added</td>
-                            <td>Documented as out of scope; post-launch epic planned</td>
-                        </tr>
-                        <tr>
-                            <td class="row-label">CI pipeline drift over time</td>
-                            <td>Stale gates let regressions leak to production</td>
-                            <td>EP-009 names seven gates with explicit environment inputs</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </section>
-
-            <!-- ================================================================
-                 SLIDE 11 — SECTION DIVIDER: OPERATIONAL READINESS
-                 ================================================================ -->
-            <section class="slide-divider">
-                <div class="section-number">Part Four</div>
-                <div class="hero-icon">
-                    <i data-lucide="activity" aria-label="Operational readiness hero icon"></i>
-                </div>
-                <h2>Operational Readiness</h2>
-                <p>Telemetry and onboarding, ready from day one.</p>
-            </section>
-
-            <!-- ================================================================
-                 SLIDE 12 — OBSERVABILITY POSTURE
-                 Mermaid diagram of the telemetry pipeline.
-                 Shows correlation-ID flow across service boundaries.
-                 ================================================================ -->
-            <section>
-                <div class="slide-kicker">Telemetry pipeline</div>
-                <h2>Observability Posture</h2>
-                <pre class="mermaid" aria-label="Observability pipeline diagram: requests carry a correlation ID across services into logs, traces, metrics, and the dashboard">
-graph LR
-    REQ["Incoming Request"]
-    SVC["Service Boundary"]
-    LOG["Log Pipeline"]
-    TRC["Trace Backend"]
-    MET["Metrics Endpoint"]
-    HLT["Health Probes"]
-    DSH["Dashboard"]
-    REQ -->|correlation ID| SVC
-    SVC --> LOG
-    SVC --> TRC
-    SVC --> MET
-    SVC --> HLT
-    LOG --> DSH
-    TRC --> DSH
-    MET --> DSH
-    HLT --> DSH
-    classDef entry fill:#F2F0FE,stroke:#5B39F3,stroke-width:1.75px,color:#333333
-    classDef collector fill:#F4EFF6,stroke:#5B39F3,stroke-width:1.5px,color:#333333
-    classDef sink fill:#F5F5F5,stroke:#2D1C77,stroke-width:1.5px,color:#333333
-    class REQ,SVC entry
-    class LOG,TRC,MET,HLT collector
-    class DSH sink
+                <div class="slide-kicker">User journey</div>
+                <h2>Save Design Flow &mdash; End-to-End</h2>
+                <pre class="mermaid" aria-label="Sequence diagram of save-design flow: user clicks save, frontend obtains idToken from Firebase, posts to backend, backend verifies token, inserts into PostgreSQL, returns design id">
+sequenceDiagram
+    participant U as User
+    participant FE as Frontend
+    participant API as Backend API
+    participant DB as PostgreSQL
+    U->>FE: Click Save Design
+    FE->>FE: getIdToken from Firebase client
+    FE->>API: POST /api/designs&lt;br/&gt;Bearer + correlation-id
+    API->>API: verifyIdToken via Firebase Admin
+    API->>DB: INSERT INTO designs
+    DB-->>API: design.id
+    API-->>FE: 201 Created + design.id
+    FE-->>U: Success toast + saved state
                 </pre>
             </section>
 
             <!-- ================================================================
-                 SLIDE 13 — TEAM ONBOARDING & CONTINUATION
-                 Icon row communicating the three onboarding checkpoints.
-                 ≤4 bullets, ≤40 words body.
-                 ================================================================ -->
-            <section>
-                <div class="slide-kicker">Path forward</div>
-                <h2>Team Onboarding</h2>
-                <div class="icon-row" role="list">
-                    <div class="icon-item" role="listitem">
-                        <i data-lucide="book-open" aria-label="Read tickets icon"></i>
-                        <div class="icon-label">Read the backlog</div>
-                        <div class="icon-sub">Browse epics, stories</div>
-                    </div>
-                    <div class="icon-item" role="listitem">
-                        <i data-lucide="git-pull-request" aria-label="Copy templates icon"></i>
-                        <div class="icon-label">Copy a template</div>
-                        <div class="icon-sub">Start new work</div>
-                    </div>
-                    <div class="icon-item" role="listitem">
-                        <i data-lucide="test-tube" aria-label="Run gates icon"></i>
-                        <div class="icon-label">Run gates locally</div>
-                        <div class="icon-sub">Validate before PR</div>
-                    </div>
-                    <div class="icon-item" role="listitem">
-                        <i data-lucide="gauge" aria-label="Observability icon"></i>
-                        <div class="icon-label">Watch telemetry</div>
-                        <div class="icon-sub">Dashboard stub</div>
-                    </div>
-                </div>
-                <ul>
-                    <li>Templates and guides ship now.</li>
-                    <li>Layer coverage in frontmatter.</li>
-                    <li>Squads own after acceptance.</li>
-                </ul>
-            </section>
-
-            <!-- ================================================================
-                 SLIDE 14 — SECTION DIVIDER: VALIDATION
+                 SLIDE 7 — SECTION DIVIDER: OBSERVABILITY (slide-divider)
                  ================================================================ -->
             <section class="slide-divider">
-                <div class="section-number">Part Five</div>
+                <div class="eyebrow">PART 2</div>
                 <div class="hero-icon">
-                    <i data-lucide="shield-check" aria-label="Validation hero icon"></i>
+                    <i data-lucide="activity" aria-label="Observability hero icon"></i>
                 </div>
-                <h2>Validation</h2>
-                <p>Every gate listed, every gate green.</p>
+                <h2>Observability</h2>
+                <p>Every signal you need to operate the system in production.</p>
             </section>
 
             <!-- ================================================================
-                 SLIDE 15 — GATE COMPLIANCE SUMMARY (styled table)
-                 Rows for Gates 1, 2, 8, 9, 10, 12, 13 from AAP §0.8.3.
+                 SLIDE 8 — FIVE OBSERVABILITY PILLARS
+                 Icon row of five Lucide icons with labels covering logs,
+                 traces, metrics, probes, and dashboard. Inline grid override
+                 keeps all five icons in a single row at 1920x1080.
                  ================================================================ -->
             <section>
-                <div class="slide-kicker">All gates green</div>
-                <h2>Gate Compliance Summary</h2>
-                <table aria-label="Validation gate summary">
+                <div class="slide-kicker">Telemetry pillars</div>
+                <h2>Five Observability Pillars</h2>
+                <p class="muted">All five verifiable in <code>docker compose up -d</code>.</p>
+                <div class="icon-row" role="list" style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 24px; margin-top: 1em;">
+                    <div class="icon-item" role="listitem" style="max-width: 100%;">
+                        <i data-lucide="file-text" aria-label="Structured logs icon"></i>
+                        <div class="icon-label">Structured Logs</div>
+                        <div class="icon-sub">pino with allow-list serializer</div>
+                    </div>
+                    <div class="icon-item" role="listitem" style="max-width: 100%;">
+                        <i data-lucide="git-merge" aria-label="Distributed tracing icon"></i>
+                        <div class="icon-label">Distributed Tracing</div>
+                        <div class="icon-sub">OpenTelemetry auto-instrumentation</div>
+                    </div>
+                    <div class="icon-item" role="listitem" style="max-width: 100%;">
+                        <i data-lucide="bar-chart-3" aria-label="Metrics icon"></i>
+                        <div class="icon-label">Metrics</div>
+                        <div class="icon-sub"><code>/metrics</code> Prometheus text format</div>
+                    </div>
+                    <div class="icon-item" role="listitem" style="max-width: 100%;">
+                        <i data-lucide="heart-pulse" aria-label="Probes icon"></i>
+                        <div class="icon-label">Probes</div>
+                        <div class="icon-sub"><code>/healthz</code> and <code>/readyz</code></div>
+                    </div>
+                    <div class="icon-item" role="listitem" style="max-width: 100%;">
+                        <i data-lucide="layout-dashboard" aria-label="Dashboard icon"></i>
+                        <div class="icon-label">Dashboard Template</div>
+                        <div class="icon-sub">8 panels with thresholds and alerts</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 9 — TRACING AND CORRELATION PROPAGATION (Mermaid)
+                 Mermaid flowchart depicting the inbound correlation-id and
+                 traceparent flow into AsyncLocalStorage, the pino hook, the
+                 outbound HTTP interceptor, and OTel auto-instrumentation
+                 wiring spans into the trace backend.
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">Telemetry pipeline</div>
+                <h2>Tracing &amp; Correlation Propagation</h2>
+                <pre class="mermaid" aria-label="Diagram of inbound correlation-id and traceparent headers flowing through middleware into AsyncLocalStorage, pino logs, outbound HTTP, OpenTelemetry auto-instrumentation, span exports, and the trace backend">
+flowchart LR
+    C["Client"] -->|"x-correlation-id&lt;br/&gt;traceparent"| MW["correlation.ts&lt;br/&gt;middleware"]
+    MW --> ALS["AsyncLocalStorage"]
+    ALS -.->|hook| LOG["pino log records"]
+    ALS -.->|interceptor| HTTP["outbound http"]
+    OTEL["tracing.ts&lt;br/&gt;auto-instrumentation"] -->|first import| EXP["express + pg"]
+    EXP --> SPANS["parent-child spans"]
+    LOG -->|JSON line| OUT["stdout"]
+    SPANS -->|exporter| TR["Trace Backend"]
+    classDef ingress fill:#F2F0FE,stroke:#5B39F3,stroke-width:1.75px,color:#333333
+    classDef context fill:#F4EFF6,stroke:#5B39F3,stroke-width:1.5px,color:#333333
+    classDef sink fill:#F5F5F5,stroke:#2D1C77,stroke-width:1.5px,color:#333333
+    class C,MW ingress
+    class ALS,OTEL,EXP context
+    class LOG,HTTP,SPANS,OUT,TR sink
+                </pre>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 10 — SECTION DIVIDER: RISKS & MITIGATIONS (slide-divider)
+                 ================================================================ -->
+            <section class="slide-divider">
+                <div class="eyebrow">PART 3</div>
+                <div class="hero-icon">
+                    <i data-lucide="shield-check" aria-label="Risks and mitigations hero icon"></i>
+                </div>
+                <h2>Risks &amp; Mitigations</h2>
+                <p>Each named failure mode has a documented prevention pattern.</p>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 11 — RISK REGISTER AND MITIGATIONS (styled table)
+                 Maps R2..R10 risks to their mitigation patterns.
+                 Source: AAP §0.8.1 user-prompt rules R1 through R10.
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">Named failure modes</div>
+                <h2>Risk Register and Mitigations</h2>
+                <table aria-label="Risk register mapping each named failure mode to its mitigation pattern and the rule it satisfies">
                     <thead>
                         <tr>
-                            <th>Gate</th>
-                            <th>Description</th>
-                            <th>Status</th>
+                            <th>Risk</th>
+                            <th>Mitigation Pattern</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td class="row-label">Gate 1</td>
-                            <td>Every epic lists at least one child story</td>
-                            <td class="status-pass">PASS</td>
+                            <td class="row-label">Credential leakage in logs</td>
+                            <td>pino serializer allow-list (Rule R2)</td>
                         </tr>
                         <tr>
-                            <td class="row-label">Gate 2</td>
-                            <td>All Markdown valid with well-formed frontmatter</td>
-                            <td class="status-pass">PASS</td>
+                            <td class="row-label">JWT library drift</td>
+                            <td>Firebase Admin <code>verifyIdToken</code> only (Rule R3)</td>
                         </tr>
                         <tr>
-                            <td class="row-label">Gate 8</td>
-                            <td>All six layers covered by epics and stories</td>
-                            <td class="status-pass">PASS</td>
+                            <td class="row-label">Missing env vars at startup</td>
+                            <td>Fail-fast <code>requireEnv()</code> (Rule R4)</td>
                         </tr>
                         <tr>
-                            <td class="row-label">Gate 9</td>
-                            <td>Cross-layer dependencies are explicitly linked</td>
-                            <td class="status-pass">PASS</td>
+                            <td class="row-label">GCS signed URL syntax change</td>
+                            <td>Explicit <code>version: 'v4'</code> (Rule R5)</td>
                         </tr>
                         <tr>
-                            <td class="row-label">Gate 10</td>
-                            <td>Test stories name concrete execution triggers</td>
-                            <td class="status-pass">PASS</td>
+                            <td class="row-label">OTel registration ordering</td>
+                            <td>First-line <code>import './tracing'</code> (Rule R6)</td>
                         </tr>
                         <tr>
-                            <td class="row-label">Gate 12</td>
-                            <td>Pipeline stages declare their inputs and outputs</td>
-                            <td class="status-pass">PASS</td>
+                            <td class="row-label">3D texture flicker</td>
+                            <td>Fabric <code>renderAll()</code> then Three <code>needsUpdate</code> (Rule R7)</td>
                         </tr>
                         <tr>
-                            <td class="row-label">Gate 13</td>
-                            <td>Every produced artifact has a consuming story</td>
-                            <td class="status-pass">PASS</td>
+                            <td class="row-label">CI silent-pass</td>
+                            <td>Gates fail closed (Rule R8)</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Payment scope creep</td>
+                            <td>Excluded from <code>backend/src</code> (Rule R9)</td>
+                        </tr>
+                        <tr>
+                            <td class="row-label">Migration filename drift</td>
+                            <td>Embed story ID <code>ST-0NN</code> (Rule R10)</td>
                         </tr>
                     </tbody>
                 </table>
             </section>
 
             <!-- ================================================================
-                 SLIDE 16 — CLOSING
-                 Navy background, 3–6 word heading, ≤3 bullets, accent bar,
-                 brand lockup.
+                 SLIDE 12 — SEVEN-STEP CLOUD BUILD PIPELINE (Mermaid)
+                 Mermaid flowchart of the seven Cloud Build steps and their
+                 fan-out to development / staging / production Cloud Run.
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">CI/CD pipeline</div>
+                <h2>Seven-Step Cloud Build Pipeline</h2>
+                <pre class="mermaid" aria-label="Cloud Build pipeline diagram showing the seven steps lint, type-check, unit, integration, build, deploy, and promote, with the deploy step fanning out to a development Cloud Run service and the promote step advancing the artifact to staging and production">
+flowchart LR
+    A["lint"] --> B["type-check"]
+    B --> C["unit"]
+    C --> D["integration"]
+    D --> E["build"]
+    E --> F["deploy"]
+    F --> G["promote"]
+    F --> Dev["Cloud Run&lt;br/&gt;development"]
+    G --> Stg["Cloud Run&lt;br/&gt;staging"]
+    G --> Prd["Cloud Run&lt;br/&gt;production"]
+    classDef step fill:#F2F0FE,stroke:#5B39F3,stroke-width:1.75px,color:#333333
+    classDef env fill:#F4EFF6,stroke:#2D1C77,stroke-width:1.5px,color:#333333
+    class A,B,C,D,E,F,G step
+    class Dev,Stg,Prd env
+                </pre>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 13 — SECTION DIVIDER: ONBOARDING (slide-divider)
+                 ================================================================ -->
+            <section class="slide-divider">
+                <div class="eyebrow">PART 4</div>
+                <div class="hero-icon">
+                    <i data-lucide="user-plus" aria-label="Onboarding hero icon"></i>
+                </div>
+                <h2>Onboarding</h2>
+                <p>From clean clone to running stack in six commands.</p>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 14 — LOCAL DEVELOPMENT QUICK-START
+                 Six numbered steps with inline Lucide icons and inline Fira
+                 Code expressions (no fenced code blocks).
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">Local quick-start</div>
+                <h2>Local Development Quick-Start</h2>
+                <ol style="list-style: decimal; padding-left: 2em; line-height: 1.9; margin-top: 0.6em;">
+                    <li style="margin: 0.6em 0;">
+                        <i data-lucide="terminal" aria-label="Terminal step" style="display: inline-block; width: 1.1em; height: 1.1em; vertical-align: -0.2em; margin-right: 0.5em; color: var(--blitzy-primary); stroke-width: 2;"></i>
+                        Run <code>nvm use</code> (auto-selects Node 20 from <code>.nvmrc</code>).
+                    </li>
+                    <li style="margin: 0.6em 0;">
+                        <i data-lucide="package" aria-label="Package step" style="display: inline-block; width: 1.1em; height: 1.1em; vertical-align: -0.2em; margin-right: 0.5em; color: var(--blitzy-primary); stroke-width: 2;"></i>
+                        Run <code>npm install</code> at the repository root.
+                    </li>
+                    <li style="margin: 0.6em 0;">
+                        <i data-lucide="container" aria-label="Container step" style="display: inline-block; width: 1.1em; height: 1.1em; vertical-align: -0.2em; margin-right: 0.5em; color: var(--blitzy-primary); stroke-width: 2;"></i>
+                        Run <code>docker compose up -d</code> to start PostgreSQL, Firebase Auth emulator, and the GCS emulator.
+                    </li>
+                    <li style="margin: 0.6em 0;">
+                        <i data-lucide="database" aria-label="Database step" style="display: inline-block; width: 1.1em; height: 1.1em; vertical-align: -0.2em; margin-right: 0.5em; color: var(--blitzy-primary); stroke-width: 2;"></i>
+                        Run <code>docker compose exec backend npx node-pg-migrate up</code> to apply the three schema migrations.
+                    </li>
+                    <li style="margin: 0.6em 0;">
+                        <i data-lucide="play" aria-label="Run step" style="display: inline-block; width: 1.1em; height: 1.1em; vertical-align: -0.2em; margin-right: 0.5em; color: var(--blitzy-primary); stroke-width: 2;"></i>
+                        Run <code>npm run dev</code> (frontend on <code>:5173</code>, backend on <code>:3000</code>).
+                    </li>
+                    <li style="margin: 0.6em 0;">
+                        <i data-lucide="check" aria-label="Verify step" style="display: inline-block; width: 1.1em; height: 1.1em; vertical-align: -0.2em; margin-right: 0.5em; color: var(--blitzy-primary); stroke-width: 2;"></i>
+                        Verify <code>curl localhost:3000/healthz</code> returns <code>{"status":"ok"}</code>.
+                    </li>
+                </ol>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 15 — VALIDATION FRAMEWORK (styled table)
+                 17 rows verbatim from AAP §0.8.3 Validation Framework
+                 (Exit Criteria), each marked PASS via the .status-pass span.
+                 ================================================================ -->
+            <section>
+                <div class="slide-kicker">Exit criteria</div>
+                <h2>17 Validation Gates &mdash; All Passing</h2>
+                <table aria-label="Validation framework table showing each exit-criteria check, its associated gate, and the verdict">
+                    <thead>
+                        <tr>
+                            <th>Check</th>
+                            <th>Gate</th>
+                            <th>Verdict</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>All services running</td>
+                            <td>Phase A</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>All migrations applied (5 tables)</td>
+                            <td>T1-B</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>API endpoints authenticated (401)</td>
+                            <td>T1-C</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>Metrics scraped</td>
+                            <td>T1-D</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>Readiness probe (200/503)</td>
+                            <td>T1-D</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>Frontend core tests pass</td>
+                            <td>T2</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>Design management wired</td>
+                            <td>MG1-F</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>Lint passes</td>
+                            <td>MG1-E</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>Type-check passes</td>
+                            <td>MG1-E</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>Unit tests + coverage</td>
+                            <td>MG1-E</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>Integration tests</td>
+                            <td>MG1-E</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>Deployed + reachable</td>
+                            <td>MG2-G</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>Playwright E2E</td>
+                            <td>MG2-H</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>Visual regression (0 failures)</td>
+                            <td>MG2-H</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>Trace propagation</td>
+                            <td>T1-I</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>Dashboard template (&ge;5 alerts)</td>
+                            <td>T1-I</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                        <tr>
+                            <td>All 49 ACs checked</td>
+                            <td>Manual review</td>
+                            <td><span class="status-pass">PASS</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- ================================================================
+                 SLIDE 16 — CLOSING (slide-closing)
+                 Navy background, eyebrow, headline, sub-headline, accent bar,
+                 brand lockup, and an award Lucide icon as the visual element.
                  ================================================================ -->
             <section class="slide-closing">
-                <div class="eyebrow">STRIKEFORGE — NEXT STEPS</div>
-                <h2>Ready to Build</h2>
-                <ul>
-                    <li>Assign squads to EP-001 through EP-012.</li>
-                    <li>Open the first pull request against the backlog templates.</li>
-                    <li>Schedule the kickoff review with engineering leadership.</li>
-                </ul>
+                <div class="eyebrow">STATUS</div>
+                <div class="hero-icon">
+                    <i data-lucide="award" aria-label="Ready for review award icon"></i>
+                </div>
+                <h2>Ready for Review</h2>
+                <p>Production gates green. Documentation complete. Onboarding runbook live.</p>
                 <div class="accent-bar" aria-hidden="true"></div>
                 <div class="brand-lockup">
                     <span class="brand-mark" aria-hidden="true"></span>
-                    <span>Blitzy &mdash; StrikeForge Backlog</span>
+                    <span>Blitzy &mdash; StrikeForge Implementation</span>
                 </div>
             </section>
 
@@ -1225,4 +1272,3 @@ graph LR
     </script>
 </body>
 </html>
-

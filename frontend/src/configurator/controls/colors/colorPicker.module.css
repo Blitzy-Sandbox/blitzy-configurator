@@ -1,0 +1,172 @@
+/*
+ * =====================================================================
+ * Color picker — shared swatch grid styles (ST-006 / ST-007 / ST-008).
+ * =====================================================================
+ *
+ * Authority:
+ *   - AAP §0.3.4 / §0.6.7 — color picker components for ST-006 / ST-007
+ *     / ST-008 share the same swatch-grid presentation.
+ *   - AAP §0.8.2 Executive Presentation Rule — uses brand tokens
+ *     declared in `frontend/src/styles/global.css` (--blitzy-primary,
+ *     --blitzy-border-soft, --space-*, --radius-*).
+ *   - QA Report Issue #3 — accent picker's selected state must be
+ *     visible at a glance. The shared `.swatch--selected` class delivers
+ *     a 2px primary-purple border + a check icon so the active swatch
+ *     is unambiguous against any swatch fill, including white.
+ *
+ * Responsibilities:
+ *   1. Declare a CSS-Module class set used by all three color pickers
+ *      (primary / secondary / accent).
+ *   2. Render a responsive swatch grid that wraps at narrow widths
+ *      (the App's 280px control-sidebar collapses to a stacked
+ *      below-preview region at ≤900px; the swatches must remain
+ *      tappable on that mobile breakpoint).
+ *   3. Provide visible focus + selected indicators per ST-006-AC4 and
+ *      AAP §0.6.14 (every control reachable by keyboard, labeled for
+ *      assistive technology).
+ *
+ * Cross-cutting rules:
+ *   - Rule R7 / C6: N/A (pure CSS).
+ *   - Rule R2: N/A (pure CSS — no logging surface).
+ *
+ * Out of scope:
+ *   - Custom-color HSV picker. AAP §0.6.7 specifies a curated swatch
+ *     experience; an arbitrary HSV picker would need design review.
+ * =====================================================================
+ */
+
+.colorPicker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-lg);
+}
+
+.colorPicker__heading {
+  /*
+   * Use the display family at a small size for the section heading so
+   * the control sidebar's hierarchy mirrors the brand deck. `h3` in
+   * `global.css` already applies these defaults; we restate the size
+   * here so this class stays composable when the heading is rendered
+   * as a `<span>` or `<div>` with `role="heading"`.
+   */
+  font-family: var(--ff-display);
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin: 0;
+  color: var(--blitzy-text);
+}
+
+.colorPicker__hint {
+  font-size: 0.75rem;
+  color: var(--blitzy-text-muted);
+  margin: 0;
+}
+
+.colorPicker__grid {
+  display: grid;
+  /*
+   * Auto-fit columns at minimum 36px wide. With the 280px sidebar this
+   * yields 6 columns at desktop; on the mobile collapse layout (full
+   * viewport width below 900px) it gracefully spreads to 8+ columns.
+   */
+  grid-template-columns: repeat(auto-fill, minmax(36px, 1fr));
+  gap: var(--space-sm);
+  margin: 0;
+  padding: 0;
+}
+
+.swatch {
+  /*
+   * Buttons by default carry browser-vendor padding/border styles that
+   * fight our design system. We zero them out here and rebuild the
+   * intended visual via background, border-radius, and outline.
+   */
+  appearance: none;
+  -webkit-appearance: none;
+  border: 2px solid var(--blitzy-border-soft);
+  background: var(--blitzy-surface-0);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  padding: 0;
+  position: relative;
+  transition:
+    border-color 120ms ease-out,
+    transform 120ms ease-out,
+    box-shadow 120ms ease-out;
+  /* Prevent text-cursor on buttons in Firefox. */
+  font: inherit;
+  color: inherit;
+}
+
+.swatch:hover {
+  /*
+   * Subtle lift on hover signals interactivity. The transform is small
+   * (1.04× scale) so it does not collide with the swatch grid gutters.
+   */
+  transform: scale(1.04);
+  border-color: var(--blitzy-primary-light);
+}
+
+.swatch:focus-visible {
+  /*
+   * The global `:focus-visible` rule paints a 2px outline; we layer an
+   * additional 4px shadow ring for extra prominence on the dense
+   * swatch grid where outline-offset alone can be obscured by
+   * neighbouring swatches.
+   */
+  box-shadow: 0 0 0 4px rgba(91, 57, 243, 0.25);
+}
+
+.swatch--selected {
+  /*
+   * Selected swatches receive the strongest border + a faint inset
+   * highlight. The `data-selected` attribute is the source of truth in
+   * the JSX (Playwright tests select via `[data-selected="true"]`),
+   * but we also apply the same class for a single CSS lookup site.
+   */
+  border-color: var(--blitzy-primary);
+  box-shadow:
+    inset 0 0 0 2px var(--blitzy-surface-0),
+    0 0 0 1px var(--blitzy-primary);
+}
+
+.swatch__check {
+  /*
+   * The check glyph sits in the center of a selected swatch. We render
+   * it with a hardcoded mid-grey + white drop-shadow so it remains
+   * legible against any fill color — including white (the default
+   * primary) and saturated brand purple. The glyph itself is a unicode
+   * "✓" character which is well-supported across all browsers.
+   */
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--blitzy-text);
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.85);
+  pointer-events: none;
+}
+
+.swatch__srOnly {
+  /*
+   * Visually hidden text for assistive technology — the swatch's
+   * `aria-label` already conveys the color name + state, and this
+   * class is reserved for any extra context that should NOT be
+   * visually rendered. Standard "screen-reader-only" recipe.
+   */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

@@ -24,9 +24,11 @@ The specific pillar selection is not arbitrary. Structured logging answers the o
 
 ## What Was Reused from the Local Dev Environment
 
-The repository is currently greenfield. Before the work cataloged in this document, it contained a single root README file and no prior observability posture — no existing log stream, no existing trace collector, no existing metrics endpoint, no existing probe surface, and no existing dashboard assets. Honest accounting therefore yields a single answer to the reuse question: none. Every capability cataloged below is net-new and is introduced specifically to satisfy the observability pillar contract for the StrikeForge configurator. Once the first local development environment is stood up by the infrastructure stories, any platform-level capabilities it exposes — for example, a built-in log stream at the runtime boundary, a built-in process-level health probe, or a built-in request-timing instrumentation — will be adopted preferentially so that the net-new surface cataloged here is only the portion that the platform does not already provide. Until that moment the honest answer remains "none" and this section deliberately does not enumerate reused capabilities that do not yet exist.
+The repository was greenfield at the start of the implementation work. Before the implementation, the working tree contained a single root README file and no prior observability posture — no log stream, no trace collector, no metrics endpoint, no probe surface, and no dashboard assets. The honest accounting therefore remains: nothing was reused from a pre-existing implementation, because there was no pre-existing implementation to reuse from.
 
-This section will be revised once the local development environment is materialized by the infrastructure stories.
+The closest reused element is conventional rather than artifact-level. The pino serializer allow-list pattern in `backend/src/logging/pino.ts` follows the pino 8.x community convention for fail-closed credential redaction (Rule R2 enforcement). The pino library itself was selected per the user prompt §3 "Observability" pin and is documented in the implementation decision log row titled "Backend logging library: pino" at [../decisions/README.md](../decisions/README.md). The OpenTelemetry auto-instrumentation pattern in `backend/src/tracing.ts` similarly reuses the `@opentelemetry/auto-instrumentations-node` package's documented best practice of registering before any application import (Rule R6/C4) — the registration order is community-conventional rather than copied from a pre-existing source file in this repository.
+
+In summary: no telemetry artifact was inherited from a prior version of this repository. Library-level conventions (pino's allow-list serializer; OTel auto-instrumentation) were honored as they are documented by the upstream maintainers, and these conventions are recorded in the decision log so that future maintainers understand the source of each design choice.
 
 ## What Was Added
 
@@ -50,7 +52,29 @@ Every event of operational interest emits exactly one structured log record, and
 - Personally identifiable information and secrets are never logged: high-risk fields are redacted at the emission boundary before a record enters the log stream, and the redaction policy is enumerated in the backlog so that reviewers can confirm it is applied uniformly.
 - Retention defaults to seven days in non-production environments and thirty days in production; retention is overridable per environment by the infrastructure stories and is documented alongside the dashboard template.
 
-**Backlog Reference:** Authored in [ST-047](../../tickets/stories/).
+**Live Implementation:**
+
+- **File:** `backend/src/logging/pino.ts` — initializes a pino 8.x logger with the serializer allow-list per Rule R2.
+- **Forbidden fields:** `password`, `Authorization`, `credential`, any field whose value matches the bearer-token pattern `Bearer [A-Za-z0-9._-]{20,}`. The serializer drops these fields BEFORE the record enters the log stream.
+- **Express integration:** `pino-http` middleware mounted in `backend/src/index.ts` after the correlation middleware so every request log record carries the correlation ID via the AsyncLocalStorage hook.
+- **Verification (User Example, Rule R2):**
+
+  ```bash
+  curl -X POST http://localhost:3000/api/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"email":"test@example.com","password":"SENTINEL_CRED_99"}'
+  grep "SENTINEL_CRED_99" <(docker compose logs backend)
+  # expected: 0 lines returned
+  ```
+
+- **Aggregate verification:**
+
+  ```bash
+  docker compose logs backend | jq -c 'select((.password != null) or (.Authorization != null) or (.credential != null) or ((.message // "") | test("Bearer [A-Za-z0-9._-]{20,}")))' | wc -l
+  # expected: 0
+  ```
+
+**Backlog Reference:** Implemented per [ST-047 — Structured Logs & Correlation ID](../../tickets/stories/ST-047-structured-logs-correlation-id.md).
 
 ### 2. Distributed Tracing Across Service Boundaries
 
@@ -66,7 +90,23 @@ Every cross-service operation emits a trace span, and every span is linked to it
 - Span names follow a stable convention that pairs the operation with the layer it belongs to — for example, an entry-boundary span names the inbound route, a database span names the query shape, and a downstream-call span names the called service and operation — so that operators can compose trace searches without having to memorize per-service span vocabularies.
 - Traces and logs are cross-linkable in both directions: every log record carries the correlation identifier that identifies its owning trace, and every span carries a back-reference to the correlation identifier that identifies its owning log narrative, so an operator can pivot from either pillar into the other without leaving the incident context.
 
-**Backlog Reference:** Authored in [ST-049](../../tickets/stories/).
+**Live Implementation:**
+
+- **Bootstrap file:** `backend/src/tracing.ts` — registers `@opentelemetry/sdk-node` with `@opentelemetry/auto-instrumentations-node` BEFORE any application import per Rule R6/C4. The backend entry point `backend/src/index.ts` declares `import './tracing'` as its FIRST line.
+- **Auto-instrumented modules:** `pg`, `http`, `express` — covered by `@opentelemetry/auto-instrumentations-node` without any manual instrumentation. Manual instrumentation is forbidden per C4.
+- **Propagation:** W3C `traceparent` header — automatically read on inbound and attached on outbound HTTP via OTel's auto-instrumentation of the `http` module. Traces share the trace ID across all spans of a single request lifecycle.
+- **Cross-link to logs:** every log record emitted via `pino` carries the `correlationId` set in `AsyncLocalStorage` and the OTel-injected `trace_id` from the active span, enabling pivot from log → trace and trace → log without leaving the incident context.
+- **Verification (User Example, Gate T1-I):**
+
+  ```bash
+  curl -s "http://localhost:3000/api/designs" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+  docker compose logs backend --tail 20 | grep -c "4bf92f3577b34da6a3ce929d0e0e4736"
+  # expected: ≥ 1
+  ```
+
+**Backlog Reference:** Implemented per [ST-049 — Distributed Tracing & Dashboard Template Stub](../../tickets/stories/ST-049-distributed-tracing-dashboard-template-stub.md).
 
 ### 3. Metrics Endpoint
 
@@ -83,7 +123,24 @@ Each service exposes a dedicated scrape endpoint that serves counters, gauges, a
 - Cardinality is disciplined: per-user identifiers, per-session identifiers, free-form URL path segments, and any other unbounded label value are never emitted as metric labels, because unbounded cardinality is the most common cause of metrics-pipeline collapse. Unbounded attributes belong in logs or traces, not in metrics.
 - Individual services may expose additional service-specific metrics beyond the mandated minimum, provided those metrics follow the same naming and label conventions and provided any new metric family that feeds a threshold or alert is documented in the dashboard template before it is consumed.
 
-**Backlog Reference:** Authored in [ST-048](../../tickets/stories/).
+**Live Implementation:**
+
+- **Endpoint:** `GET /metrics` exposed by `backend/src/routes/metrics.ts`. Response content type: `text/plain; version=0.0.4; charset=utf-8` (the Prometheus text-format content type).
+- **Library:** `prom-client` 15.x — emits counters, histograms, and gauges with the three mandated labels: `service`, `environment`, `version` per ST-048-AC2.
+- **Required metric families:**
+  - `http_requests_total` (counter; labels `service`, `environment`, `version`, `method`, `route`, `status`).
+  - `http_errors_total` (counter; same labels).
+  - `http_request_duration_seconds` (histogram; same labels plus configurable buckets aligned to the latency SLO).
+  - `process_up` (gauge; value 1 while running, 0 on shutdown).
+- **Cardinality discipline:** the `route` label is normalized (route patterns, not URL instances) to prevent unbounded cardinality. User identifiers, session identifiers, and free-form path segments are NEVER emitted as labels.
+- **Verification (User Example):**
+
+  ```bash
+  curl -sf localhost:3000/metrics | grep http_requests_total
+  # expected: at least one line matching the metric family
+  ```
+
+**Backlog Reference:** Implemented per [ST-048 — Metrics Endpoint, Health/Readiness Probes](../../tickets/stories/ST-048-metrics-endpoint-health-readiness-probes.md).
 
 ### 4. Health and Readiness Probes
 
@@ -99,7 +156,27 @@ Two distinct endpoints report liveness and readiness semantics. The separation m
 - Probe response time is budgeted: every probe returns its verdict within a small, documented latency ceiling so that the probe itself never becomes a reason a healthy instance is judged unhealthy by an over-eager external poller.
 - On graceful shutdown, the readiness probe begins reporting not-ready a short, configurable grace period before the process actually exits. This ensures in-flight traffic is drained to other healthy instances before the shutting-down instance stops accepting new requests.
 
-**Backlog Reference:** Authored in [ST-048](../../tickets/stories/).
+**Live Implementation:**
+
+- **File:** `backend/src/routes/health.ts`.
+- **`GET /healthz`** (liveness) — always returns 200 `{"status":"ok"}` while the process is running. Does NOT depend on any downstream service health (per ST-048-AC3).
+- **`GET /readyz`** (readiness) — returns 200 `{"status":"ready"}` when the database is reachable; returns 503 with `{"status":"not_ready","reason":"database_unreachable"}` otherwise (per ST-048-AC4).
+- **Probe latency budget:** ≤ 100 ms response time per the contract above. The readiness check uses a single `SELECT 1` against the connection pool.
+- **Verification (User Example, Gate T1-D):**
+
+  ```bash
+  curl -sf localhost:3000/healthz | jq -r '.status'
+  # expected: "ok"
+
+  curl -sf localhost:3000/readyz | jq -r '.status'
+  # expected: "ready"
+
+  docker compose stop postgres && sleep 3
+  curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/readyz
+  # expected: 503
+  ```
+
+**Backlog Reference:** Implemented per [ST-048 — Metrics Endpoint, Health/Readiness Probes](../../tickets/stories/ST-048-metrics-endpoint-health-readiness-probes.md).
 
 ### 5. Dashboard Template
 
@@ -114,7 +191,15 @@ A template specifies the canonical operational dashboard layout, panels, queries
 
 See [dashboard-template.md](./dashboard-template.md) for the panel, query, threshold, and alert-policy specification.
 
-**Backlog Reference:** Authored in [ST-049](../../tickets/stories/).
+**Live Implementation:**
+
+- **File:** `docs/observability/dashboard-template.md` — populated with all 8 panels per ST-049-AC5: Request Rate, Error Rate, P95 Latency, Error Rate Breakout by Service and Route, Correlation ID Throughput, Active Sessions, Order Creation Rate, Deploy Markers.
+- **Per-panel content:** every panel includes query intent, thresholds (warning/critical/sustained windows), alert policy, layout position, and SLO tie-ins.
+- **Alert policy entries:** ≥ 5 alert policy entries (Gate T1-I requirement: `grep -c "alert policy" docs/observability/dashboard-template.md` returns ≥ 5).
+- **SLO mapping:** the `## SLO Tie-Ins` section maps panels to the EP-011 abstract SLO identifiers SLO-001 through SLO-005.
+- **Implementation Notes section:** the dashboard template now includes a concrete-data-source mapping per panel, naming the backend file (`metrics.ts`, `pino.ts`, `session.service.ts`, `order.service.ts`, `cloudbuild.yaml`) that emits each signal.
+
+**Backlog Reference:** Implemented per [ST-049 — Distributed Tracing & Dashboard Template Stub](../../tickets/stories/ST-049-distributed-tracing-dashboard-template-stub.md).
 
 ## Local Verification
 
@@ -133,6 +218,22 @@ The verification flows are deliberately scoped to a single developer workstation
 5. Confirm that the `correlation_id` field is populated on every record and that the same value appears on every record generated by the single triggering action across every service involved.
 6. Confirm that the record schema version advertised by the records matches the version documented in the backlog and that the record stream is line-oriented — one record per line — with no truncation or interleaving.
 
+**User Example commands (Rule R2 sentinel):**
+
+```bash
+# Sentinel-credential test: confirm credentials never appear in logs
+curl -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","password":"SENTINEL_CRED_99"}'
+grep "SENTINEL_CRED_99" <(docker compose logs backend)
+# expected: 0 lines returned
+
+# Aggregate-check: confirm no log record carries password/Authorization/credential
+docker compose logs backend | \
+  jq -c 'select((.password != null) or (.Authorization != null) or (.credential != null) or ((.message // "") | test("Bearer [A-Za-z0-9._-]{20,}")))' | wc -l
+# expected: 0
+```
+
 ### Verify Distributed Tracing
 
 1. Start the local development environment with tracing enabled.
@@ -141,6 +242,18 @@ The verification flows are deliberately scoped to a single developer workstation
 4. Confirm that a root span appears for the entry boundary of the originating service and that a child span appears for each downstream call made while handling that request.
 5. Confirm that every span in the request shares the same trace identifier and that every span carries a reference back to the owning `correlation_id`.
 6. Confirm that the sampling policy behaves as documented by triggering an error-bearing request and observing that its full trace is retained, then triggering a normal request and observing that retention follows the documented sample rate.
+
+**User Example commands (Gate T1-I):**
+
+```bash
+# Trace-propagation test
+curl -s "http://localhost:3000/api/designs" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+docker compose logs backend --tail 20 | grep -c "4bf92f3577b34da6a3ce929d0e0e4736"
+# expected: ≥ 1
+```
 
 ### Verify Metrics Endpoint
 
@@ -151,6 +264,17 @@ The verification flows are deliberately scoped to a single developer workstation
 5. Confirm that every metric in the response carries the three mandated labels: `service`, `environment`, and `version`.
 6. Confirm that metric names use a consistent separator convention across the response and that the service-level-objective-feeding metrics — error rate and P95 latency — are present and non-empty after a handful of triggering requests.
 
+**User Example commands:**
+
+```bash
+curl -sf localhost:3000/metrics | grep http_requests_total
+# expected: at least one matching line
+
+# Cardinality discipline check
+curl -sf localhost:3000/metrics | grep -E '^http_requests_total\{[^}]*environment=' | head -3
+# expected: lines containing service, environment, version labels
+```
+
 ### Verify Health and Readiness Probes
 
 1. Start the local development environment.
@@ -160,6 +284,28 @@ The verification flows are deliberately scoped to a single developer workstation
 5. Simulate the loss of a declared dependency — for example, stop the local instance of a required downstream service — and confirm that the readiness probe transitions to not-ready while the liveness probe continues to report alive, because the process itself is still healthy.
 6. Restore the dependency and confirm that the readiness probe returns to ready without the owning process being restarted.
 
+**User Example commands (Gate T1-D):**
+
+```bash
+# Liveness
+curl -sf localhost:3000/healthz | jq -r '.status'
+# expected: "ok"
+
+# Readiness — happy path
+curl -sf localhost:3000/readyz | jq -r '.status'
+# expected: "ready"
+
+# Readiness — degraded path
+docker compose stop postgres && sleep 3
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/readyz
+# expected: 503
+
+# Recovery
+docker compose start postgres && sleep 5
+curl -sf localhost:3000/readyz | jq -r '.status'
+# expected: "ready"
+```
+
 ### Verify Dashboard Template
 
 1. Open [dashboard-template.md](./dashboard-template.md) and walk the panel catalog top-to-bottom.
@@ -168,16 +314,38 @@ The verification flows are deliberately scoped to a single developer workstation
 4. Confirm that the threshold values named for each panel are consistent with what the local environment reports under normal load and that the alert-policy description is consistent with the observability posture.
 5. Record any panel that cannot be populated from local data as a gap in the decision log at [../decisions/README.md](../decisions/README.md) so that the gap is tracked rather than silently accepted.
 
+**User Example commands (Gate T1-I dashboard):**
+
+```bash
+# Confirm all 8 panels present
+grep -cE "^### (Request Rate|Error Rate|P95 Latency|Error Rate — Breakout by Service and Route|Correlation ID Throughput|Active Sessions|Order Creation Rate|Deploy Markers)$" docs/observability/dashboard-template.md
+# expected: 8
+
+# Confirm ≥5 alert policy entries (case-sensitive — Gate T1-I verbatim)
+grep -c "alert policy" docs/observability/dashboard-template.md
+# expected: ≥ 5
+
+# Confirm SLO tie-ins exist
+grep -c "^- \`SLO-" docs/observability/dashboard-template.md
+# expected: ≥ 5
+```
+
 ## Cross-References
 
 The following links point to every artifact materially connected to this catalog. The epic and story links are the authoritative implementation contracts; the template link is the operational companion document that this catalog summarizes; the decision-log and executive-summary links are the surrounding context that explains the choices behind the observability posture and communicates them to non-technical leadership.
 
 - Epic: [EP-011 Observability & Error Tracking](../../tickets/epics/EP-011-observability-error-tracking.md) — the authoritative backlog record of the observability work, enumerating every child story and the acceptance criteria that gate them.
-- Story — Structured Logging: [ST-047](../../tickets/stories/) — the story implementing the structured-logging-with-correlation-IDs contract cataloged in pillar 1 above. The link points to the stories directory; the exact slug is finalized by the stories author.
-- Story — Metrics & Health/Readiness: [ST-048](../../tickets/stories/) — the story implementing the metrics-endpoint contract in pillar 3 and the health-and-readiness-probes contract in pillar 4.
-- Story — Distributed Tracing & Dashboard: [ST-049](../../tickets/stories/) — the story implementing the distributed-tracing contract in pillar 2 and the dashboard-template contract in pillar 5.
+- Story — Structured Logging: [ST-047 — Structured Logs & Correlation ID](../../tickets/stories/ST-047-structured-logs-correlation-id.md) — the story implementing the structured-logging-with-correlation-IDs contract cataloged in pillar 1 above.
+- Story — Metrics & Health/Readiness: [ST-048 — Metrics Endpoint, Health/Readiness Probes](../../tickets/stories/ST-048-metrics-endpoint-health-readiness-probes.md) — the story implementing the metrics-endpoint contract in pillar 3 and the health-and-readiness-probes contract in pillar 4.
+- Story — Distributed Tracing & Dashboard: [ST-049 — Distributed Tracing & Dashboard Template Stub](../../tickets/stories/ST-049-distributed-tracing-dashboard-template-stub.md) — the story implementing the distributed-tracing contract in pillar 2 and the dashboard-template contract in pillar 5.
 - Dashboard Template: [dashboard-template.md](./dashboard-template.md) — the sibling operational-dashboard specification covering panel layout, queries, thresholds, and alert policies.
-- Executive Summary (Slide 12 depicts the observability posture): [../executive-summary.html](../executive-summary.html) — the non-technical leadership presentation; the observability-posture slide visualizes how the five pillars compose into a single telemetry pipeline.
+- Executive Summary (depicts the observability posture): [../executive-summary.html](../executive-summary.html) — the non-technical leadership presentation; the observability-posture slide visualizes how the five pillars compose into a single telemetry pipeline.
+- Implementation — Pino logger: [../../backend/src/logging/pino.ts](../../backend/src/logging/pino.ts) — pino logger with serializer allow-list per Rule R2.
+- Implementation — Correlation middleware: [../../backend/src/middleware/correlation.ts](../../backend/src/middleware/correlation.ts) — correlation-ID middleware using AsyncLocalStorage per C5.
+- Implementation — OTel SDK init: [../../backend/src/tracing.ts](../../backend/src/tracing.ts) — OpenTelemetry SDK initialization, registered before any application import per C4/R6.
+- Implementation — Metrics route: [../../backend/src/routes/metrics.ts](../../backend/src/routes/metrics.ts) — Prometheus text-format `/metrics` endpoint with mandated labels.
+- Implementation — Health/readiness routes: [../../backend/src/routes/health.ts](../../backend/src/routes/health.ts) — `/healthz` liveness and `/readyz` readiness routes.
+- Decision log — implementation rows: [../decisions/README.md](../decisions/README.md) — rationale for non-trivial implementation choices including the logging library selection, correlation propagation pattern, and OTel registration order.
 
 ## Document Maintenance
 

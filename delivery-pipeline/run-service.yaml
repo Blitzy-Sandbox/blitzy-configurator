@@ -1,0 +1,418 @@
+# =====================================================================
+# StrikeForge Cloud Run Service Manifest — Knative Serving v1
+# ---------------------------------------------------------------------
+# This file is the Cloud Run service manifest template referenced by
+# `skaffold.yaml`'s `manifests.rawYaml` field. It describes the
+# StrikeForge backend Cloud Run service and is rendered by Skaffold
+# during Cloud Deploy releases, then applied by the `cloudrun`
+# deployer to each target environment (development, staging,
+# production) declared in `delivery-pipeline/clouddeploy.yaml`.
+#
+# RENDER / DEPLOY flow:
+#   1. `cloudbuild.yaml` step 5 builds and pushes the image with the
+#      tag pattern `gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA` and
+#      captures the registry digest (ST-040-AC2).
+#   2. `cloudbuild.yaml` step 6 invokes `gcloud deploy releases create`
+#      with `--images=gcr.io/$PROJECT_ID/strikeforge=gcr.io/$PROJECT_ID/strikeforge@<DIGEST>`,
+#      pinning the artifact to a specific digest at release time.
+#      Cloud Deploy invokes Skaffold's render phase, which substitutes
+#      the digest into this manifest's `image` field.
+#   3. Cloud Deploy then walks the `serialPipeline` stages in
+#      `delivery-pipeline/clouddeploy.yaml` (development → staging →
+#      production), applying the rendered manifest to each target's
+#      Cloud Run service. The same IMAGE_DIGEST flows through every
+#      target (Rule R10).
+#
+# Authority:
+#   - AAP §0.3.2 — "delivery-pipeline/clouddeploy.yaml | Cloud Deploy
+#     pipeline with development → staging → production targets"
+#   - AAP §0.5.4 — Cloud Run accepts containerized backend image
+#     tagged `gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA`
+#   - AAP §0.5.5 telemetry: `/healthz` returns 200 when running, used
+#     by liveness probe; `/readyz` exists at the application level
+#     and is queryable by external orchestrators
+#   - ST-048-AC3 — liveness probe at documented `/healthz` path
+#   - ST-048-AC4 — readiness probe at documented `/readyz` path
+#     (exposed by application; Knative Serving v1 does not support
+#     readinessProbe at the container spec — Cloud Run uses
+#     startupProbe to gate traffic during cold start)
+#   - ST-041 — Cloud Deploy release seeds the development target;
+#     readiness failures trigger built-in revision rollback
+#   - Rule R4 — all six required env vars present
+#   - Rule R6 / C4 — `import './tracing'` is the first import in
+#     `backend/src/index.ts`; OTel auto-instrumentation registers
+#     before any application module loads. The startup probe's
+#     generous `failureThreshold` (30 attempts × 5s = 150s window)
+#     gives the OTel SDK + pg pool + Firebase Admin SDK time to
+#     initialize during cold start.
+#   - Rule C3 — Cloud SQL Unix socket connection requires the gen2
+#     execution environment, set via the
+#     `run.googleapis.com/execution-environment: gen2` annotation
+#
+# Cross-file integration contract:
+#   - `skaffold.yaml` (root) — `manifests.rawYaml` references this
+#     file. Skaffold's `tagPolicy: gitCommit: { variant: CommitSha }`
+#     applies to `skaffold dev` / `skaffold run`; for Cloud Build
+#     CI releases, the `--images` flag passed to
+#     `gcloud deploy releases create` overrides the tag policy and
+#     pins the immutable digest.
+#   - `delivery-pipeline/clouddeploy.yaml` — declares three Targets
+#     whose `run.location: projects/${PROJECT_ID}/locations/${GCP_REGION}`
+#     supplies the project + region at deploy time. The same rendered
+#     manifest is applied to each target.
+#   - `backend/Dockerfile` — produces the
+#     `gcr.io/$PROJECT_ID/strikeforge:$COMMIT_SHA` image. The
+#     Dockerfile's `EXPOSE 3000`, `HEALTHCHECK ... /healthz`, and
+#     non-root `nodejs:1001` user align with this manifest's
+#     `containerPort: 3000`, `livenessProbe.path: /healthz`, and
+#     gen2 execution-environment unprivileged-container model.
+#   - `.env.example` (root) — documents the six required env vars;
+#     this manifest provides their production values via Secret
+#     Manager references and inline literals (per the
+#     LocalGCP Verification Rule's broader principle: no live
+#     credentials in source).
+#   - `docker-compose.yml` (root) — local-dev counterpart of this
+#     manifest. The same `containerPort: 3000`, `/healthz` path, and
+#     six env vars are exercised in `docker compose up -d`, so the
+#     ST-048-AC5 "reachable in local dev without cloud access"
+#     requirement is satisfied without any divergence between local
+#     and Cloud Run runtime contracts.
+#
+# Image substitution:
+#   The literal string `gcr.io/PROJECT_ID/strikeforge` MUST stay
+#   verbatim. This is a Skaffold-recognized placeholder that matches
+#   the artifact's `image` field in `skaffold.yaml` (line 82). Skaffold
+#   rewrites it at render time to
+#   `gcr.io/<actual-project>/strikeforge:<COMMIT_SHA>@sha256:<DIGEST>`.
+#   Replacing `PROJECT_ID` with a real value at authoring time would
+#   break Skaffold's substitution and pin the manifest to a specific
+#   project, defeating the multi-target deploy model.
+#
+# Operator pre-deploy setup (Secret Manager):
+#   The four secret-backed env vars below require Secret Manager
+#   secrets to exist before the first deploy. Run once per project:
+#
+#     gcloud secrets create strikeforge-database-url \
+#         --replication-policy=automatic
+#     gcloud secrets create strikeforge-firebase-project-id \
+#         --replication-policy=automatic
+#     gcloud secrets create strikeforge-gcs-bucket-name \
+#         --replication-policy=automatic
+#     gcloud secrets create strikeforge-coverage-threshold \
+#         --replication-policy=automatic
+#
+#   Then add each value:
+#
+#     echo -n "postgres://user:pass@/strikeforge?host=/cloudsql/PROJECT:REGION:INSTANCE" \
+#         | gcloud secrets versions add strikeforge-database-url --data-file=-
+#     echo -n "<firebase-project-id>" \
+#         | gcloud secrets versions add strikeforge-firebase-project-id --data-file=-
+#     echo -n "<gcs-bucket-name>" \
+#         | gcloud secrets versions add strikeforge-gcs-bucket-name --data-file=-
+#     echo -n "80" \
+#         | gcloud secrets versions add strikeforge-coverage-threshold --data-file=-
+#
+#   The Cloud Run runtime service account must have the
+#   `roles/secretmanager.secretAccessor` IAM role on each secret.
+#
+# Knative readinessProbe note:
+#   Knative Serving v1 (the API used by Cloud Run) does NOT support
+#   `readinessProbe` on container spec. Cloud Run uses the startup
+#   probe to gate traffic routing during cold start, and the liveness
+#   probe for ongoing health monitoring. The application-level
+#   `/readyz` endpoint (per ST-048-AC4) IS exposed by the backend
+#   (see `backend/src/routes/health.ts`) and is queryable by external
+#   orchestrators (uptime checks, load balancers, CI gates), but it
+#   is NOT directly consumed by Cloud Run's traffic-management layer.
+#   This is a deliberate Knative/Cloud Run constraint, not an
+#   omission. The `docker-compose.yml` local profile DOES exercise
+#   `/readyz` via the standard backend integration tests, satisfying
+#   ST-048-AC4 in local dev as required by ST-048-AC5.
+# =====================================================================
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: strikeforge
+  annotations:
+    # `launch-stage: GA` opts the service into the generally-available
+    # Cloud Run feature set; alpha/beta features are not used.
+    run.googleapis.com/launch-stage: GA
+    # `ingress: all` accepts traffic from any source. Operators may
+    # tighten this per-environment via Cloud Deploy patch overrides
+    # to `internal-and-cloud-load-balancing` for staging/production.
+    run.googleapis.com/ingress: all
+  labels:
+    # `cloud.googleapis.com/location` is informational metadata that
+    # aids discovery in Cloud Console. The actual deploy region is
+    # determined by each target's `run.location` field in
+    # `delivery-pipeline/clouddeploy.yaml`.
+    cloud.googleapis.com/location: us-central1
+    # `app` and `component` labels enable filtering across the
+    # StrikeForge service catalog. The metrics endpoint (ST-048)
+    # picks up the service identity from the `SERVICE_NAME` /
+    # `service` env-var conventions used by the backend logger and
+    # `prom-client` registry.
+    app: strikeforge
+    component: backend
+spec:
+  template:
+    metadata:
+      annotations:
+        # ----------------------------------------------------------------
+        # Cloud Run revision-level annotations
+        # ----------------------------------------------------------------
+        # `minScale: "0"` — scale to zero when no traffic is present
+        # (cost savings). Operators may override per-environment via
+        # Cloud Deploy patch overrides; staging/production may prefer
+        # `minScale: "1"` to avoid cold-start latency.
+        autoscaling.knative.dev/minScale: '0'
+        # `maxScale: "10"` — bounded autoscaling ceiling per revision.
+        # Tunable per-environment; this default keeps cost predictable
+        # while supporting bursts of ~800 concurrent requests
+        # (10 instances × 80 containerConcurrency).
+        autoscaling.knative.dev/maxScale: '10'
+        # `cpu-throttling: "true"` — Cloud Run's "CPU is only
+        # allocated during request processing" model. Setting this
+        # to `false` (CPU always allocated) is more expensive and
+        # unnecessary for a stateless API.
+        run.googleapis.com/cpu-throttling: 'true'
+        # `execution-environment: gen2` — REQUIRED for Cloud SQL
+        # Unix socket connections via `/cloudsql/PROJECT:REGION:INSTANCE`
+        # path (per AAP §C3). The gen1 environment does not support
+        # the Cloud SQL Unix socket mount.
+        run.googleapis.com/execution-environment: gen2
+        # `startup-cpu-boost: "true"` — doubles CPU allocation during
+        # startup, reducing cold-start latency. The standard pattern
+        # for latency-sensitive APIs; especially valuable here because
+        # OpenTelemetry auto-instrumentation registration (Rule R6 / C4)
+        # adds ~100–500 ms to cold start.
+        run.googleapis.com/startup-cpu-boost: 'true'
+    spec:
+      # `timeoutSeconds: 300` — Cloud Run waits up to 5 minutes for
+      # the container to start before timing out. The startup probe
+      # (failureThreshold 30 × periodSeconds 5 = 150 s) has its own
+      # cold-start budget; this top-level timeout is the outer bound.
+      timeoutSeconds: 300
+      # `containerConcurrency: 80` — number of concurrent requests
+      # routed to a single container instance. 80 is Cloud Run's
+      # current default; setting it explicitly documents the
+      # assumption. Express + the pg connection pool (default size 10,
+      # sized in `backend/src/db/pool.ts`) handle 80 concurrent
+      # requests well; lowering this would create more revisions and
+      # increase cost.
+      containerConcurrency: 80
+      # NOTE on serviceAccountName:
+      # The runtime service account is intentionally NOT pinned in
+      # this manifest. Operators set it per-environment via
+      # `gcloud run deploy --service-account=<SA>` or Cloud Deploy
+      # patch overrides. This avoids embedding any environment-
+      # specific identity in the shared manifest. The chosen SA must
+      # have:
+      #   - roles/secretmanager.secretAccessor on the four
+      #     strikeforge-* secrets referenced below
+      #   - roles/cloudsql.client for Cloud SQL connection
+      #   - roles/storage.objectAdmin on GCS_BUCKET_NAME
+      containers:
+        - name: strikeforge
+          # Image substituted by Skaffold's tagPolicy at render time.
+          # The literal `gcr.io/PROJECT_ID/strikeforge` is a Skaffold
+          # placeholder matching the artifact in `skaffold.yaml`
+          # line 82. At release time, `gcloud deploy releases create
+          # --images=gcr.io/$PROJECT_ID/strikeforge=gcr.io/$PROJECT_ID/strikeforge@<DIGEST>`
+          # rewrites this to the immutable digest reference, which
+          # Cloud Deploy applies identically to every target per
+          # Rule R10.
+          image: gcr.io/PROJECT_ID/strikeforge
+          ports:
+            # `containerPort: 3000` matches `backend/Dockerfile`
+            # `EXPOSE 3000` and the `PORT=3000` env var. Cloud Run
+            # injects PORT into the container; the backend reads
+            # it and Express binds to that port.
+            - name: http1
+              containerPort: 3000
+          env:
+            # ----------------------------------------------------------
+            # The six required env vars per Rule R4
+            # ----------------------------------------------------------
+            # All six MUST be set on every backend startup, or the
+            # backend exits non-zero within 2 seconds (per
+            # `backend/src/config/env.ts`'s `requireEnv()` helper).
+            # In production, the four sensitive vars are sourced from
+            # Secret Manager via `valueFrom.secretKeyRef`, and the
+            # two non-sensitive vars (GCS_EMULATOR_HOST, GCP_REGION)
+            # are inlined for readability.
+            # ----------------------------------------------------------
+
+            # 1) DATABASE_URL — Cloud SQL Unix socket path in
+            #    production: `postgres://postgres:<pwd>@/strikeforge?host=/cloudsql/PROJECT:REGION:INSTANCE`
+            #    The Cloud SQL instance must be configured with the
+            #    project's Cloud SQL connection (`gcloud run services
+            #    update --add-cloudsql-instances=PROJECT:REGION:INSTANCE`).
+            #    The gen2 execution environment auto-mounts the
+            #    `/cloudsql/...` Unix socket; no `volumeMounts` needed.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: strikeforge-database-url
+                  key: latest
+
+            # 2) FIREBASE_PROJECT_ID — consumed by
+            #    `backend/src/auth/firebase-admin.ts` for
+            #    `admin.initializeApp({ projectId })`.
+            #    Per Rule R3, the only token validation path is
+            #    `admin.auth().verifyIdToken()`; no JWT libraries
+            #    are used.
+            - name: FIREBASE_PROJECT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: strikeforge-firebase-project-id
+                  key: latest
+
+            # 3) GCS_BUCKET_NAME — consumed by
+            #    `backend/src/services/gcs.service.ts`. Every
+            #    `bucket.file(name).getSignedUrl({ ... })` call MUST
+            #    pass `version: 'v4'` per Rule R5 / C1; the SDK
+            #    enforces this at runtime.
+            - name: GCS_BUCKET_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: strikeforge-gcs-bucket-name
+                  key: latest
+
+            # 4) GCS_EMULATOR_HOST — Rule R4 requires this to be set
+            #    on every backend startup. In production there is no
+            #    emulator; the backend uses real GCS via Application
+            #    Default Credentials. The literal value `disabled`
+            #    is a documented sentinel that
+            #    `backend/src/services/gcs.service.ts` recognizes
+            #    and uses to skip emulator initialization. Inlined
+            #    (not a secret) because it carries no sensitive
+            #    information and is constant across environments.
+            - name: GCS_EMULATOR_HOST
+              value: 'disabled'
+
+            # 5) COVERAGE_THRESHOLD — Rule R4 requires this to be set
+            #    on every backend startup. At runtime the backend
+            #    only reads the value (no enforcement); the value is
+            #    consumed by Jest's coverage gate during CI
+            #    (ST-038, ST-043). Stored in Secret Manager for
+            #    style consistency with other gate parameters; could
+            #    equally be inlined.
+            - name: COVERAGE_THRESHOLD
+              valueFrom:
+                secretKeyRef:
+                  name: strikeforge-coverage-threshold
+                  key: latest
+
+            # 6) GCP_REGION — Rule R4 requires this to be set. Used
+            #    by Cloud Deploy CLI commands (Gate MG2-G) and any
+            #    GCP SDK call that needs the regional endpoint.
+            #    Inlined because the region is not sensitive and
+            #    matches the target's `run.location` field in
+            #    `delivery-pipeline/clouddeploy.yaml`. Operators
+            #    may override per-environment via Cloud Deploy
+            #    patch overrides if a different target region is
+            #    required.
+            - name: GCP_REGION
+              value: 'us-central1'
+
+            # ----------------------------------------------------------
+            # Operational env vars (NOT among the six R4 vars)
+            # ----------------------------------------------------------
+
+            # `NODE_ENV=production` — observability and runtime
+            # libraries (pino, Express) inspect this to enable
+            # production-only behavior. Backend metrics use it as
+            # the `environment` label per ST-048-AC2.
+            - name: NODE_ENV
+              value: 'production'
+
+            # `PORT=3000` — Cloud Run injects PORT automatically;
+            # this declaration sets a deterministic default that
+            # matches the `containerPort` above and the
+            # `backend/Dockerfile` `EXPOSE 3000`. Cloud Run will
+            # use this value when binding the request-routing layer.
+            - name: PORT
+              value: '3000'
+          resources:
+            # Resource limits/requests — conservative defaults
+            # appropriate for a stateless Express API. The pg
+            # connection pool, OpenTelemetry SDK, and Firebase Admin
+            # SDK collectively use ~150 MiB at idle; 256 MiB
+            # request keeps cold-start scheduling fast, 512 MiB
+            # limit absorbs request bursts without OOM. CPU
+            # `1000m` limit (1 vCPU) is the default Cloud Run unit
+            # and matches the throughput of `containerConcurrency: 80`.
+            limits:
+              cpu: '1000m'
+              memory: '512Mi'
+            requests:
+              cpu: '100m'
+              memory: '256Mi'
+
+          # ----------------------------------------------------------
+          # Liveness probe (ST-048-AC3)
+          # ----------------------------------------------------------
+          # `/healthz` returns 200 `{"status":"ok"}` when the
+          # process is running (per AAP §0.5.5). Cloud Run restarts
+          # the container if the liveness probe fails 3 consecutive
+          # times. The path matches `backend/src/routes/health.ts`
+          # and `backend/Dockerfile` HEALTHCHECK.
+          # ----------------------------------------------------------
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+            # 10 s grace before liveness checks begin. The startup
+            # probe (below) handles the cold-start window; once it
+            # succeeds, this liveness probe takes over.
+            initialDelaySeconds: 10
+            # 30 s cadence — matches the `backend/Dockerfile`
+            # HEALTHCHECK interval.
+            periodSeconds: 30
+            # 5 s timeout per probe attempt.
+            timeoutSeconds: 5
+            # 3 consecutive failures = container restart. Matches
+            # the Dockerfile HEALTHCHECK retries setting.
+            failureThreshold: 3
+
+          # ----------------------------------------------------------
+          # Startup probe (cold-start gate)
+          # ----------------------------------------------------------
+          # Cloud Run uses the startup probe (NOT a readinessProbe)
+          # to determine when traffic can be routed to a new
+          # revision. The probe targets `/healthz` because the
+          # endpoint is available as soon as the Express app starts
+          # listening — it does not require database or downstream
+          # readiness, which is the role of `/readyz`.
+          #
+          # `failureThreshold: 30 × periodSeconds: 5 = 150 s` cold-
+          # start budget. This is REQUIRED because:
+          #   - Rule R6 / C4: `import './tracing'` is the first
+          #     import in `backend/src/index.ts`; OTel auto-
+          #     instrumentation registration adds ~100–500 ms.
+          #   - The pg connection pool warms up on first query.
+          #   - Firebase Admin SDK initializes lazily on first
+          #     `verifyIdToken` call.
+          # If the probe still fails after 150 s, Cloud Run marks
+          # the revision unhealthy and the deploy stage rolls back
+          # to the previous known-good revision (ST-041-AC3).
+          # ----------------------------------------------------------
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+  traffic:
+    # Send 100% of traffic to the latest revision. Per ST-041-AC3,
+    # a revision that fails the startup probe never receives
+    # traffic — Cloud Run keeps the previous revision serving.
+    # Operators may override during canary rollouts via
+    # `gcloud run services update-traffic --to-revisions=<rev>=<pct>`,
+    # but the manifest's stable default is 100% to latest.
+    - latestRevision: true
+      percent: 100

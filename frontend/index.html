@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="StrikeForge 3D Sports Ball Configurator — design your own ball with real-time 3D preview"
+    />
+    <meta name="theme-color" content="#5B39F3" />
+
+    <!--
+      ===================================================================
+      Inline SVG favicon — Blitzy primary purple circle.
+      ===================================================================
+      Browsers auto-request `/favicon.ico` and log a console error if
+      missing. ST-001-AC4 mandates ZERO console errors during initial
+      render, so we declare an inline-data SVG favicon here. The icon
+      is intentionally minimal (a single solid Blitzy-primary circle)
+      to keep the document size small and to avoid maintaining a
+      separate binary asset.
+    -->
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%235B39F3'/%3E%3C/svg%3E"
+    />
+
+    <!--
+      ===================================================================
+      Blitzy brand typography — Google Fonts.
+      ===================================================================
+      The Blitzy brand kit (referenced by AAP §0.8.2 Executive Presentation
+      Rule and surfaced in the QA report as "Brand Visual Consistency")
+      pins three font families:
+
+        - Inter         (400/500/600/700) — body text          → --ff-body
+        - Space Grotesk (500/600/700)     — display/headings   → --ff-display
+        - Fira Code     (400/500)         — monospace          → --ff-mono
+
+      `preconnect` is split into two link tags per Google Fonts' own
+      recommendation: the second `https://fonts.gstatic.com` connection
+      requires the `crossorigin` attribute so the browser can re-use the
+      same TLS connection for the woff2 file fetches.
+
+      The single combined `family=` URL collapses three separate font
+      requests into one CSS file fetch, which is the documented best
+      practice for reducing render-blocking requests.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <title>StrikeForge Configurator</title>
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to use the StrikeForge Configurator.</noscript>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
