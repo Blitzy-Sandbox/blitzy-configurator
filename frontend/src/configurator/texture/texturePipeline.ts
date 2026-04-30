@@ -88,8 +88,18 @@ async function update(state: ConfiguratorState): Promise<void> {
   // job). Synchronous setters run first; the async logo loader is
   // `await`ed so the canvas has all objects in their final state when
   // `renderAll()` runs in step 2.
-  fabricCanvas.setPanelColors(state.primaryColor, state.secondaryColor, state.accentColor);
+  //
+  // Refine PR Directive 5 — call order: `setStitchingPattern()` MUST
+  // run BEFORE `setPanelColors()`. The pattern setter rebuilds the
+  // `_panelFills` group's geometry against the colour cache; the
+  // colour setter then walks the freshly built geometry and mutates
+  // every fill object's `fill` property by its `data-role` tag.
+  // Reversing the order would leave the previous pattern's geometry
+  // in place when the user changes pattern AND colour in the same
+  // render commit (which can happen via `loadDesign()` or
+  // `resetToDefaults()` in the Zustand store).
   fabricCanvas.setStitchingPattern(state.stitchingPattern);
+  fabricCanvas.setPanelColors(state.primaryColor, state.secondaryColor, state.accentColor);
   fabricCanvas.setMaterialFinish(state.materialFinish);
   await fabricCanvas.setLogo(
     state.logoFile,

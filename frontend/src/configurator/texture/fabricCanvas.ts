@@ -15,14 +15,33 @@
  *     This file contains ZERO references to the Three texture dirty-flag
  *     — that is exclusively `texturePipeline.ts`'s domain.
  *
+ *   - Refine PR Directives 1–5 (fabricCanvas refactor):
+ *     The canvas now owns a single `_panelFills: fabric.Group` rendered
+ *     between `_backgroundRect` and `_stitchingOverlay`. Six pattern-specific
+ *     builder functions (`_buildClassicFills`, `_buildSpiralFills`,
+ *     `_buildHexagonalFills`, `_buildDiamondFills`, `_buildStarFills`,
+ *     `_buildGridFills`) emit Fabric objects tagged with a `data-role`
+ *     custom property of `'primary' | 'secondary' | 'accent'`.
+ *     `setStitchingPattern()` rebuilds the fill geometry on each pattern
+ *     change; `setPanelColors()` mutates the `fill` of every existing
+ *     fill object via its `data-role` tag — no geometry rebuild on color
+ *     change. The previous static stripe / fixed-circle objects from the
+ *     legacy color-zone implementation are removed entirely so color
+ *     rendering becomes responsive to pattern selection (Directive 1).
+ *
  * Story coverage:
  *   - ST-001 initial render        → initializeScene() runs at module load
- *     so the texture has a valid initial bitmap.
- *   - ST-006 / ST-007 / ST-008     → setPanelColors(primary, secondary, accent).
+ *     so the texture has a valid initial bitmap. The default pattern's
+ *     fills are built immediately so the first render shows the
+ *     pattern-driven primary/secondary/accent regions, not a blank canvas.
+ *   - ST-006 / ST-007 / ST-008     → setPanelColors(primary, secondary, accent)
+ *     mutates `_panelFills` objects' `fill` property by their `data-role`
+ *     tag. Colors are responsive to whichever pattern is currently active.
  *   - ST-009 real-time color sync  → setPanelColors is synchronous; mutations
  *     in setters reuse Fabric scene objects to avoid allocator churn.
  *   - ST-010 stitching pattern     → setStitchingPattern(name) supports the
  *     six named patterns (classic, hexagonal, diamond, spiral, star, grid).
+ *     Each pattern owns BOTH the fill geometry and the line overlay.
  *   - ST-011 material finish       → setMaterialFinish() is a documented
  *     no-op stub (finish is a Three.js material property, not a Fabric one;
  *     Sphere.tsx reads materialFinish from the Zustand store and adjusts
@@ -49,6 +68,12 @@
  *     React StrictMode mount/cleanup/remount cycles would tear down the
  *     Three.js CanvasTexture's source mid-frame; module scope ensures
  *     the canvas survives every consumer's lifecycle.
+ *   - Layer order (painter's algorithm — first added is rendered first):
+ *       1. _backgroundRect      — full-canvas primary-color rectangle
+ *       2. _panelFills          — pattern-driven primary/secondary/accent
+ *                                 fill regions (one Group, mutated in place)
+ *       3. _stitchingOverlay    — pattern-driven line overlay
+ *       4. _logoImage           — user logo (added on demand by setLogo)
  *
  * Cross-cutting rules enforced here:
  *   - Rule R7 / C6: ZERO direct calls to the Three.js Texture dirty-upload
@@ -75,7 +100,10 @@ import {
   Rect,
   Circle,
   Line,
+  Path,
+  Polygon,
   Group,
+  type FabricObject,
   type ImageProps,
 } from 'fabric';
 
@@ -140,6 +168,59 @@ const STITCH_STROKE_COLOR = '#222222';
  */
 const STITCH_STROKE_WIDTH = 2;
 
+/**
+ * Documented default panel colors mirrored verbatim from
+ * `CONFIGURATOR_DEFAULTS` in `state/configuratorStore.ts`. Duplicated
+ * here as primitive string literals so this module does NOT reach into
+ * the store's runtime API at evaluation time — only the `HexColor`
+ * type is imported above.
+ *
+ * The cached fields below (`_lastPrimary`, `_lastSecondary`, `_lastAccent`)
+ * initialize to these values so the very first `setStitchingPattern()`
+ * call (executed during module init for the default 'classic' pattern)
+ * produces visible default panel-color fills with zero ordering
+ * dependency on the first incoming `setPanelColors()` call.
+ */
+const DEFAULT_PRIMARY: HexColor = '#FFFFFF';
+const DEFAULT_SECONDARY: HexColor = '#000000';
+const DEFAULT_ACCENT: HexColor = '#FF0000';
+
+/**
+ * The documented store default for `stitchingPattern` — keeps the
+ * `_currentPattern` cache initialization decoupled from the store
+ * runtime API. Mirrors `CONFIGURATOR_DEFAULTS.stitchingPattern`.
+ */
+const DEFAULT_PATTERN: StitchingPattern = 'classic';
+
+/**
+ * Custom property name used to tag every Fabric object emitted by the
+ * pattern fill builders. The tag tells `setPanelColors()` which colour
+ * slot (`primary` / `secondary` / `accent`) to apply to a given fill
+ * object during a color-only update — without rebuilding geometry.
+ *
+ * Must be a property name that does NOT collide with any built-in
+ * Fabric `FabricObject` field. `data-role` is reserved by the Refine
+ * PR contract specifically to make this distinction explicit and
+ * greppable in the codebase.
+ */
+const ROLE_KEY = 'data-role';
+
+/**
+ * The three valid `data-role` values. The string literal union matches
+ * the colour slots defined by `setPanelColors`.
+ */
+type FillRole = 'primary' | 'secondary' | 'accent';
+
+/**
+ * Fabric `FabricObject` augmented with the `data-role` tag attached by
+ * the pattern fill builders. The tag is read back by
+ * `setPanelColors()` to decide which colour to apply on a colour
+ * change. The cast site is deliberately scoped — every `as` cast is
+ * attached to a specific `_buildXFills` return path or a specific
+ * `getObjects()` walk, never to a top-level statement.
+ */
+type RoledFabricObject = FabricObject & { [ROLE_KEY]?: FillRole };
+
 // ---------------------------------------------------------------------------
 // Module-level singleton state
 //
@@ -188,12 +269,42 @@ const _fabric: StaticCanvas = new StaticCanvas(_canvasElement, {
  * allocator churn during rapid color/pattern changes (ST-009 acceptance
  * criterion: "Rapid successive color changes ... no lost or reordered
  * updates").
+ *
+ * `_panelFills` is the SOLE container for pattern-driven primary /
+ * secondary / accent fill geometry; it sits between `_backgroundRect`
+ * and `_stitchingOverlay` in the painter's-order layering so the
+ * stitching lines always render on top of the colour regions.
+ * `setStitchingPattern()` rebuilds its child objects from scratch on
+ * every pattern change; `setPanelColors()` mutates each child's
+ * `fill` property in place by reading the `data-role` tag — no
+ * geometry rebuild on a colour-only change.
  */
 let _backgroundRect: Rect | null = null;
-let _secondaryStripes: Group | null = null;
-let _accentShapes: Group | null = null;
+let _panelFills: Group | null = null;
 let _stitchingOverlay: Group | null = null;
 let _logoImage: FabricImage | null = null;
+
+/**
+ * Most-recent panel colour cache. Each colour-cache slot starts at the
+ * documented default so the first `setStitchingPattern()` call (executed
+ * during module init for the default `'classic'` pattern) produces a
+ * fully painted texture before any external `setPanelColors()` call.
+ * Updated by `setPanelColors()`; read by `setStitchingPattern()` when
+ * rebuilding fill geometry on a pattern change so the new fills inherit
+ * the user's current colour selections.
+ */
+let _lastPrimary: HexColor = DEFAULT_PRIMARY;
+let _lastSecondary: HexColor = DEFAULT_SECONDARY;
+let _lastAccent: HexColor = DEFAULT_ACCENT;
+
+/**
+ * The most-recently applied stitching pattern. Initialized to the
+ * documented store default (`'classic'`). Read by
+ * `setStitchingPattern()` only as a debug breadcrumb; the stitching
+ * line overlay always rebuilds from the explicit argument so this
+ * cache cannot drift the rendered geometry.
+ */
+let _currentPattern: StitchingPattern = DEFAULT_PATTERN;
 
 /**
  * The most recent ObjectURL we created via `URL.createObjectURL` for a
@@ -219,42 +330,42 @@ let _logoObjectUrl: string | null = null;
 // ---------------------------------------------------------------------------
 
 /**
- * Build the initial Fabric scene tree. Adds the background rectangle
- * and the four lazy-populated groups (stripes, accent shapes, stitching
- * overlay) in painter's-order layering: background -> stripes -> accent
- * -> stitching. The logo image (if any) is added on top by `setLogo`.
+ * Build the initial Fabric scene tree. Adds the background rectangle,
+ * the lazy-populated `_panelFills` group, and the lazy-populated
+ * `_stitchingOverlay` group in painter's-order layering: background →
+ * panel fills → stitching → (logo, added by `setLogo`).
+ *
+ * After the empty groups are added, the function calls
+ * `setStitchingPattern(DEFAULT_PATTERN)` so the default-pattern fill
+ * geometry AND line overlay are present from the very first render —
+ * downstream consumers don't need to drive the pipeline before the
+ * texture has a meaningful first frame.
  */
 function initializeScene(): void {
   // Background rectangle — primary color fills the entire texture.
-  // Created with white as the documented default; `setPanelColors`
-  // mutates the `fill` property in place on subsequent calls.
+  // Created with the documented default; `setPanelColors` mutates the
+  // `fill` property in place on subsequent calls.
   _backgroundRect = new Rect({
     left: 0,
     top: 0,
     width: CANVAS_WIDTH,
     height: CANVAS_HEIGHT,
-    fill: '#FFFFFF',
+    fill: DEFAULT_PRIMARY,
     selectable: false,
     evented: false,
   });
   _fabric.add(_backgroundRect);
 
-  // Secondary stripes — empty group; populated lazily on first
-  // `setPanelColors` call. Adding the empty group up-front locks in
-  // the layering order so the stripes never render below the background.
-  _secondaryStripes = new Group([], {
+  // Pattern-driven primary / secondary / accent fill region. The Group
+  // is added empty so the painter's-order layering is locked in;
+  // `setStitchingPattern()` populates it with the appropriate
+  // pattern-specific geometry. Layered ABOVE the background and BELOW
+  // the stitching overlay (Directive 1 layer order).
+  _panelFills = new Group([], {
     selectable: false,
     evented: false,
   });
-  _fabric.add(_secondaryStripes);
-
-  // Accent shapes — empty group; populated lazily on first
-  // `setPanelColors` call.
-  _accentShapes = new Group([], {
-    selectable: false,
-    evented: false,
-  });
-  _fabric.add(_accentShapes);
+  _fabric.add(_panelFills);
 
   // Stitching overlay — empty group; populated by `setStitchingPattern`.
   // Layered above all color regions so stitch lines remain visible
@@ -265,6 +376,13 @@ function initializeScene(): void {
   });
   _fabric.add(_stitchingOverlay);
 
+  // Apply the default pattern. This populates BOTH the panel-fills
+  // group (pattern-driven primary/secondary/accent regions in the
+  // current default colours) and the stitching overlay (line geometry)
+  // so the very first render has a fully painted texture without
+  // waiting for an external `setStitchingPattern()` call.
+  setStitchingPattern(DEFAULT_PATTERN);
+
   // Logo image is added on demand by `setLogo` and removed via
   // `setLogo(null)`. It always renders on top of the stitching overlay
   // because `_fabric.add()` appends to the end of the painter's-order
@@ -274,6 +392,568 @@ function initializeScene(): void {
 initializeScene();
 
 // ---------------------------------------------------------------------------
+// Pattern fill builders — Directive 2
+//
+// Each `_buildXFills(primary, secondary, accent)` returns an array of
+// Fabric objects, every one tagged with a `data-role` custom property
+// of `'primary' | 'secondary' | 'accent'`. The objects fill regions of
+// the 1024×1024 canvas matching the silhouette of the corresponding
+// stitching line overlay so colours and lines are spatially coherent.
+//
+// Builders never call `_panelFills.add()` directly — they only return
+// the array; `setStitchingPattern()` is the sole site that swaps fills
+// into the panel-fills group. This separation makes each builder a
+// pure function easy to unit-test in isolation.
+// ---------------------------------------------------------------------------
+
+/**
+ * Stamp the `data-role` tag onto a Fabric object and return it cast to
+ * the `RoledFabricObject` type. Every builder funnels every emitted
+ * object through this helper so the Directive 1 invariant "no fill
+ * object added to `_panelFills` without a `data-role` property" is
+ * enforced at a single chokepoint.
+ *
+ * The cast through `unknown` is needed because Fabric's `FabricObject`
+ * type does not declare arbitrary string-keyed properties; the
+ * runtime accepts them via the `set({...})` overload.
+ */
+function tagWithRole<T extends FabricObject>(obj: T, role: FillRole): RoledFabricObject {
+  // `as unknown as` rather than `as Record<...>` so we keep the
+  // original Fabric subclass identity (Rect / Circle / Polygon / Path)
+  // rather than collapsing to a structural index signature.
+  (obj as unknown as Record<string, unknown>)[ROLE_KEY] = role;
+  return obj as unknown as RoledFabricObject;
+}
+
+/**
+ * Read the `data-role` tag back from a Fabric object that may or may
+ * not be a builder-produced fill. Returns `undefined` when the tag is
+ * missing (which never happens for objects added via `_panelFills` but
+ * is defended against to keep the call-site code branchless).
+ */
+function readRole(obj: FabricObject): FillRole | undefined {
+  const value = (obj as unknown as Record<string, unknown>)[ROLE_KEY];
+  if (value === 'primary' || value === 'secondary' || value === 'accent') {
+    return value;
+  }
+  return undefined;
+}
+
+/**
+ * `_buildClassicFills` — four 512×512 quadrants plus a centre cross.
+ *
+ *   - Top-left and bottom-right quadrants  → primary
+ *   - Top-right and bottom-left quadrants  → secondary
+ *   - Horizontal and vertical center strip (8 px wide) → accent
+ *
+ * Quadrant geometry is rendered as four `Rect` objects so each
+ * quadrant is independently fill-mutable. The center cross is rendered
+ * as two `Rect` objects (horizontal strip + vertical strip) so they
+ * remain a single colour role regardless of how the surrounding
+ * quadrants change.
+ *
+ * Geometry rationale: the four quadrants spatially align with the
+ * `'classic'` line overlay's central horizontal + vertical guides,
+ * making colour blocks read as "panels" of the ball.
+ */
+function _buildClassicFills(
+  primary: HexColor,
+  secondary: HexColor,
+  accent: HexColor,
+): RoledFabricObject[] {
+  const half = CANVAS_WIDTH / 2;
+  const stripWidth = 8;
+
+  const topLeft = new Rect({
+    left: 0,
+    top: 0,
+    width: half,
+    height: half,
+    fill: primary,
+    selectable: false,
+    evented: false,
+  });
+  const bottomRight = new Rect({
+    left: half,
+    top: half,
+    width: half,
+    height: half,
+    fill: primary,
+    selectable: false,
+    evented: false,
+  });
+  const topRight = new Rect({
+    left: half,
+    top: 0,
+    width: half,
+    height: half,
+    fill: secondary,
+    selectable: false,
+    evented: false,
+  });
+  const bottomLeft = new Rect({
+    left: 0,
+    top: half,
+    width: half,
+    height: half,
+    fill: secondary,
+    selectable: false,
+    evented: false,
+  });
+
+  const horizontalStrip = new Rect({
+    left: 0,
+    top: half - stripWidth / 2,
+    width: CANVAS_WIDTH,
+    height: stripWidth,
+    fill: accent,
+    selectable: false,
+    evented: false,
+  });
+  const verticalStrip = new Rect({
+    left: half - stripWidth / 2,
+    top: 0,
+    width: stripWidth,
+    height: CANVAS_HEIGHT,
+    fill: accent,
+    selectable: false,
+    evented: false,
+  });
+
+  return [
+    tagWithRole(topLeft, 'primary'),
+    tagWithRole(bottomRight, 'primary'),
+    tagWithRole(topRight, 'secondary'),
+    tagWithRole(bottomLeft, 'secondary'),
+    tagWithRole(horizontalStrip, 'accent'),
+    tagWithRole(verticalStrip, 'accent'),
+  ];
+}
+
+/**
+ * `_buildSpiralFills` — six concentric ring bands plus an accent
+ * centre disc.
+ *
+ *   - Six ring bands at radii matching the `'spiral'` line overlay,
+ *     alternating primary / secondary outward (innermost ring band
+ *     starts with primary).
+ *   - Innermost disc (the area inside the smallest ring) → accent.
+ *
+ * Each ring band is rendered as a `Path` describing a donut arc:
+ * the SVG path moves to the outer-circle start, traces a 360°
+ * counter-clockwise arc on the outer circle, then moves to the
+ * inner-circle start and traces a 360° clockwise arc back, leaving
+ * an even-odd-fill annular region.
+ *
+ * Geometry rationale: `'spiral'` reads as concentric stitching, so
+ * concentric annular fills colour each "lap" of the spiral as a
+ * distinct panel.
+ */
+function _buildSpiralFills(
+  primary: HexColor,
+  secondary: HexColor,
+  accent: HexColor,
+): RoledFabricObject[] {
+  const cx = CANVAS_WIDTH / 2;
+  const cy = CANVAS_HEIGHT / 2;
+  const ringCount = 6;
+  // Match the `'spiral'` line overlay: the outer ring sits at
+  // (ring=6) * CANVAS_WIDTH / (2 * (ringCount + 1)).
+  const outerRadius = (ringCount * CANVAS_WIDTH) / (2 * (ringCount + 1));
+  const innerRadius = (1 * CANVAS_WIDTH) / (2 * (ringCount + 1));
+
+  const out: RoledFabricObject[] = [];
+
+  // Build six annular bands from the outermost inward so the painter's
+  // order draws the larger rings first and inner rings cover them.
+  // (Equivalent to building inside-out — outcome identical because
+  // every band has positive area.)
+  for (let band = 0; band < ringCount; band += 1) {
+    const rOuter = outerRadius - (band * (outerRadius - innerRadius)) / ringCount;
+    const rInner = outerRadius - ((band + 1) * (outerRadius - innerRadius)) / ringCount;
+    // Each band: M (cx + rOuter, cy) outer-circle 360° CCW, then
+    // M (cx + rInner, cy) inner-circle 360° CW (negative sweep)
+    // closing into a donut. The two arcs together form an even-odd
+    // closed region.
+    const pathString = [
+      `M ${cx + rOuter} ${cy}`,
+      `A ${rOuter} ${rOuter} 0 1 0 ${cx - rOuter} ${cy}`,
+      `A ${rOuter} ${rOuter} 0 1 0 ${cx + rOuter} ${cy}`,
+      `M ${cx + rInner} ${cy}`,
+      `A ${rInner} ${rInner} 0 1 1 ${cx - rInner} ${cy}`,
+      `A ${rInner} ${rInner} 0 1 1 ${cx + rInner} ${cy}`,
+      'Z',
+    ].join(' ');
+    const role: FillRole = band % 2 === 0 ? 'secondary' : 'primary';
+    const ring = new Path(pathString, {
+      // `'evenodd'` ensures the inner subpath subtracts from the
+      // outer, producing a visible donut rather than a filled disc.
+      fillRule: 'evenodd',
+      fill: role === 'primary' ? primary : secondary,
+      stroke: '',
+      strokeWidth: 0,
+      selectable: false,
+      evented: false,
+    });
+    out.push(tagWithRole(ring, role));
+  }
+
+  // Innermost accent disc — covers the area inside the smallest ring
+  // band so the centre of the spiral reads as an accent panel.
+  const accentDisc = new Circle({
+    left: cx - innerRadius,
+    top: cy - innerRadius,
+    radius: innerRadius,
+    fill: accent,
+    selectable: false,
+    evented: false,
+  });
+  out.push(tagWithRole(accentDisc, 'accent'));
+
+  return out;
+}
+
+/**
+ * `_buildHexagonalFills` — 5×5 hex cells matching the `'hexagonal'`
+ * line overlay.
+ *
+ *   - Even-index cells (by hex coordinate sum `row + col`) → primary
+ *   - Odd-index cells → secondary
+ *   - The 3 cells whose centroids are nearest to the canvas centre
+ *     point (512, 512) by Euclidean distance → accent.
+ *
+ * Each hex cell is a `Polygon` with six vertices. Cell centre
+ * coordinates match `setStitchingPattern('hexagonal')`'s line overlay
+ * formula so colour blocks line up with their stitched outlines.
+ */
+function _buildHexagonalFills(
+  primary: HexColor,
+  secondary: HexColor,
+  accent: HexColor,
+): RoledFabricObject[] {
+  const rowCount = 5;
+  const colCount = 5;
+  const cellWidth = CANVAS_WIDTH / colCount;
+  const radius = cellWidth * 0.4;
+
+  type HexCell = {
+    readonly cx: number;
+    readonly cy: number;
+    readonly parity: number; // (row + col) % 2
+    readonly polygon: Polygon;
+  };
+
+  const cells: HexCell[] = [];
+  for (let row = 0; row < rowCount; row += 1) {
+    const cy = ((row + 0.5) * CANVAS_HEIGHT) / rowCount;
+    for (let col = 0; col < colCount; col += 1) {
+      const cx = ((col + (row % 2) * 0.5) * CANVAS_WIDTH) / colCount;
+      const points: Array<{ x: number; y: number }> = [];
+      for (let seg = 0; seg < 6; seg += 1) {
+        const angle = (seg * Math.PI) / 3;
+        points.push({
+          x: cx + radius * Math.cos(angle),
+          y: cy + radius * Math.sin(angle),
+        });
+      }
+      const polygon = new Polygon(points, {
+        // `left`/`top` undefined → Fabric auto-positions the polygon
+        // by its computed bounding box; the `points[]` array carries
+        // absolute canvas coordinates so the visual position is
+        // determined by the points themselves.
+        fill: primary,
+        stroke: '',
+        strokeWidth: 0,
+        selectable: false,
+        evented: false,
+      });
+      cells.push({ cx, cy, parity: (row + col) % 2, polygon });
+    }
+  }
+
+  // Find the 3 cells closest to canvas centre (512, 512). Sort a
+  // shallow copy so the original `cells` order is preserved for
+  // painter-order rendering.
+  const center = { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 };
+  const distSquared = (cell: HexCell): number => {
+    const dx = cell.cx - center.x;
+    const dy = cell.cy - center.y;
+    return dx * dx + dy * dy;
+  };
+  const sortedByDistance = [...cells].sort((a, b) => distSquared(a) - distSquared(b));
+  const accentCells = new Set<HexCell>(sortedByDistance.slice(0, 3));
+
+  const out: RoledFabricObject[] = [];
+  for (const cell of cells) {
+    let role: FillRole;
+    if (accentCells.has(cell)) {
+      role = 'accent';
+      cell.polygon.set({ fill: accent });
+    } else if (cell.parity === 0) {
+      role = 'primary';
+      cell.polygon.set({ fill: primary });
+    } else {
+      role = 'secondary';
+      cell.polygon.set({ fill: secondary });
+    }
+    out.push(tagWithRole(cell.polygon, role));
+  }
+
+  return out;
+}
+
+/**
+ * `_buildDiamondFills` — diamond polygons in a tiled grid plus accent
+ * squares at line intersections.
+ *
+ *   - Diamond cell where `(col + row) % 2 === 0` → primary
+ *   - Diamond cell where `(col + row) % 2 === 1` → secondary
+ *   - Small squares at every line intersection (corners of every
+ *     diamond) → accent
+ *
+ * Diamond geometry: each "diamond" is a 4-vertex polygon whose
+ * vertices are the midpoints of the four sides of the bounding cell.
+ * Cells tile across an 8×8 grid (cellSize = CANVAS_WIDTH / 8). The
+ * spacing matches the `'diamond'` line overlay's diagonal grid so
+ * colour fills sit inside their stitched outlines.
+ */
+function _buildDiamondFills(
+  primary: HexColor,
+  secondary: HexColor,
+  accent: HexColor,
+): RoledFabricObject[] {
+  const out: RoledFabricObject[] = [];
+  const cellCount = 8;
+  const cellSize = CANVAS_WIDTH / cellCount;
+  // Accent intersection markers are sized to a fifth of the cell so
+  // they read as discrete diamond-tip seams rather than overlapping
+  // their neighbouring cells. (Equivalent to the cellSize/5 ratio.)
+  const accentSize = cellSize / 5;
+
+  for (let row = 0; row < cellCount; row += 1) {
+    for (let col = 0; col < cellCount; col += 1) {
+      const x0 = col * cellSize;
+      const y0 = row * cellSize;
+      const x1 = x0 + cellSize;
+      const y1 = y0 + cellSize;
+      const xm = (x0 + x1) / 2;
+      const ym = (y0 + y1) / 2;
+      // 4-vertex diamond polygon (midpoints of the cell's sides).
+      const points = [
+        { x: xm, y: y0 },
+        { x: x1, y: ym },
+        { x: xm, y: y1 },
+        { x: x0, y: ym },
+      ];
+      const role: FillRole = (col + row) % 2 === 0 ? 'primary' : 'secondary';
+      const fill: HexColor = role === 'primary' ? primary : secondary;
+      const diamond = new Polygon(points, {
+        fill,
+        stroke: '',
+        strokeWidth: 0,
+        selectable: false,
+        evented: false,
+      });
+      out.push(tagWithRole(diamond, role));
+    }
+  }
+
+  // Accent squares at every line intersection. `cellCount + 1`
+  // intersections in each axis cover both the boundary and interior
+  // grid lines.
+  for (let row = 1; row < cellCount; row += 1) {
+    for (let col = 1; col < cellCount; col += 1) {
+      const cx = col * cellSize;
+      const cy = row * cellSize;
+      const square = new Rect({
+        left: cx - accentSize / 2,
+        top: cy - accentSize / 2,
+        width: accentSize,
+        height: accentSize,
+        fill: accent,
+        selectable: false,
+        evented: false,
+      });
+      out.push(tagWithRole(square, 'accent'));
+    }
+  }
+
+  return out;
+}
+
+/**
+ * `_buildStarFills` — 16 radial wedge sectors plus a centre disc.
+ *
+ *   - 16 wedges of 22.5° each, alternating primary / secondary
+ *     starting with primary at angle 0.
+ *   - Centre disc (radius ≈ 46 px) → accent.
+ *
+ * Each wedge is a `Path` describing
+ *   M (centre) L (start point on outer arc) A (...) (end point) Z
+ * — a pie-slice that fills the angular sector cleanly.
+ *
+ * Geometry rationale: `'star'`'s line overlay has 16 spokes; the
+ * wedges colour the sectors between consecutive spokes so the
+ * starburst reads as a coloured pinwheel.
+ */
+function _buildStarFills(
+  primary: HexColor,
+  secondary: HexColor,
+  accent: HexColor,
+): RoledFabricObject[] {
+  const cx = CANVAS_WIDTH / 2;
+  const cy = CANVAS_HEIGHT / 2;
+  const wedgeCount = 16;
+  // Wedge outer radius — matches `'star'`'s ray length (45% of canvas
+  // width) so the wedges fill the visible portion of the starburst.
+  const radius = CANVAS_WIDTH * 0.45;
+  // Centre accent disc radius — Refine PR Directive 2 calls for
+  // ~46 px at 1024 px canvas width.
+  const accentRadius = 46;
+
+  const out: RoledFabricObject[] = [];
+
+  for (let i = 0; i < wedgeCount; i += 1) {
+    const a1 = (i * 2 * Math.PI) / wedgeCount;
+    const a2 = ((i + 1) * 2 * Math.PI) / wedgeCount;
+    const x1 = cx + radius * Math.cos(a1);
+    const y1 = cy + radius * Math.sin(a1);
+    const x2 = cx + radius * Math.cos(a2);
+    const y2 = cy + radius * Math.sin(a2);
+    // Each wedge sweep is 22.5° so the SVG arc large-arc-flag is 0
+    // (small arc) and sweep-flag is 1 (clockwise in SVG's flipped
+    // y-axis). The starting M (cx, cy) keeps the path closed
+    // through the arc back to centre via the implicit Z command.
+    const pathString = `M ${cx} ${cy} L ${x1} ${y1} A ${radius} ${radius} 0 0 1 ${x2} ${y2} Z`;
+    const role: FillRole = i % 2 === 0 ? 'primary' : 'secondary';
+    const wedge = new Path(pathString, {
+      fill: role === 'primary' ? primary : secondary,
+      stroke: '',
+      strokeWidth: 0,
+      selectable: false,
+      evented: false,
+    });
+    out.push(tagWithRole(wedge, role));
+  }
+
+  // Centre accent disc. Drawn after the wedges so it covers the
+  // wedge tips meeting at (cx, cy) — gives a clean accent puck
+  // rather than a 16-petal seam at the centre.
+  const accentDisc = new Circle({
+    left: cx - accentRadius,
+    top: cy - accentRadius,
+    radius: accentRadius,
+    fill: accent,
+    selectable: false,
+    evented: false,
+  });
+  out.push(tagWithRole(accentDisc, 'accent'));
+
+  return out;
+}
+
+/**
+ * `_buildGridFills` — 8×8 checkerboard plus accent intersection
+ * squares.
+ *
+ *   - 128×128 px square at (col, row) where `(col + row) % 2 === 0`
+ *     → primary
+ *   - 128×128 px square at (col, row) where `(col + row) % 2 === 1`
+ *     → secondary
+ *   - 16×16 px squares at every other grid intersection → accent
+ *
+ * "Every other" intersection means intersections where both `col`
+ * and `row` indices are even — so the accent dots distribute on a
+ * sparser 4×4 sub-grid relative to the 8×8 check pattern.
+ */
+function _buildGridFills(
+  primary: HexColor,
+  secondary: HexColor,
+  accent: HexColor,
+): RoledFabricObject[] {
+  const out: RoledFabricObject[] = [];
+  const cellCount = 8;
+  const cellSize = CANVAS_WIDTH / cellCount;
+  const accentSize = 16;
+
+  for (let row = 0; row < cellCount; row += 1) {
+    for (let col = 0; col < cellCount; col += 1) {
+      const role: FillRole = (col + row) % 2 === 0 ? 'primary' : 'secondary';
+      const fill: HexColor = role === 'primary' ? primary : secondary;
+      const cell = new Rect({
+        left: col * cellSize,
+        top: row * cellSize,
+        width: cellSize,
+        height: cellSize,
+        fill,
+        selectable: false,
+        evented: false,
+      });
+      out.push(tagWithRole(cell, role));
+    }
+  }
+
+  // Accent squares at every-other intersection. `cellCount - 1`
+  // interior intersections, of which we keep those where both
+  // indices have the same parity (`col % 2 === 0 && row % 2 === 0`).
+  for (let row = 2; row <= cellCount - 2; row += 2) {
+    for (let col = 2; col <= cellCount - 2; col += 2) {
+      const cx = col * cellSize;
+      const cy = row * cellSize;
+      const square = new Rect({
+        left: cx - accentSize / 2,
+        top: cy - accentSize / 2,
+        width: accentSize,
+        height: accentSize,
+        fill: accent,
+        selectable: false,
+        evented: false,
+      });
+      out.push(tagWithRole(square, 'accent'));
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Dispatcher that maps a `StitchingPattern` value to its fill builder.
+ * Centralizing the `switch` here keeps `setStitchingPattern()` short
+ * and provides one canonical site for the exhaustive-switch check.
+ *
+ * Exhaustiveness — the `default` arm assigns the un-narrowed pattern
+ * to a `never`-typed local; adding a seventh `StitchingPattern` value
+ * to the union without adding a builder above produces a TypeScript
+ * compile error here.
+ */
+function buildFillsForPattern(
+  pattern: StitchingPattern,
+  primary: HexColor,
+  secondary: HexColor,
+  accent: HexColor,
+): RoledFabricObject[] {
+  switch (pattern) {
+    case 'classic':
+      return _buildClassicFills(primary, secondary, accent);
+    case 'hexagonal':
+      return _buildHexagonalFills(primary, secondary, accent);
+    case 'diamond':
+      return _buildDiamondFills(primary, secondary, accent);
+    case 'spiral':
+      return _buildSpiralFills(primary, secondary, accent);
+    case 'star':
+      return _buildStarFills(primary, secondary, accent);
+    case 'grid':
+      return _buildGridFills(primary, secondary, accent);
+    default: {
+      const _exhaustive: never = pattern;
+      void _exhaustive;
+      return [];
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public API — color, pattern, finish, and logo setters
 // ---------------------------------------------------------------------------
 
@@ -281,90 +961,72 @@ initializeScene();
  * Apply the primary, secondary, and accent panel colors to the Fabric
  * canvas (ST-006 / ST-007 / ST-008 / ST-009).
  *
- * Layout strategy:
- *   - Primary color: full-canvas background rectangle (mutated in place
- *     to avoid object recreation overhead).
- *   - Secondary color: four horizontal stripes at fixed normalized
- *     positions (visible when the sphere is rotated, simulating panel
- *     seams).
- *   - Accent color: six accent circles arranged across the texture.
+ * Implementation notes (Refine PR Directive 4):
+ *   - Caches `primary`, `secondary`, `accent` into `_lastPrimary` /
+ *     `_lastSecondary` / `_lastAccent` so that subsequent
+ *     `setStitchingPattern()` calls can rebuild fill geometry against
+ *     the current colour selection without re-reading the store.
+ *   - Mutates `_backgroundRect.fill` in place to the primary colour.
+ *   - Walks `_panelFills.getObjects()` and mutates each child's
+ *     `fill` per the child's `data-role` tag — NEVER recreating
+ *     geometry. A colour-only change therefore completes within a
+ *     single `renderAll()` cycle without a Fabric object-list churn.
  *
- * Synchronous: this function returns immediately after mutating Fabric
- * objects. The caller (`./texturePipeline.ts`) is responsible for
- * subsequently calling `renderAll()` to commit the changes through the
- * strict R7 / C6 ordering contract.
+ * Synchronous: this function returns immediately after mutating
+ * Fabric objects. The caller (`./texturePipeline.ts`) is responsible
+ * for subsequently calling `renderAll()` to commit the changes
+ * through the strict R7 / C6 ordering contract.
  *
  * Idempotent: repeated calls with the same arguments produce the same
- * scene. Successive calls with different arguments fully overwrite the
- * stripes and accent groups so no stale shapes accumulate.
+ * scene. Successive calls with different arguments fully overwrite
+ * every fill object's `fill` property so no stale colours remain.
  *
  * @param primary   6-digit hex color string ('#RRGGBB') — full-canvas background.
- * @param secondary 6-digit hex color string — stripes overlay color.
- * @param accent    6-digit hex color string — accent shape fill color.
+ * @param secondary 6-digit hex color string — secondary fill regions.
+ * @param accent    6-digit hex color string — accent fill regions.
  */
-export function setPanelColors(
-  primary: HexColor,
-  secondary: HexColor,
-  accent: HexColor,
-): void {
-  // Primary: mutate the background rectangle in-place. Re-creating the
-  // rectangle on every call would churn the Fabric object list and
-  // briefly leave the canvas without a background between remove() and
-  // add() — visible as a one-frame transparent flash.
+export function setPanelColors(primary: HexColor, secondary: HexColor, accent: HexColor): void {
+  // STEP 1 — Cache the colour selection so subsequent
+  // `setStitchingPattern()` calls can rebuild fill geometry against
+  // the most recently applied colours.
+  _lastPrimary = primary;
+  _lastSecondary = secondary;
+  _lastAccent = accent;
+
+  // STEP 2 — Primary: mutate the background rectangle in place.
+  // Re-creating the rectangle on every call would churn the Fabric
+  // object list and briefly leave the canvas without a background
+  // between remove() and add() — visible as a one-frame transparent
+  // flash.
   if (_backgroundRect !== null) {
     _backgroundRect.set({ fill: primary });
   }
 
-  // Secondary: regenerate the stripes group with the new color. The
-  // Group is reused (not re-added to the canvas), so the layering order
-  // is preserved.
-  if (_secondaryStripes !== null) {
-    _secondaryStripes.removeAll();
-
-    // Four horizontal stripes at fixed normalized y-positions. The
-    // exact positions are intentionally simple; visual-regression
-    // baselines (ST-046) lock in whatever layout this produces.
-    const stripeHeight = CANVAS_HEIGHT * 0.08;
-    const stripePositions = [0.18, 0.36, 0.62, 0.82];
-    for (const yNorm of stripePositions) {
-      const stripe = new Rect({
-        left: 0,
-        top: yNorm * CANVAS_HEIGHT - stripeHeight / 2,
-        width: CANVAS_WIDTH,
-        height: stripeHeight,
-        fill: secondary,
-        selectable: false,
-        evented: false,
-      });
-      _secondaryStripes.add(stripe);
-    }
-  }
-
-  // Accent: regenerate the accent shapes group. Six circles at fixed
-  // normalized positions form a balanced pattern that reads as accent
-  // detailing on the rendered sphere.
-  if (_accentShapes !== null) {
-    _accentShapes.removeAll();
-
-    const accentRadius = CANVAS_WIDTH * 0.025;
-    const accentPositions: ReadonlyArray<readonly [number, number]> = [
-      [0.2, 0.27],
-      [0.5, 0.27],
-      [0.8, 0.27],
-      [0.2, 0.73],
-      [0.5, 0.73],
-      [0.8, 0.73],
-    ];
-    for (const [xNorm, yNorm] of accentPositions) {
-      const dot = new Circle({
-        left: xNorm * CANVAS_WIDTH - accentRadius,
-        top: yNorm * CANVAS_HEIGHT - accentRadius,
-        radius: accentRadius,
-        fill: accent,
-        selectable: false,
-        evented: false,
-      });
-      _accentShapes.add(dot);
+  // STEP 3 — Walk each existing fill object and mutate its `fill`
+  // property by its `data-role` tag. No object is added or removed —
+  // the geometry built by the most recent `setStitchingPattern()`
+  // call is preserved verbatim.
+  if (_panelFills !== null) {
+    const objects = _panelFills.getObjects();
+    for (const raw of objects) {
+      const role = readRole(raw);
+      if (role === undefined) {
+        // Defensive — should never happen because every builder funnels
+        // its output through `tagWithRole`. A missing tag indicates a
+        // bug in a builder, not a runtime accident; we skip the object
+        // rather than mutating an unknown fill.
+        continue;
+      }
+      let next: HexColor;
+      if (role === 'primary') {
+        next = primary;
+      } else if (role === 'secondary') {
+        next = secondary;
+      } else {
+        // role === 'accent' — narrowed by the type-guard in readRole.
+        next = accent;
+      }
+      raw.set({ fill: next });
     }
   }
 }
@@ -382,10 +1044,17 @@ export function setPanelColors(
  *   - 'star'      — radial lines emanating from the canvas center.
  *   - 'grid'      — denser orthogonal grid than 'classic' (8×8 vs 4×4).
  *
- * Each pattern is rendered as Line objects added to the `_stitchingOverlay`
- * group at module-private stroke color and width. The overlay group is
- * cleared on each call (`removeAll()`) so successive pattern changes never
- * accumulate stale lines.
+ * Refine PR Directive 3 — on every pattern change this function:
+ *   1. Stores `pattern` as `_currentPattern`.
+ *   2. Calls `_panelFills.removeAll()` to clear the previous pattern's
+ *      fill geometry.
+ *   3. Builds the new pattern's fill geometry via
+ *      `buildFillsForPattern(pattern, _lastPrimary, _lastSecondary,
+ *      _lastAccent)` and adds the returned objects to `_panelFills`
+ *      via `_panelFills.add(...objects)`.
+ *   4. Clears and re-renders the stitching line overlay (the legacy
+ *      switch below) — fill rebuild MUST occur before line overlay
+ *      redraw to preserve layer order.
  *
  * Synchronous: this function returns immediately after mutating Fabric
  * objects. The caller (`./texturePipeline.ts`) is responsible for
@@ -399,6 +1068,30 @@ export function setPanelColors(
  * @param pattern One of the six `StitchingPattern` values.
  */
 export function setStitchingPattern(pattern: StitchingPattern): void {
+  // ----- STEP 1 — Cache the new pattern --------------------------------
+  _currentPattern = pattern;
+
+  // ----- STEP 2 — Rebuild the panel-fill geometry (Directive 3) --------
+  //
+  // `_panelFills.removeAll()` clears every previous fill object;
+  // `buildFillsForPattern` returns the new pattern's fills tagged with
+  // `data-role` per child; `_panelFills.add(...objects)` adds them all
+  // in one call so Fabric's per-object insertion-side effects (e.g.,
+  // group bounds recomputation) run only once.
+  if (_panelFills !== null) {
+    _panelFills.removeAll();
+    const newFills = buildFillsForPattern(pattern, _lastPrimary, _lastSecondary, _lastAccent);
+    if (newFills.length > 0) {
+      _panelFills.add(...newFills);
+    }
+  }
+
+  // ----- STEP 3 — Stitching line overlay -------------------------------
+  //
+  // Same line geometry as before; the `_panelFills` rebuild above
+  // ensures the overlay still renders on top of fully painted
+  // pattern-driven colour regions rather than the old static stripes
+  // and accent dots.
   if (_stitchingOverlay === null) {
     return;
   }
@@ -526,10 +1219,9 @@ export function setStitchingPattern(pattern: StitchingPattern): void {
       for (let i = 0; i < rayCount; i += 1) {
         const angle = (i * 2 * Math.PI) / rayCount;
         _stitchingOverlay.add(
-          new Line(
-            [cx, cy, cx + rayLength * Math.cos(angle), cy + rayLength * Math.sin(angle)],
-            { ...lineOpts },
-          ),
+          new Line([cx, cy, cx + rayLength * Math.cos(angle), cy + rayLength * Math.sin(angle)], {
+            ...lineOpts,
+          }),
         );
       }
       break;
@@ -706,8 +1398,8 @@ export async function setLogo(
   // off-canvas.
   const clampedX = Math.max(-1, Math.min(1, x));
   const clampedY = Math.max(-1, Math.min(1, y));
-  const pxX = ((clampedX + 1) * 0.5) * CANVAS_WIDTH;
-  const pxY = ((clampedY + 1) * 0.5) * CANVAS_HEIGHT;
+  const pxX = (clampedX + 1) * 0.5 * CANVAS_WIDTH;
+  const pxY = (clampedY + 1) * 0.5 * CANVAS_HEIGHT;
 
   // Compute scale factors so that `LOGO_BASE_SIZE_PX * scale` is the
   // rendered pixel size. Fabric's `scaleX`/`scaleY` are multipliers on
@@ -789,3 +1481,17 @@ export function getElement(): HTMLCanvasElement {
   return _canvasElement;
 }
 
+/**
+ * Diagnostic accessor — returns the most recently applied stitching
+ * pattern. Read-only — every state mutation goes through
+ * `setStitchingPattern()`. Currently used only by Vite HMR
+ * instrumentation in dev tooling and not referenced by production
+ * code paths.
+ *
+ * The cached value is returned even when no `setStitchingPattern()`
+ * call has happened externally because `initializeScene()` calls
+ * `setStitchingPattern(DEFAULT_PATTERN)` at module load.
+ */
+export function getCurrentPattern(): StitchingPattern {
+  return _currentPattern;
+}
