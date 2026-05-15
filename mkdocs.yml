@@ -1,0 +1,15 @@
+site_name: blitzy-configurator
+site_description: Blitzy Sandbox project - blitzy-configurator
+repo_url: https://github.com/Blitzy-Sandbox/blitzy-configurator
+edit_uri: edit/main/docs/
+
+nav:
+  - Home: index.md
+
+plugins:
+  - techdocs-core
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
