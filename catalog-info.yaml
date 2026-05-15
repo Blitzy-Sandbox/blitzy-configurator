@@ -6,6 +6,8 @@ metadata:
   tags:
   - frontend
   - new-feature
+  - typescript
+  - web-app
   annotations:
     github.com/project-slug: Blitzy-Sandbox/blitzy-configurator
     backstage.io/source-location: url:https://github.com/Blitzy-Sandbox/blitzy-configurator/tree/main/
