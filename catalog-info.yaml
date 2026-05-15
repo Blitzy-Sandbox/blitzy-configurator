@@ -3,7 +3,9 @@ kind: Component
 metadata:
   name: blitzy-configurator
   description: 'Blitzy Sandbox project: blitzy-configurator'
-  tags: []
+  tags:
+  - frontend
+  - new-feature
   annotations:
     github.com/project-slug: Blitzy-Sandbox/blitzy-configurator
     backstage.io/source-location: url:https://github.com/Blitzy-Sandbox/blitzy-configurator/tree/main/
